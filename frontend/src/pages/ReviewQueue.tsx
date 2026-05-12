@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, Review, UnresolvedCall } from '../api/client';
 
 type Tab = 'gaps' | 'reviews';
@@ -255,7 +255,7 @@ export default function ReviewQueue() {
               <kbd className="px-1 py-0.5 border rounded bg-gray-50">Esc</kbd> clear
             </span>
             <span className="text-gray-400">
-              (disabled while typing in the filter box)
+              (disabled while typing in the filter box · selected row expands with call context)
             </span>
           </div>
           <div
@@ -292,8 +292,8 @@ export default function ReviewQueue() {
                     const busy = busyId === key;
                     const selected = i === selectedIndex;
                     return (
+                      <Fragment key={key}>
                       <tr
-                        key={key}
                         data-row-index={i}
                         onClick={() => setSelectedIndex(i)}
                         className={`align-top cursor-pointer ${
@@ -358,6 +358,14 @@ export default function ReviewQueue() {
                           </div>
                         </td>
                       </tr>
+                      {selected ? (
+                        <tr className="bg-blue-50/60">
+                          <td colSpan={6} className="px-3 pb-3 pt-0">
+                            <GapDetail gap={g} />
+                          </td>
+                        </tr>
+                      ) : null}
+                      </Fragment>
                     );
                   })
                 )}
@@ -424,6 +432,75 @@ export default function ReviewQueue() {
           </table>
         </div>
       )}
+    </div>
+  );
+}
+
+function GapDetail({ gap }: { gap: UnresolvedCall }) {
+  const snippet = gap.source_code_snippet?.trim();
+  const chips: { label: string; value: string; tone: string }[] = [];
+  if (gap.var_name) {
+    chips.push({ label: 'var', value: gap.var_name, tone: 'bg-slate-100 text-slate-700' });
+  }
+  if (gap.var_type) {
+    chips.push({ label: 'type', value: gap.var_type, tone: 'bg-slate-100 text-slate-700' });
+  }
+  if (typeof gap.retry_count === 'number') {
+    chips.push({
+      label: 'retries',
+      value: String(gap.retry_count),
+      tone: gap.retry_count > 0 ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-600',
+    });
+  }
+  if (gap.status) {
+    const tone =
+      gap.status === 'resolved'
+        ? 'bg-green-100 text-green-700'
+        : gap.status === 'failed'
+        ? 'bg-red-100 text-red-700'
+        : 'bg-gray-100 text-gray-700';
+    chips.push({ label: 'status', value: gap.status, tone });
+  }
+
+  return (
+    <div className="rounded border border-blue-200 bg-white p-3 space-y-2">
+      {chips.length > 0 ? (
+        <div className="flex flex-wrap gap-1 text-xs">
+          {chips.map((c) => (
+            <span
+              key={`${c.label}:${c.value}`}
+              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded ${c.tone}`}
+            >
+              <span className="text-[10px] uppercase tracking-wide opacity-70">{c.label}</span>
+              <span className="font-mono break-all">{c.value}</span>
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {snippet ? (
+        <pre className="text-xs font-mono bg-gray-50 border rounded p-2 overflow-x-auto whitespace-pre">
+          {snippet}
+        </pre>
+      ) : (
+        <div className="text-xs text-gray-400 italic">No source snippet captured for this call.</div>
+      )}
+      {gap.candidates && gap.candidates.length > 0 ? (
+        <div className="text-xs text-gray-600">
+          <div className="font-medium text-gray-700 mb-1">
+            Candidates ({gap.candidates.length})
+          </div>
+          <ul className="pl-4 list-disc space-y-0.5">
+            {gap.candidates.slice(0, 20).map((c) => (
+              <li key={c} className="font-mono break-all">
+                {c}
+              </li>
+            ))}
+            {gap.candidates.length > 20 ? (
+              <li className="text-gray-500">…and {gap.candidates.length - 20} more</li>
+            ) : null}
+          </ul>
+        </div>
+      ) : null}
     </div>
   );
 }
