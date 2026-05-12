@@ -338,7 +338,7 @@ frontend/src/pages/
 ## 6. 项目结构
 
 ```
-icslpreprocess/
+codemap_lite/
 ├── cli.py                          # Typer CLI
 ├── config/
 │   ├── settings.py                 # Pydantic Settings (读取 config.yaml)
@@ -502,16 +502,16 @@ pip install -e .
 # 前置条件：claudecode 或 opencode CLI 已安装并配置
 
 # 全量分析
-icslpreprocess analyze --config config.yaml
+codemap-lite analyze --config config.yaml
 
 # 增量分析
-icslpreprocess analyze --incremental --config config.yaml
+codemap-lite analyze --incremental --config config.yaml
 
 # 仅修复
-icslpreprocess repair --config config.yaml
+codemap-lite repair --config config.yaml
 
 # 启动 API 服务
-icslpreprocess serve --config config.yaml
+codemap-lite serve --config config.yaml
 
 # 启动前端（开发模式）
 cd frontend && npm run dev
