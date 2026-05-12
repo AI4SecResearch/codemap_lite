@@ -6,20 +6,36 @@ import FunctionBrowser from './pages/FunctionBrowser';
 import CallGraphView from './pages/CallGraphView';
 import ReviewQueue from './pages/ReviewQueue';
 import FeedbackLog from './pages/FeedbackLog';
-import { api } from './api/client';
+import { api, type Stats } from './api/client';
 
 /**
- * Nav item keyed off the shared /api/v1/stats payload so we can render
- * a live count chip on high-signal labels without giving every page its
- * own poller. Currently only "Feedback" uses `badgeKey` (architecture.md
- * §3 反馈机制 + §8 — `total_feedback` field surfaces counter-example
- * library growth; 北极星指标 #5 + 候选优化方向 #4). Extend the type if
- * more chips are added later (e.g. `total_unresolved` on Review).
+ * Rendered chip spec derived from a `/api/v1/stats` snapshot. Returning
+ * `null` hides the chip entirely (e.g. while stats are still loading or
+ * a badge is not meaningful). `tone` drives the color:
+ *
+ * - `default` — gray pill (baseline / zero backlog)
+ * - `warn`    — amber pill (attention but not urgent)
+ * - `alert`   — red pill (actively demands review)
+ *
+ * Kept as a pure derivation so the nav poller stays thin and each nav
+ * item owns its own "what does the number mean" logic.
  */
+type BadgeSpec = {
+  count: number;
+  tone: 'default' | 'warn' | 'alert';
+  title: string;
+};
+
 type NavItem = {
   path: string;
   label: string;
-  badgeKey?: 'total_feedback';
+  deriveBadge?: (stats: Stats) => BadgeSpec | null;
+};
+
+const TONE_CLASSES: Record<BadgeSpec['tone'], string> = {
+  default: 'bg-gray-100 text-gray-500',
+  warn: 'bg-amber-100 text-amber-800',
+  alert: 'bg-red-100 text-red-800',
 };
 
 const navItems: NavItem[] = [
@@ -27,33 +43,84 @@ const navItems: NavItem[] = [
   { path: '/sources', label: 'Source Points' },
   { path: '/functions', label: 'Functions' },
   { path: '/graph', label: 'Call Graph' },
-  { path: '/review', label: 'Review' },
-  { path: '/feedback', label: 'Feedback', badgeKey: 'total_feedback' },
+  {
+    path: '/review',
+    label: 'Review',
+    // Review backlog chip (architecture.md §3 UnresolvedCall 生命周期:
+    // pending → Agent fix / 3 retries → "unresolvable"). Alert tone
+    // mirrors the Dashboard StatCard when the agent has abandoned a
+    // GAP (any unresolvable > 0), otherwise warn when there's still a
+    // pending queue, otherwise gray. Keeps reviewers on other pages
+    // aware of the backlog without mounting ReviewQueue
+    // (北极星指标 #5 状态透明度 + 候选优化方向 #4 进度与可观测性).
+    deriveBadge: (s) => {
+      const byStatus = s.unresolved_by_status ?? {};
+      const unresolvable = byStatus.unresolvable ?? 0;
+      // Fall back to total_unresolved when the bucket field is missing
+      // (older backend stubs without unresolved_by_status) so the chip
+      // still surfaces a non-zero count instead of silently hiding.
+      const pending =
+        byStatus.pending ??
+        Math.max(0, (s.total_unresolved ?? 0) - unresolvable);
+      const total = pending + unresolvable;
+      if (unresolvable > 0) {
+        return {
+          count: total,
+          tone: 'alert',
+          title: `${pending} pending · ${unresolvable} unresolvable — agent gave up on ${unresolvable} GAP${
+            unresolvable === 1 ? '' : 's'
+          }`,
+        };
+      }
+      if (pending > 0) {
+        return {
+          count: total,
+          tone: 'warn',
+          title: `${pending} pending GAP${pending === 1 ? '' : 's'} awaiting repair`,
+        };
+      }
+      return { count: 0, tone: 'default', title: 'No outstanding GAPs' };
+    },
+  },
+  {
+    path: '/feedback',
+    label: 'Feedback',
+    // architecture.md §3 反馈机制 + §8 — `total_feedback` surfaces
+    // counter-example library growth (北极星指标 #5 + 候选优化方向 #4).
+    deriveBadge: (s) => {
+      const count = s.total_feedback ?? 0;
+      return {
+        count,
+        tone: count === 0 ? 'default' : 'warn',
+        title: `${count} counter example${count === 1 ? '' : 's'} in library`,
+      };
+    },
+  },
 ];
 
 export default function App() {
   // Shared stats poller for nav badges. Dashboard has its own 2s poller
   // for the stat cards, so we stay at 5s here to avoid doubling load
   // while still feeling "live" to reviewers watching the library grow.
-  const [badges, setBadges] = useState<Record<string, number>>({});
+  const [stats, setStats] = useState<Stats | null>(null);
 
-  const refreshBadges = useCallback(async () => {
+  const refreshStats = useCallback(async () => {
     try {
       const s = await api.getStats();
-      setBadges({ total_feedback: s.total_feedback ?? 0 });
+      setStats(s);
     } catch {
       // Silent — nav chips are non-blocking UI. Failed polls keep the
-      // last-known count rather than flipping to zero and alarming the
-      // reviewer about an outage that a richer component (Dashboard)
-      // will already surface.
+      // last-known snapshot rather than flipping to zero and alarming
+      // the reviewer about an outage that a richer component
+      // (Dashboard) will already surface.
     }
   }, []);
 
   useEffect(() => {
-    refreshBadges();
-    const id = setInterval(refreshBadges, 5000);
+    refreshStats();
+    const id = setInterval(refreshStats, 5000);
     return () => clearInterval(id);
-  }, [refreshBadges]);
+  }, [refreshStats]);
 
   return (
     <BrowserRouter>
@@ -63,8 +130,8 @@ export default function App() {
             <div className="flex items-center h-14 gap-6">
               <span className="font-bold text-lg">codemap-lite</span>
               {navItems.map((item) => {
-                const count = item.badgeKey ? badges[item.badgeKey] : undefined;
-                const hasCount = typeof count === 'number';
+                const badge =
+                  item.deriveBadge && stats ? item.deriveBadge(stats) : null;
                 return (
                   <NavLink
                     key={item.path}
@@ -78,16 +145,12 @@ export default function App() {
                     }
                   >
                     <span>{item.label}</span>
-                    {hasCount ? (
+                    {badge ? (
                       <span
-                        className={`inline-flex items-center justify-center min-w-[1.25rem] px-1.5 rounded-full text-[11px] font-semibold leading-[1.125rem] ${
-                          count === 0
-                            ? 'bg-gray-100 text-gray-500'
-                            : 'bg-amber-100 text-amber-800'
-                        }`}
-                        title={`${count} counter example${count === 1 ? '' : 's'} in library`}
+                        className={`inline-flex items-center justify-center min-w-[1.25rem] px-1.5 rounded-full text-[11px] font-semibold leading-[1.125rem] ${TONE_CLASSES[badge.tone]}`}
+                        title={badge.title}
                       >
-                        {count}
+                        {badge.count}
                       </span>
                     ) : null}
                   </NavLink>
