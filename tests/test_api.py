@@ -652,3 +652,76 @@ class TestFeedbackEndpoint:
             "llm": 2,
             "signature": 1,
         }
+
+    def test_get_stats_unresolved_by_category(self) -> None:
+        """/stats buckets UnresolvedCall nodes by the `<category>:` prefix
+        of last_attempt_reason so the Dashboard can show a per-category
+        chip row telling reviewers whether the agent-abandoned backlog
+        is dominated by LLM stalls (subprocess_timeout) vs hook crashes
+        (agent_error) vs gate misses (gate_failed) — architecture.md §3
+        Retry 审计字段 4 档 + §5 drill-down 契约 (category chip row)."""
+        client, store = get_test_client()
+        store.create_function(
+            FunctionNode(
+                signature="def a()", name="a", file_path="f.py",
+                start_line=1, end_line=3, body_hash="h1", id="caller",
+            )
+        )
+        # One of each of the 4 §3 categories + one without any audit
+        # stamp (never retried yet) → should bucket to "none".
+        categorized = [
+            ("g1", "gate_failed: remaining pending GAPs"),
+            ("g2", "agent_error: exit 1"),
+            ("g3", "subprocess_crash: FileNotFoundError: no such binary"),
+            ("g4", "subprocess_timeout: 0.2s"),
+        ]
+        for gid, reason in categorized:
+            store.create_unresolved_call(
+                UnresolvedCallNode(
+                    caller_id="caller", call_expression="fp()", call_file="f.py",
+                    call_line=2, call_type="indirect", source_code_snippet="fp()",
+                    var_name=None, var_type=None, id=gid, status="pending",
+                    retry_count=1, last_attempt_reason=reason,
+                    last_attempt_timestamp="2026-05-13T00:00:00+00:00",
+                )
+            )
+        # Second subprocess_timeout so we can verify counts aggregate
+        # (not just that keys are present).
+        store.create_unresolved_call(
+            UnresolvedCallNode(
+                caller_id="caller", call_expression="fp()", call_file="f.py",
+                call_line=2, call_type="indirect", source_code_snippet="fp()",
+                var_name=None, var_type=None, id="g5", status="pending",
+                retry_count=2,
+                last_attempt_reason="subprocess_timeout: 5.0s",
+                last_attempt_timestamp="2026-05-13T00:01:00+00:00",
+            )
+        )
+        # Never-retried GAP: no audit stamp → bucket "none".
+        store.create_unresolved_call(
+            UnresolvedCallNode(
+                caller_id="caller", call_expression="hp()", call_file="f.py",
+                call_line=4, call_type="indirect", source_code_snippet="hp()",
+                var_name=None, var_type=None, id="g6", status="pending",
+                retry_count=0,
+            )
+        )
+        resp = client.get("/api/v1/stats")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total_unresolved"] == 6
+        assert data["unresolved_by_category"] == {
+            "gate_failed": 1,
+            "agent_error": 1,
+            "subprocess_crash": 1,
+            "subprocess_timeout": 2,
+            "none": 1,
+        }
+
+    def test_get_stats_unresolved_by_category_empty(self) -> None:
+        """Empty store still returns the field (empty dict) so the
+        frontend doesn't have to guard against undefined."""
+        client, _ = get_test_client()
+        resp = client.get("/api/v1/stats")
+        assert resp.status_code == 200
+        assert resp.json()["unresolved_by_category"] == {}

@@ -212,6 +212,57 @@ export default function Dashboard() {
         : `${resolvedPct}% resolved`
       : undefined;
 
+  // architecture.md §5 drill-down 契约: Dashboard "Retry reasons" chip
+  // row consumes `/api/v1/stats` unresolved_by_category bucket.
+  // Chip tones mirror GapDetail last-attempt 分色 (§3 Retry 审计字段):
+  // gate_failed=amber, agent_error=red, subprocess_crash=fuchsia,
+  // subprocess_timeout=orange, none=gray. Each chip is a drill-down
+  // link to `/review?category=<cat>` so reviewers can go from
+  // "25 of 30 unresolvable are subprocess_timeout" to the pre-filtered
+  // list in one click (北极星指标 #1 + #5).
+  const byCategory = stats?.unresolved_by_category ?? {};
+  const CATEGORY_ROW: {
+    key: string;
+    label: string;
+    tone: string;
+    title: string;
+  }[] = [
+    {
+      key: 'gate_failed',
+      label: 'gate_failed',
+      tone: 'bg-amber-100 text-amber-800 hover:bg-amber-200',
+      title: 'Agent ran but gate still saw pending GAPs — soft failure',
+    },
+    {
+      key: 'agent_error',
+      label: 'agent_error',
+      tone: 'bg-red-100 text-red-800 hover:bg-red-200',
+      title: 'Agent spawned but exited non-zero (quota / hook / LLM error)',
+    },
+    {
+      key: 'subprocess_crash',
+      label: 'subprocess_crash',
+      tone: 'bg-fuchsia-100 text-fuchsia-800 hover:bg-fuchsia-200',
+      title: 'Spawn itself failed (binary missing / path / permission) — ops',
+    },
+    {
+      key: 'subprocess_timeout',
+      label: 'subprocess_timeout',
+      tone: 'bg-orange-100 text-orange-800 hover:bg-orange-200',
+      title: 'Agent hung past subprocess_timeout_seconds — ops (LLM / net)',
+    },
+    {
+      key: 'none',
+      label: 'none',
+      tone: 'bg-gray-100 text-gray-700 hover:bg-gray-200',
+      title: 'GAPs without an audit stamp yet (never retried or legacy format)',
+    },
+  ];
+  const categoryRowTotal = CATEGORY_ROW.reduce(
+    (sum, row) => sum + (byCategory[row.key] ?? 0),
+    0,
+  );
+
   // Top callers by unresolved GAP count (architecture.md §5 跨页面
   // drill-down 契约). Sort desc, slice top N, join with FunctionNode
   // so we can show the readable name instead of the raw id. Unknown
@@ -302,6 +353,34 @@ export default function Dashboard() {
           to="/review?status=unresolvable"
         />
       </div>
+
+      {categoryRowTotal > 0 ? (
+        <div className="bg-white rounded shadow-sm border p-3">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs uppercase tracking-wide text-gray-500">
+              Retry reasons
+            </span>
+            {CATEGORY_ROW.map((row) => {
+              const count = byCategory[row.key] ?? 0;
+              if (count === 0) return null;
+              return (
+                <Link
+                  key={row.key}
+                  to={`/review?category=${encodeURIComponent(row.key)}`}
+                  title={row.title}
+                  className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium no-underline transition-colors ${row.tone}`}
+                >
+                  <span className="font-mono">{row.label}</span>
+                  <span className="font-semibold">{count}</span>
+                </Link>
+              );
+            })}
+            <span className="text-xs text-gray-400 ml-auto">
+              click a chip to filter the review queue
+            </span>
+          </div>
+        </div>
+      ) : null}
 
       <div className="bg-white rounded shadow-sm border p-4">
         <h2 className="font-semibold mb-3">Pipeline Actions</h2>

@@ -97,6 +97,24 @@ def create_app(
         for u in s._unresolved_calls.values():
             key = getattr(u, "status", None) or "pending"
             by_status[key] = by_status.get(key, 0) + 1
+        # Breakdown of UnresolvedCall by the `<category>:` prefix of
+        # `last_attempt_reason` (architecture.md §3 Retry 审计字段 4 档:
+        # gate_failed / agent_error / subprocess_crash / subprocess_timeout).
+        # Missing / malformed reasons (no colon, never stamped yet) bucket
+        # to "none" so the Dashboard chip row can show "25 GAPs have no
+        # audit stamp yet" without silently dropping them. Surfaced on
+        # the Dashboard per architecture.md §5 drill-down 契约: chip tones
+        # mirror GapDetail last-attempt 分色 and each chip links to
+        # `/review?category=<cat>` (北极星指标 #5 状态透明度).
+        by_category: dict[str, int] = {}
+        for u in s._unresolved_calls.values():
+            reason = getattr(u, "last_attempt_reason", None)
+            if reason and ":" in reason:
+                prefix = reason.split(":", 1)[0].strip()
+                cat_key = prefix if prefix else "none"
+            else:
+                cat_key = "none"
+            by_category[cat_key] = by_category.get(cat_key, 0) + 1
         # Breakdown of CALLS edges by resolved_by (architecture.md §4 CALLS
         # 边属性: symbol_table / signature / dataflow / context / llm).
         # Surface the llm-repaired edge backlog on the Dashboard — per §5
@@ -121,6 +139,7 @@ def create_app(
             "total_calls": len(s._calls_edges),
             "total_unresolved": len(s._unresolved_calls),
             "unresolved_by_status": by_status,
+            "unresolved_by_category": by_category,
             "calls_by_resolved_by": by_resolved,
             "total_source_points": len(getattr(app.state, "source_points", [])),
             "total_feedback": total_feedback,

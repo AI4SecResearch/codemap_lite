@@ -369,6 +369,7 @@ frontend/src/pages/
 - `FunctionBrowser` 右栏每一行函数后挂一个 GAP count chip（前端调 `api.listUnresolved` 客户端按 `caller_id` 聚合），chip 是 `<Link to="/review?caller=<encoded function_id>">`；`ReviewQueue` 挂载时读 `?caller=` 作为初始 `callerFilter`，用户清除时回写 URL——把"看函数浏览器 → 发现某个函数背包多 → 跳预筛选 GAP 列表"从"去 ReviewQueue → 手动搜 caller_id"压成一次点击（北极星 #1 GAP 审阅耗时 + #2 调用链可信度——哪个函数 backlog 最重一眼可见 + #5 状态透明度——backlog 在函数维度的分布可见）。复用 `?<filterName>=<value>` 约定，不新增 surface。
 - `Dashboard` "Top backlog functions" widget 按 `caller_id` 聚合 `api.listUnresolved` 后降序取前 5，每行渲染为 `<Link to="/review?caller=<encoded caller_id>">`，显示函数名（或截断 id）+ GAP count chip（tri-tone amber/red 与 FunctionBrowser chip 共享视觉语言）——把"打开 Dashboard → 发现最重的 backlog 在哪个函数 → 跳预筛选 GAP 列表"压成一次点击，无需绕路 FunctionBrowser（北极星 #1 GAP 审阅耗时 + #5 状态透明度——Dashboard 作为全站 hub 直接暴露热点函数）。复用 `?caller=` 约定，不新增 surface。
 - `CallGraphView` 的 `NodeInspector` 在 function-node 分支显示 `<Link to="/review?caller=<encoded function_id>">Review GAPs ({count})</Link>`（count 由客户端 `api.listUnresolved` 按 `caller_id` 聚合后得出，0 时不渲染链接避免空跳转）；在 unresolved-node 分支显示 `<Link to="/review?caller=<encoded caller_id>">Review this caller</Link>`——审阅者在调用链视图里看到可疑节点/GAP 时，从"记住 caller_id → 切页 → 手敲筛选"压成一次点击回到预筛选 GAP 列表（北极星 #1 GAP 审阅耗时 + #2 调用链可信度——图视图与审阅队列的审阅上下文互通 + #5 状态透明度——调用链里的每个节点都能看到自身 backlog）。复用 `?caller=` 约定，不新增 surface。
+- `Dashboard` 在 GAP StatCard 下方渲染一行 "Retry reasons" category 分布 chip（消费 `/api/v1/stats` 的 `unresolved_by_category` 分桶），4 档 category chip 的 tone 与 §3/§5 "GapDetail last-attempt 分色" 严格同色系（gate_failed=amber / agent_error=red / subprocess_crash=fuchsia / subprocess_timeout=orange；`none` 桶=gray fallback），每个 chip 是 `<Link to="/review?category=<cat>">`——让"打开 Dashboard → 发现 30 个 unresolvable 里 25 个是 subprocess_timeout → 1 次点击落到预筛选列表"从"进 ReviewQueue 再逐行眼扫 4 色"压成一次点击（北极星 #1 GAP 审阅耗时 + #5 状态透明度——Dashboard 作为全站 hub 直接暴露 agent 放弃原因的分布 + 候选优化方向 #4 进度与可观测性）。复用 §3 Retry 审计字段 4 档枚举 + `?category=` 约定，不新增 surface。
 - 未来新增 drill-down 链接时沿用相同约定：`?<filterName>=<value>`，命中则透传，否则忽略（宽松解析，架构契约优先）。
 
 ---
@@ -477,7 +478,7 @@ DELETE /api/v1/reviews/{id}
 # 反例库
 GET  /api/v1/feedback             # 浏览反例
 POST /api/v1/feedback             # 新增反例（审阅标记错误时触发，架构 §5）
-GET  /api/v1/stats                # 统计（含 unresolved_by_status 分桶：pending / unresolvable；含 calls_by_resolved_by 分桶：symbol_table / signature / dataflow / context / llm；含 total_feedback：反例库当前条目数，供左侧导航 Feedback 标签活体计数 chip 使用）
+GET  /api/v1/stats                # 统计（含 unresolved_by_status 分桶：pending / unresolvable；含 unresolved_by_category 分桶：按 UnresolvedCall.last_attempt_reason 的 `<category>:` 前缀分桶，键 ∈ §3 Retry 审计字段 4 档 {gate_failed, agent_error, subprocess_crash, subprocess_timeout} + `none`（尚无审计 stamp 或 legacy 格式），供 Dashboard 按 category 分色 chip 一眼看到"agent 放弃的 30 个 GAP 到底是 LLM 挂了还是 hook 脚本坏了"；含 calls_by_resolved_by 分桶：symbol_table / signature / dataflow / context / llm；含 total_feedback：反例库当前条目数，供左侧导航 Feedback 标签活体计数 chip 使用）
 ```
 
 ---
