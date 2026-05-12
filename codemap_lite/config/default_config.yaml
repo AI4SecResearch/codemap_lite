@@ -1,0 +1,30 @@
+# codemap-lite default configuration
+project:
+  target_dir: "."
+
+neo4j:
+  uri: "bolt://localhost:7687"
+  user: "neo4j"
+  password: "${NEO4J_PASSWORD}"
+
+codewiki_lite:
+  base_url: "http://localhost:8000"
+
+agent:
+  backend: "claudecode"
+  max_concurrency: 5
+  retry_failed_gaps: true
+  claudecode:
+    command: "claude"
+    args: ["-p", "--output-format", "text"]
+  opencode:
+    command: "opencode"
+    args: ["-p"]
+
+visualization:
+  aggregation: "hierarchical"
+
+feedback:
+  model: "qwen-plus"
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  api_key: "${DASHSCOPE_API_KEY}"
