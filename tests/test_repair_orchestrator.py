@@ -429,3 +429,76 @@ async def test_orchestrator_handles_subprocess_spawn_failure(tmp_path):
     assert stamped.last_attempt_reason.startswith("subprocess_crash:")
     # ≤200-char cap from architecture.md §3 Retry 审计字段.
     assert len(stamped.last_attempt_reason) <= 200
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_stamps_agent_error_on_nonzero_exit(tmp_path):
+    """Agent subprocess exits non-zero → stamp ``agent_error: exit <N>``
+    and skip the gate check. Before this fix, a crashed-but-spawned agent
+    fell through to ``_check_gate`` and got mis-stamped as ``gate_failed``,
+    hiding the real root cause from ReviewQueue.GapDetail
+    (architecture.md §3 Retry 审计字段: non-gate failures must record the
+    matching category, not gate_failed).
+    """
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import FunctionNode, UnresolvedCallNode
+
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    store = InMemoryGraphStore()
+    caller = FunctionNode(
+        signature="void src_001(int)",
+        name="src_001",
+        file_path="foo.cpp",
+        start_line=1,
+        end_line=10,
+        body_hash="h",
+        id="src_001",
+    )
+    store.create_function(caller)
+    gap = UnresolvedCallNode(
+        caller_id="src_001",
+        call_expression="fn_ptr(x)",
+        call_file="foo.cpp",
+        call_line=7,
+        call_type="indirect",
+        source_code_snippet="fn_ptr(x);",
+        var_name="fn_ptr",
+        var_type="void (*)(int)",
+    )
+    store.create_unresolved_call(gap)
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        # ``sh -c 'exit 7'`` reliably returns non-zero across platforms
+        # without depending on a missing binary (which would be the
+        # subprocess_crash branch instead).
+        command="sh",
+        args=["-c", "exit 7"],
+        max_concurrency=1,
+        neo4j_uri="bolt://localhost:7687",
+        neo4j_user="neo4j",
+        neo4j_password="test",
+        graph_store=store,
+    )
+    orchestrator = RepairOrchestrator(config=config)
+    # Gate must not be consulted — non-zero exit short-circuits before it.
+    gate_mock = AsyncMock(return_value=True)
+    orchestrator._check_gate = gate_mock
+
+    results = await orchestrator.run_repairs(["src_001"])
+
+    assert results[0].success is False
+    assert results[0].attempts == 3
+    gate_mock.assert_not_called()
+    stamped = store._unresolved_calls[gap.id]
+    assert stamped.last_attempt_timestamp is not None
+    assert stamped.last_attempt_reason is not None
+    assert stamped.last_attempt_reason.startswith("agent_error:")
+    assert "exit 7" in stamped.last_attempt_reason
+    # Must never be mis-classified as gate_failed (regression guard).
+    assert not stamped.last_attempt_reason.startswith("gate_failed:")
+    # ≤200-char cap from architecture.md §3 Retry 审计字段.
+    assert len(stamped.last_attempt_reason) <= 200

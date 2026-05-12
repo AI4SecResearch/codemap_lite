@@ -233,6 +233,20 @@ class RepairOrchestrator:
                     if log_fh is not None:
                         log_fh.close()
 
+                # Non-zero exit → Agent ran but failed. Per architecture.md §3
+                # Retry 审计字段 ("非门禁失败同样记账"), stamp agent_error
+                # instead of letting it silently fall through to the gate
+                # check (which would mis-attribute the failure as
+                # gate_failed and hide the real signal from reviewers).
+                if proc.returncode is not None and proc.returncode != 0:
+                    self._record_retry_attempt(
+                        source_id=source_id,
+                        reason=_truncate_reason(
+                            f"agent_error: exit {proc.returncode}"
+                        ),
+                    )
+                    continue
+
                 # Gate check
                 gate_passed = await self._check_gate(source_id)
                 if gate_passed:
