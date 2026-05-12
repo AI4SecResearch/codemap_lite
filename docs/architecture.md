@@ -342,6 +342,7 @@ frontend/src/pages/
 - 左侧导航的活体 chip 在 alert/warn tone 下自动把 NavLink 指向对应的预筛选子视图——Review chip `alert` 时 `to="/review?status=unresolvable"`、`warn` 时 `to="/review?status=pending"`、`default` 时回到 `/review`——与 StatCard drill-down 共用 query 约定，让"看到红色 chip 就 1 次点击落到 agent 放弃的 GAP 列表"成为从任意页面都成立的快捷路径。
 - ReviewQueue 的 caller 单元格是 `<Link to="/graph?function=<encoded caller_id>">`；`CallGraphView` 挂载时读 `?function=` 作为起始点，`api.getCallChain(id, depth)` 拉子图并高亮 root——把 "审阅这条 GAP → 看它在调用链里是哪条边" 从"复制 id → 切页 → 粘贴"压成一次点击（北极星 #1 GAP 审阅耗时 + #2 调用链可信度——审阅时 llm 修复的 edge 在图里是哪条）。复用已有 `?function=` 约定，不新增 surface。
 - `FunctionBrowser` 右栏每一行函数后挂一个 GAP count chip（前端调 `api.listUnresolved` 客户端按 `caller_id` 聚合），chip 是 `<Link to="/review?caller=<encoded function_id>">`；`ReviewQueue` 挂载时读 `?caller=` 作为初始 `callerFilter`，用户清除时回写 URL——把"看函数浏览器 → 发现某个函数背包多 → 跳预筛选 GAP 列表"从"去 ReviewQueue → 手动搜 caller_id"压成一次点击（北极星 #1 GAP 审阅耗时 + #2 调用链可信度——哪个函数 backlog 最重一眼可见 + #5 状态透明度——backlog 在函数维度的分布可见）。复用 `?<filterName>=<value>` 约定，不新增 surface。
+- `Dashboard` "Top backlog functions" widget 按 `caller_id` 聚合 `api.listUnresolved` 后降序取前 5，每行渲染为 `<Link to="/review?caller=<encoded caller_id>">`，显示函数名（或截断 id）+ GAP count chip（tri-tone amber/red 与 FunctionBrowser chip 共享视觉语言）——把"打开 Dashboard → 发现最重的 backlog 在哪个函数 → 跳预筛选 GAP 列表"压成一次点击，无需绕路 FunctionBrowser（北极星 #1 GAP 审阅耗时 + #5 状态透明度——Dashboard 作为全站 hub 直接暴露热点函数）。复用 `?caller=` 约定，不新增 surface。
 - 未来新增 drill-down 链接时沿用相同约定：`?<filterName>=<value>`，命中则透传，否则忽略（宽松解析，架构契约优先）。
 
 ---

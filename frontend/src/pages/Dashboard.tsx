@@ -1,6 +1,20 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import { api, Stats, AnalyzeStatus, SourceProgress } from '../api/client';
+import {
+  api,
+  Stats,
+  AnalyzeStatus,
+  SourceProgress,
+  FunctionNode,
+} from '../api/client';
+
+// architecture.md §5 跨页面 drill-down 契约：Dashboard "Top backlog
+// functions" 取 api.listUnresolved 客户端按 caller_id 聚合后降序前 5，
+// 每行 <Link to="/review?caller=<id>">——打开 Dashboard 即见热点函数，
+// 1 次点击落到预筛选 GAP 列表，免绕 FunctionBrowser（北极星 #1 + #5）。
+const TOP_BACKLOG_LIMIT = 5;
+
+type BacklogRow = { callerId: string; name: string; count: number };
 
 // architecture.md §5 跨页面 drill-down 契约：Dashboard StatCard
 // 可选 `to` 让卡片本身承载跳转（pre-filtered 子视图），减少审阅者
@@ -107,12 +121,33 @@ export default function Dashboard() {
   const [status, setStatus] = useState<AnalyzeStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Top-backlog widget data. Kept separate from `stats` so a failed
+  // listUnresolved/getFunctions call doesn't blank out the StatCards.
+  const [functions, setFunctions] = useState<FunctionNode[]>([]);
+  const [gapCounts, setGapCounts] = useState<Map<string, number>>(new Map());
 
   const refresh = useCallback(async () => {
     try {
-      const [s, st] = await Promise.all([api.getStats(), api.getAnalyzeStatus()]);
+      // api.listUnresolved ceiling of 500 mirrors FunctionBrowser —
+      // covers CastEngine with headroom. getFunctions lets us show
+      // a readable caller name instead of the raw id. Both are
+      // non-blocking: a failure just leaves the widget empty.
+      const [s, st, fns, unresolved] = await Promise.all([
+        api.getStats(),
+        api.getAnalyzeStatus(),
+        api.getFunctions().catch(() => [] as FunctionNode[]),
+        api
+          .listUnresolved(500, 0)
+          .catch(() => ({ total: 0, items: [] })),
+      ]);
       setStats(s);
       setStatus(st);
+      setFunctions(fns);
+      const counts = new Map<string, number>();
+      for (const g of unresolved.items) {
+        counts.set(g.caller_id, (counts.get(g.caller_id) ?? 0) + 1);
+      }
+      setGapCounts(counts);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -176,6 +211,25 @@ export default function Dashboard() {
         ? `${resolvedPct}% resolved · ${llmCalls} via llm`
         : `${resolvedPct}% resolved`
       : undefined;
+
+  // Top callers by unresolved GAP count (architecture.md §5 跨页面
+  // drill-down 契约). Sort desc, slice top N, join with FunctionNode
+  // so we can show the readable name instead of the raw id. Unknown
+  // ids still render (fallback to trimmed id) so stale gap records
+  // don't silently disappear.
+  const topBacklog = useMemo<BacklogRow[]>(() => {
+    if (gapCounts.size === 0) return [];
+    const fnById = new Map<string, FunctionNode>();
+    for (const f of functions) fnById.set(f.id, f);
+    const rows: BacklogRow[] = [];
+    for (const [callerId, count] of gapCounts.entries()) {
+      const fn = fnById.get(callerId);
+      rows.push({ callerId, name: fn?.name ?? callerId, count });
+    }
+    rows.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+    return rows.slice(0, TOP_BACKLOG_LIMIT);
+  }, [gapCounts, functions]);
+  const totalCallersWithGaps = gapCounts.size;
 
   return (
     <div className="p-6 space-y-6">
@@ -284,6 +338,59 @@ export default function Dashboard() {
         <p className="text-xs text-gray-500 mt-3">
           Status polls every 2s. Triggering analysis is async on the server.
         </p>
+      </div>
+
+      <div className="bg-white rounded shadow-sm border p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-semibold">Top backlog functions</h2>
+          <span className="text-xs text-gray-500">
+            {topBacklog.length > 0
+              ? `top ${topBacklog.length} of ${totalCallersWithGaps}`
+              : '0 callers'}
+          </span>
+        </div>
+        {topBacklog.length > 0 ? (
+          <ul className="divide-y">
+            {topBacklog.map((row, idx) => {
+              const tone =
+                row.count >= 3
+                  ? 'bg-red-100 text-red-800'
+                  : 'bg-amber-100 text-amber-800';
+              return (
+                <li key={row.callerId}>
+                  <Link
+                    to={`/review?caller=${encodeURIComponent(row.callerId)}`}
+                    className="flex items-center gap-3 px-2 py-2 rounded hover:bg-gray-50 no-underline text-inherit"
+                    title={`${row.count} unresolved GAP${row.count === 1 ? '' : 's'} — review ${row.callerId}`}
+                  >
+                    <span className="w-5 text-right text-xs text-gray-400 shrink-0">
+                      {idx + 1}
+                    </span>
+                    <span
+                      className="font-mono text-xs truncate flex-1"
+                      title={row.callerId}
+                    >
+                      {row.name}
+                    </span>
+                    <span
+                      className={`shrink-0 inline-flex items-center justify-center min-w-[1.5rem] px-1.5 rounded-full text-[11px] font-semibold leading-[1.125rem] ${tone}`}
+                    >
+                      {row.count}
+                    </span>
+                    <span aria-hidden className="text-gray-400 text-xs">
+                      ›
+                    </span>
+                  </Link>
+                </li>
+              );
+            })}
+          </ul>
+        ) : (
+          <div className="text-sm text-gray-500">
+            No unresolved GAPs tracked. Run the repair agent to surface
+            per-function backlog.
+          </div>
+        )}
       </div>
 
       <div className="bg-white rounded shadow-sm border p-4">
