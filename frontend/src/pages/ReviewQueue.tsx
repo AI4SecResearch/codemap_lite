@@ -964,14 +964,21 @@ function GapDetail({ gap }: { gap: UnresolvedCall }) {
   const lastReason = gap.last_attempt_reason?.trim();
   const lastTimestamp = gap.last_attempt_timestamp?.trim();
   const hasLastAttempt = Boolean(lastReason || lastTimestamp);
+  // architecture.md §5 GapDetail last-attempt 分色: 4 categories → 4 distinct
+  // tones so reviewers can read the failure class at a glance
+  // (gate_failed=amber soft retry-more, agent_error=red agent logic failure,
+  // subprocess_crash=fuchsia spawn failure/ops config, subprocess_timeout=
+  // orange ops stall). Unknown/legacy → gray fallback.
   const category = lastReason?.split(':', 1)[0].trim();
   const categoryTone =
     category === 'gate_failed'
       ? 'bg-amber-50 border-amber-200 text-amber-800'
-      : category === 'agent_error' ||
-        category === 'subprocess_crash' ||
-        category === 'subprocess_timeout'
+      : category === 'agent_error'
       ? 'bg-red-50 border-red-200 text-red-800'
+      : category === 'subprocess_crash'
+      ? 'bg-fuchsia-50 border-fuchsia-200 text-fuchsia-800'
+      : category === 'subprocess_timeout'
+      ? 'bg-orange-50 border-orange-200 text-orange-800'
       : 'bg-gray-50 border-gray-200 text-gray-800';
   const humanTimestamp = lastTimestamp
     ? (() => {

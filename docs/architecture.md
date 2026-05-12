@@ -327,6 +327,14 @@ status: "pending" → "running" → "complete"（所有可达 GAP 已修复）
   3. 重新生成 UnresolvedCall 节点（retry_count=0）
   4. 触发 Agent 重新修复该 source 点（异步）
 
+### GapDetail last-attempt 分色
+架构 §3 Retry 审计字段锁了 4 档 `<category>`，§3 超时护栏又要求 `subprocess_timeout` / `agent_error` / `subprocess_crash` 在 UI 上彻底分流——`ReviewQueue` 的 `GapDetail` last-attempt 面板必须按 `<category>` 分到 4 种互不混淆的 tone，让审阅者一眼读出"这是什么类型的失败":
+- `gate_failed` → **amber**（`bg-amber-50 border-amber-200 text-amber-800`）：软失败，agent 跑完了但门禁说还有残留 GAP，下一轮 retry 很可能继续推进
+- `agent_error` → **red**（`bg-red-50 border-red-200 text-red-800`）：agent 起来了但非零退出（配额耗尽 / LLM 超时 / hook 脚本 `SyntaxError` 等），通常是 agent 侧业务失败
+- `subprocess_crash` → **fuchsia**（`bg-fuchsia-50 border-fuchsia-200 text-fuchsia-800`）：`asyncio.create_subprocess_exec` 抛异常，spawn 本身失败（CLI 二进制缺失 / 路径漂移 / 权限），是 ops 配置问题
+- `subprocess_timeout` → **orange**（`bg-orange-50 border-orange-200 text-orange-800`）：`asyncio.wait_for` 到点把 agent 杀了（LLM 后端挂 / 网络 stall / agent 死循环），是 ops 信号
+- 未识别 category（legacy 旧事件键等）→ **gray** fallback
+
 ### 进度感知
 - Agent 每次写入 Neo4j 时打点记录进度
 - 前端轮询 `GET /api/v1/analyze/status` 获取进度
