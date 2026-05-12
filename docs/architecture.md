@@ -446,7 +446,7 @@ DELETE /api/v1/reviews/{id}
 # 反例库
 GET  /api/v1/feedback             # 浏览反例
 POST /api/v1/feedback             # 新增反例（审阅标记错误时触发，架构 §5）
-GET  /api/v1/stats                # 统计（含 unresolved_by_status 分桶：pending / unresolvable；含 calls_by_resolved_by 分桶：symbol_table / signature / dataflow / context / llm）
+GET  /api/v1/stats                # 统计（含 unresolved_by_status 分桶：pending / unresolvable；含 calls_by_resolved_by 分桶：symbol_table / signature / dataflow / context / llm；含 total_feedback：反例库当前条目数，供左侧导航 Feedback 标签活体计数 chip 使用）
 ```
 
 ---

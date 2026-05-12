@@ -89,6 +89,14 @@ export interface Stats {
    * backward compat with older stubs.
    */
   calls_by_resolved_by?: Record<string, number>;
+  /**
+   * Counter-example library size (architecture.md §3 反馈机制 + §8).
+   * Drives the live count chip next to the left-nav "Feedback" label so
+   * reviewers notice newly deduplicated patterns without mounting
+   * FeedbackLog (北极星指标 #5 状态透明度 + 候选优化方向 #4
+   * 进度与可观测性). Optional for backward compat with older stubs.
+   */
+  total_feedback?: number;
 }
 
 export interface SourceProgress {

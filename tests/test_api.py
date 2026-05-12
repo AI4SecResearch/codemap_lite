@@ -538,6 +538,41 @@ class TestFeedbackEndpoint:
         # §5 审阅对象：单条 CALLS 边，特别是 resolved_by='llm' 的).
         assert "calls_by_resolved_by" in data
         assert data["calls_by_resolved_by"] == {}
+        # Counter-example library size (architecture.md §3 反馈机制 + §8).
+        # Without a wired FeedbackStore the field is present and 0 so
+        # the left-nav chip can render deterministically (北极星 #5).
+        assert "total_feedback" in data
+        assert data["total_feedback"] == 0
+
+    def test_get_stats_total_feedback_with_store(self, tmp_path) -> None:
+        """/stats reports `total_feedback` from the wired FeedbackStore so
+        the left-nav Feedback label can show a live count chip without
+        mounting FeedbackLog (architecture.md §3 反馈机制 + §8; 北极星 #5
+        状态透明度 + 候选优化方向 #4 进度与可观测性)."""
+        store_dir = tmp_path / ".codemap_lite" / "feedback"
+        feedback_store = FeedbackStore(storage_dir=store_dir)
+        feedback_store.add(
+            CounterExample(
+                call_context="dispatch(handler)",
+                wrong_target="noop",
+                correct_target="on_event",
+                pattern="dispatch handler must match EventHandler",
+            )
+        )
+        feedback_store.add(
+            CounterExample(
+                call_context="vtable[i](ctx)",
+                wrong_target="fallback",
+                correct_target="commit",
+                pattern="vtable resolution honours ctx.role",
+            )
+        )
+        graph_store = InMemoryGraphStore()
+        app = create_app(store=graph_store, feedback_store=feedback_store)
+        client = TestClient(app)
+        resp = client.get("/api/v1/stats")
+        assert resp.status_code == 200
+        assert resp.json()["total_feedback"] == 2
 
     def test_get_stats_unresolved_by_status(self) -> None:
         """/stats buckets UnresolvedCall nodes by `status` so the Dashboard

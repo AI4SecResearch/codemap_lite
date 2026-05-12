@@ -107,6 +107,14 @@ def create_app(
         for e in s._calls_edges:
             key = e.props.resolved_by or "unknown"
             by_resolved[key] = by_resolved.get(key, 0) + 1
+        # Counter-example library size (architecture.md §3 反馈机制 + §8).
+        # Surfaced here so the frontend can render a live count chip on
+        # the left-nav "Feedback" label — reviewers see the library grow
+        # without mounting FeedbackLog (北极星指标 #5 状态透明度 +
+        # 候选优化方向 #4 进度与可观测性). Falls back to 0 when the
+        # store is not wired (tests / in-memory demos).
+        fb = getattr(app.state, "feedback_store", None)
+        total_feedback = len(fb.list_all()) if fb is not None else 0
         return {
             "total_functions": len(s._functions),
             "total_files": len(s._files),
@@ -115,6 +123,7 @@ def create_app(
             "unresolved_by_status": by_status,
             "calls_by_resolved_by": by_resolved,
             "total_source_points": len(getattr(app.state, "source_points", [])),
+            "total_feedback": total_feedback,
             **stats,
         }
 
