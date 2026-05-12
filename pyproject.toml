@@ -1,0 +1,31 @@
+[project]
+name = "codemap-lite"
+version = "0.1.0"
+description = "Code preprocessing tool: function-level call graph construction + indirect call repair"
+requires-python = ">=3.10"
+dependencies = [
+    "typer>=0.9.0",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "pyyaml>=6.0",
+    "neo4j>=5.0",
+    "fastapi>=0.100",
+    "uvicorn>=0.20",
+    "httpx>=0.24",
+    "tree-sitter>=0.20",
+    "openai>=1.0",
+    "jinja2>=3.1",
+]
+
+[project.scripts]
+codemap-lite = "codemap_lite.cli:app"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

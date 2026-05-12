@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+.venv/
+venv/
+
+# Node / frontend
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.log
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Local secrets / env
+.env
+.env.local
+
+# E2E runtime artifacts
+tests/_e2e_repair_logs/
+.icslpreprocess/
