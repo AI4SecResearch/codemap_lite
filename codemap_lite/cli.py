@@ -184,12 +184,22 @@ def serve(
     """Start the FastAPI server (see architecture.md §8 REST API)."""
     import uvicorn
 
+    from codemap_lite.analysis.feedback_store import FeedbackStore
     from codemap_lite.api.app import create_app
 
     settings = _load_settings(config)
 
+    target_dir = Path(settings.project.target_dir)
+    # Persistent counter-example store — distinct from the transient
+    # ``.icslpreprocess/`` directory used by repair agents.
+    # Backs ``GET /api/v1/feedback`` (architecture.md §3 反馈机制 + §8).
+    feedback_store = FeedbackStore(storage_dir=target_dir / ".codemap_lite" / "feedback")
+
     # Pass target_dir through to the app so /api/v1/analyze/status can
     # aggregate logs/repair/*/progress.json (architecture.md §3, ADR #52).
-    app_instance = create_app(target_dir=Path(settings.project.target_dir))
+    app_instance = create_app(
+        target_dir=target_dir,
+        feedback_store=feedback_store,
+    )
     uvicorn.run(app_instance, host=host, port=port)
 

@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from codemap_lite.analysis.feedback_store import FeedbackStore
 from codemap_lite.graph.neo4j_store import GraphStore, InMemoryGraphStore
 
 from codemap_lite.api.routes.graph import create_graph_router
@@ -23,6 +24,7 @@ from codemap_lite.api.routes.feedback import create_feedback_router
 def create_app(
     store: GraphStore | None = None,
     target_dir: Path | None = None,
+    feedback_store: FeedbackStore | None = None,
 ) -> FastAPI:
     """Create and configure the FastAPI application.
 
@@ -35,6 +37,10 @@ def create_app(
             ``logs/repair/{source_id}/progress.json``
             (architecture.md §3, ADR #52). Optional — tests and pure
             in-memory demos can omit it.
+        feedback_store: ``FeedbackStore`` backing ``GET /api/v1/feedback``
+            (architecture.md §3 反馈机制 + §8). When ``None`` the endpoint
+            returns ``[]`` — used by tests and in-memory demos that do not
+            persist counter examples.
     """
     if store is None:
         store = InMemoryGraphStore()
@@ -63,6 +69,9 @@ def create_app(
     # Used by /api/v1/analyze/status to aggregate hook-written
     # progress files (architecture.md §3, ADR #52).
     app.state.target_dir = target_dir
+    # Backs GET /api/v1/feedback (architecture.md §3 反馈机制 + §8).
+    # None is allowed — endpoint gracefully returns [] in that case.
+    app.state.feedback_store = feedback_store
 
     # Health check
     @app.get("/health")

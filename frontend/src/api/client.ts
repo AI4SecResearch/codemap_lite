@@ -100,6 +100,18 @@ export interface Review {
   status: string;
 }
 
+/**
+ * Generalized counter example persisted by the backend FeedbackStore
+ * (architecture.md §3 反馈机制). Returned by `GET /api/v1/feedback` and
+ * injected into the next repair round's CLAUDE.md.
+ */
+export interface CounterExample {
+  call_context: string;
+  wrong_target: string;
+  correct_target: string;
+  pattern: string;
+}
+
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE_URL}${path}`, init);
   if (!res.ok) {
@@ -198,5 +210,5 @@ export const api = {
     }),
 
   // Feedback
-  getFeedback: () => fetchJson<unknown[]>('/api/v1/feedback'),
+  getFeedback: () => fetchJson<CounterExample[]>('/api/v1/feedback'),
 };

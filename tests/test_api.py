@@ -6,6 +6,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
+from codemap_lite.analysis.feedback_store import CounterExample, FeedbackStore
 from codemap_lite.api.app import create_app
 from codemap_lite.graph.neo4j_store import InMemoryGraphStore
 from codemap_lite.graph.schema import (
@@ -373,6 +374,48 @@ class TestFeedbackEndpoint:
         resp = client.get("/api/v1/feedback")
         assert resp.status_code == 200
         assert resp.json() == []
+
+    def test_get_feedback_with_store(self, tmp_path) -> None:
+        # Seed a FeedbackStore on disk, then wire it into create_app so
+        # GET /api/v1/feedback surfaces the structured entries
+        # (architecture.md §3 反馈机制 + §8).
+        store_dir = tmp_path / ".codemap_lite" / "feedback"
+        feedback_store = FeedbackStore(storage_dir=store_dir)
+        feedback_store.add(
+            CounterExample(
+                call_context="dispatch_event(handler, evt)",
+                wrong_target="logger.warn",
+                correct_target="on_event",
+                pattern="dispatch_event callbacks must match signature EventHandler",
+            )
+        )
+        feedback_store.add(
+            CounterExample(
+                call_context="table[idx](ctx)",
+                wrong_target="fallback_noop",
+                correct_target="action_commit",
+                pattern="vtable index resolution must honour ctx.role",
+            )
+        )
+
+        graph_store = InMemoryGraphStore()
+        app = create_app(store=graph_store, feedback_store=feedback_store)
+        client = TestClient(app)
+
+        resp = client.get("/api/v1/feedback")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 2
+        patterns = {item["pattern"] for item in data}
+        assert "dispatch_event callbacks must match signature EventHandler" in patterns
+        assert "vtable index resolution must honour ctx.role" in patterns
+        first = next(
+            item for item in data
+            if item["pattern"] == "dispatch_event callbacks must match signature EventHandler"
+        )
+        assert first["call_context"] == "dispatch_event(handler, evt)"
+        assert first["wrong_target"] == "logger.warn"
+        assert first["correct_target"] == "on_event"
 
     def test_get_stats(self) -> None:
         client, store = get_test_client()

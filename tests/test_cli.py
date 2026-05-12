@@ -188,7 +188,15 @@ def test_serve_launches_uvicorn_with_create_app(tmp_path):
     assert result.exit_code == 0, result.output
     # target_dir is wired through so /analyze/status can aggregate
     # logs/repair/*/progress.json (architecture.md §3, ADR #52).
+    # feedback_store is wired through so GET /api/v1/feedback can
+    # browse persisted counter examples (architecture.md §3 反馈机制 + §8).
     create_app.assert_called_once()
     kwargs = create_app.call_args.kwargs
     assert kwargs["target_dir"] == (tmp_path / "target")
+    feedback_store = kwargs["feedback_store"]
+    # FeedbackStore rooted at <target>/.codemap_lite/feedback — persistent,
+    # distinct from the transient .icslpreprocess/ dir.
+    assert feedback_store._storage_dir == (
+        tmp_path / "target" / ".codemap_lite" / "feedback"
+    )
     fake_uvicorn.run.assert_called_once_with(fake_app, host="127.0.0.1", port=9123)
