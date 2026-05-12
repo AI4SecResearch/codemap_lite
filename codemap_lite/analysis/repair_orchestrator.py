@@ -89,6 +89,13 @@ class RepairOrchestrator:
         icsl_dir = target_dir / ".icslpreprocess"
         icsl_dir.mkdir(parents=True, exist_ok=True)
 
+        # Copy icsl_tools.py so the agent CLI invocation (see architecture §3
+        # Repair Agent tool protocol) is runnable from the target directory.
+        from codemap_lite.agent import icsl_tools as _icsl_tools_module
+
+        tools_src = Path(_icsl_tools_module.__file__)
+        shutil.copy2(tools_src, icsl_dir / "icsl_tools.py")
+
         # config.yaml for Neo4j connection
         config_yaml = f"""neo4j:
   uri: "{self._config.neo4j_uri}"

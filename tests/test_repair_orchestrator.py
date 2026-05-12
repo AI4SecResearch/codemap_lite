@@ -52,6 +52,16 @@ def test_orchestrator_creates_injection_files(orchestrator, tmp_path):
     assert (target_dir / ".claude" / "settings.json").exists()
     assert (target_dir / ".icslpreprocess" / "config.yaml").exists()
     assert (target_dir / ".icslpreprocess" / "counter_examples.md").exists()
+    # Closes Known gap #1: icsl_tools.py must ship to the target dir so the
+    # agent CLI invocations declared in claude_md_template work end-to-end.
+    injected = target_dir / ".icslpreprocess" / "icsl_tools.py"
+    assert injected.exists()
+    # Sanity-check that what we copied is the real module, not a stub.
+    content = injected.read_text(encoding="utf-8")
+    assert "def query_reachable" in content
+    assert "def write_edge" in content
+    assert "def check_complete" in content
+    assert "__main__" in content
 
 
 def test_orchestrator_cleans_injection_files(orchestrator, tmp_path):
