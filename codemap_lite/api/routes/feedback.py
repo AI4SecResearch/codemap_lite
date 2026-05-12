@@ -64,6 +64,19 @@ def create_feedback_router() -> APIRouter:
         ``<target>/.icslpreprocess/counter_examples.md`` before the next
         repair attempt via ``RepairOrchestrator`` (architecture.md §3 step 4).
 
+        The response echoes the persisted example plus two signal fields:
+
+        - ``deduplicated``: ``True`` when the submitted pattern matched an
+          existing entry and was merged (architecture.md §3 step 4
+          "相似 → 总结合并"); ``False`` when it was appended as a new row.
+        - ``total``: the current library size after the operation, so the
+          UI can show "N counter examples in library" without an extra
+          GET round-trip.
+
+        These extras let the reviewer immediately see whether their
+        submission broadened an existing rule or opened a new one — 北极星
+        指标 #5 (反例命中——是否都在 UI 上可见).
+
         Returns 503 when no store is wired — this happens only in tests/
         in-memory demos; production always mounts a persistent store via
         ``cli serve``.
@@ -80,7 +93,11 @@ def create_feedback_router() -> APIRouter:
             correct_target=body.correct_target,
             pattern=body.pattern,
         )
-        feedback_store.add(example)
-        return asdict(example)
+        added = feedback_store.add(example)
+        return {
+            **asdict(example),
+            "deduplicated": not added,
+            "total": len(feedback_store.list_all()),
+        }
 
     return router

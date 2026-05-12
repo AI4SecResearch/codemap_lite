@@ -112,6 +112,23 @@ export interface CounterExample {
   pattern: string;
 }
 
+/**
+ * Response shape for `POST /api/v1/feedback`. Echoes the persisted
+ * example plus two signal fields:
+ *
+ * - `deduplicated`: `true` when the submitted pattern matched an
+ *   existing entry and was merged (architecture.md §3 反馈机制 step 4).
+ * - `total`: current library size after the operation.
+ *
+ * These let the UI tell the reviewer whether their submission broadened
+ * an existing rule or opened a new one without an extra round trip
+ * (北极星指标 #5 状态透明度 — 反例命中).
+ */
+export interface CounterExampleCreateResult extends CounterExample {
+  deduplicated: boolean;
+  total: number;
+}
+
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE_URL}${path}`, init);
   if (!res.ok) {
@@ -212,7 +229,7 @@ export const api = {
   // Feedback
   getFeedback: () => fetchJson<CounterExample[]>('/api/v1/feedback'),
   createFeedback: (example: CounterExample) =>
-    fetchJson<CounterExample>('/api/v1/feedback', {
+    fetchJson<CounterExampleCreateResult>('/api/v1/feedback', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(example),

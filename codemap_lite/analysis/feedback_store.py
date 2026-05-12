@@ -37,16 +37,25 @@ class FeedbackStore:
             data = json.loads(json_path.read_text(encoding="utf-8"))
             self._examples = [CounterExample(**item) for item in data]
 
-    def add(self, example: CounterExample) -> None:
-        """Add a counter example. Merges if same pattern already exists."""
+    def add(self, example: CounterExample) -> bool:
+        """Add a counter example. Merges if same pattern already exists.
+
+        Returns ``True`` when the example was appended as a new entry and
+        ``False`` when it was deduplicated against an existing pattern
+        (architecture.md §3 反馈机制 steps 3-5 "相似 → 总结合并").
+        The return value lets the HTTP layer tell the reviewer whether
+        their submission landed as a fresh pattern or merged into an
+        existing one, closing the observability loop (北极星指标 #5).
+        """
         for existing in self._examples:
             if existing.pattern == example.pattern:
                 # Same pattern — merge by keeping the existing one
                 # (in production, LLM would summarize; here we deduplicate)
-                return
+                return False
 
         self._examples.append(example)
         self._save()
+        return True
 
     def list_all(self) -> list[CounterExample]:
         return list(self._examples)

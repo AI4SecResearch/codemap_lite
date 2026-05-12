@@ -14,7 +14,7 @@ def test_add_counter_example_creates_md_file():
             correct_target="CastSessionListenerImpl::OnDeviceState",
             pattern="Listener callback via interface pointer",
         )
-        store.add(example)
+        assert store.add(example) is True
 
         md_path = Path(tmpdir) / "counter_examples.md"
         assert md_path.exists()
@@ -27,12 +27,12 @@ def test_add_multiple_examples():
     with tempfile.TemporaryDirectory() as tmpdir:
         store = FeedbackStore(storage_dir=Path(tmpdir))
         for i in range(3):
-            store.add(CounterExample(
+            assert store.add(CounterExample(
                 call_context=f"context_{i}",
                 wrong_target=f"Wrong{i}",
                 correct_target=f"Correct{i}",
                 pattern=f"Pattern {i}",
-            ))
+            )) is True
 
         examples = store.list_all()
         assert len(examples) == 3
@@ -47,18 +47,20 @@ def test_counter_example_deduplication():
             correct_target="CorrectClass::Method",
             pattern="Virtual dispatch via base pointer",
         )
-        store.add(example)
-        # Adding same pattern again should not duplicate
-        store.add(CounterExample(
+        assert store.add(example) is True
+        # Adding same pattern again should not duplicate — returns False
+        # so the caller (HTTP layer) can surface a "merged" signal to the
+        # reviewer (architecture.md §3 反馈机制 step 4).
+        assert store.add(CounterExample(
             call_context="other_ptr->Method()",
             wrong_target="WrongClass2::Method",
             correct_target="CorrectClass2::Method",
             pattern="Virtual dispatch via base pointer",
-        ))
+        )) is False
 
         examples = store.list_all()
         # Same pattern → merged, not duplicated
-        assert len(examples) <= 2
+        assert len(examples) == 1
 
 
 def test_generate_md_content():

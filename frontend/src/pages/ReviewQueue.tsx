@@ -3,6 +3,16 @@ import { api, Review, UnresolvedCall } from '../api/client';
 
 type Tab = 'gaps' | 'reviews';
 
+// Transient banner summarizing the last counter-example submission so
+// the reviewer can tell at a glance whether their pattern opened a new
+// rule or merged into an existing one — architecture.md §3 反馈机制
+// steps 3-5 "相似 → 总结合并 / 不相似 → 新增"; 北极星指标 #5.
+type FeedbackOutcome = {
+  deduplicated: boolean;
+  total: number;
+  pattern: string;
+};
+
 function shorten(path: string): string {
   const parts = path.split('/');
   return parts.slice(-3).join('/');
@@ -21,6 +31,7 @@ export default function ReviewQueue() {
   // fills the correct target + generalized pattern that will be POSTed to
   // /api/v1/feedback (architecture.md §5 审阅标记错误时).
   const [wrongFor, setWrongFor] = useState<UnresolvedCall | null>(null);
+  const [lastFeedback, setLastFeedback] = useState<FeedbackOutcome | null>(null);
   const tableRef = useRef<HTMLDivElement | null>(null);
 
   const refresh = useCallback(async () => {
@@ -110,12 +121,20 @@ export default function ReviewQueue() {
     setBusyId(key);
     try {
       // Persist the counter example so the next repair round picks it up
-      // via RepairOrchestrator (architecture.md §3 反馈机制 step 4).
-      await api.createFeedback({
+      // via RepairOrchestrator (architecture.md §3 反馈机制 step 4). The
+      // response tells us whether the pattern was newly added or merged
+      // into an existing one — surface it as an inline banner so the
+      // reviewer sees the dedup outcome without opening FeedbackLog.
+      const result = await api.createFeedback({
         call_context: g.call_expression,
         wrong_target: g.candidates?.[0] ?? '(unknown)',
         correct_target: correctTarget,
         pattern: pattern || correctTarget,
+      });
+      setLastFeedback({
+        deduplicated: result.deduplicated,
+        total: result.total,
+        pattern: result.pattern,
       });
       // Also record the reviewer's decision as a Review — preserves the
       // existing audit trail surfaced in the Reviews tab.
@@ -251,6 +270,35 @@ export default function ReviewQueue() {
       {error ? (
         <div className="bg-red-50 border border-red-200 text-red-700 rounded p-3 text-sm">
           {error}
+        </div>
+      ) : null}
+
+      {lastFeedback ? (
+        <div
+          className={`flex items-start justify-between gap-3 rounded border p-3 text-sm ${
+            lastFeedback.deduplicated
+              ? 'bg-amber-50 border-amber-200 text-amber-800'
+              : 'bg-emerald-50 border-emerald-200 text-emerald-800'
+          }`}
+        >
+          <div className="space-y-0.5">
+            <div className="font-medium">
+              {lastFeedback.deduplicated
+                ? 'Merged into existing counter-example pattern'
+                : 'New counter-example pattern saved'}
+            </div>
+            <div className="text-xs opacity-80">
+              <span className="font-mono break-all">{lastFeedback.pattern}</span>
+              <span className="mx-2 opacity-60">·</span>
+              <span>Library size: {lastFeedback.total}</span>
+            </div>
+          </div>
+          <button
+            className="text-xs underline opacity-70 hover:opacity-100 shrink-0"
+            onClick={() => setLastFeedback(null)}
+          >
+            Dismiss
+          </button>
         </div>
       ) : null}
 

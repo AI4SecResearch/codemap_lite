@@ -439,7 +439,13 @@ class TestFeedbackEndpoint:
         }
         resp = client.post("/api/v1/feedback", json=payload)
         assert resp.status_code == 201
-        assert resp.json() == payload
+        data = resp.json()
+        # Response echoes the example plus the dedup signal fields
+        # (architecture.md §3 反馈机制 steps 3-5).
+        for key, value in payload.items():
+            assert data[key] == value
+        assert data["deduplicated"] is False
+        assert data["total"] == 1
 
         # Round-trips through GET and through the underlying store
         stored = feedback_store.list_all()
@@ -454,7 +460,9 @@ class TestFeedbackEndpoint:
         """Posting the same pattern twice does not duplicate entries.
 
         FeedbackStore.add() merges by pattern (architecture.md §3 反馈机制
-        step 4 "相似 → 总结合并"); the HTTP layer inherits that contract.
+        step 4 "相似 → 总结合并"); the HTTP layer inherits that contract
+        and surfaces it via ``deduplicated: true`` on the second response
+        so the reviewer knows their submission broadened an existing rule.
         """
         feedback_store = FeedbackStore(
             storage_dir=tmp_path / ".codemap_lite" / "feedback"
@@ -468,8 +476,15 @@ class TestFeedbackEndpoint:
             "correct_target": "right_cb",
             "pattern": "callback must be selected by x.role",
         }
-        assert client.post("/api/v1/feedback", json=payload).status_code == 201
-        assert client.post("/api/v1/feedback", json=payload).status_code == 201
+        first = client.post("/api/v1/feedback", json=payload)
+        assert first.status_code == 201
+        assert first.json()["deduplicated"] is False
+        assert first.json()["total"] == 1
+
+        second = client.post("/api/v1/feedback", json=payload)
+        assert second.status_code == 201
+        assert second.json()["deduplicated"] is True
+        assert second.json()["total"] == 1
 
         assert len(client.get("/api/v1/feedback").json()) == 1
 
