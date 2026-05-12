@@ -201,7 +201,7 @@ codemap-lite serve    [--config PATH] [--port 8000]     # 启 FastAPI
 
 ## Known gaps
 
-- `codemap_lite/agent/icsl_tools.py` 架构里描述为 CLI（`icsl_tools.py query-reachable / write-edge / check-complete`），当前实现是 **3 个 Python 函数** + `GraphStoreProtocol`。Agent subprocess 侧的 CLI 封装尚未落地。
+- ~~`codemap_lite/agent/icsl_tools.py` 架构里描述为 CLI（`icsl_tools.py query-reachable / write-edge / check-complete`），当前实现是 **3 个 Python 函数** + `GraphStoreProtocol`。Agent subprocess 侧的 CLI 封装尚未落地。~~ **已完成（2026-05-12）**：`icsl_tools.py` 增加 argparse 入口 + `__main__` 守卫，三个子命令直通 in-process 函数；`repair_orchestrator._inject_files` 将文件复制到 `.icslpreprocess/icsl_tools.py`；新增 6 个 CLI 测试；对齐 architecture.md §3 Repair Agent 工具协议。
 - 仓库无 `pytest.ini` / `pyproject.toml [tool.pytest]`，跑测试依赖默认发现。
 - 无 `black` / `ruff` / `mypy` 配置文件——依赖全局 `~/.claude/rules/coding-style.md` 的默认值。
 - `codemap-lite repair` 和 `status` 的 CLI 实现是 stub（只打印），真实编排走 `analysis/repair_orchestrator.py` + `tests/run_e2e_repair.py`。
@@ -215,6 +215,7 @@ codemap-lite serve    [--config PATH] [--port 8000]     # 启 FastAPI
 
 - 2026-05-12 · initial-landing: codemap_lite 六层 + frontend + tests + docs/ADR 首次落地到 origin/main（11 个分层 commit），对齐 architecture.md §1-§10；pytest 108/108 绿，`npm run build` 绿。
 - 2026-05-12 · frontend: CallGraphView 加 resolved_by 五档视觉语言（teal/green/blue/purple/orange）+ llm 虚线 + ★ 标记 + 左下角图例；对齐 architecture.md §2 CALLS.resolved_by 枚举，兑现北极星指标 #2（调用链可信度可见性）。
+- 2026-05-12 · agent: `icsl_tools.py` 补齐 argparse CLI（`query-reachable` / `write-edge` / `check-complete`）+ `__main__`；`repair_orchestrator._inject_files` 把文件复制到 `.icslpreprocess/icsl_tools.py`；closes Known gap #1，对齐 architecture.md §3 Repair Agent 工具协议；pytest 114/114 绿，`npm run build` 绿。
 
 ---
 
