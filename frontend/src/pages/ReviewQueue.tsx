@@ -2,6 +2,11 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import { api, Review, UnresolvedCall } from '../api/client';
 
 type Tab = 'gaps' | 'reviews';
+// architecture.md §3: UnresolvedCall.status ∈ {pending, unresolvable}
+// (after retry_count ≥ 3 → unresolvable). The filter lets a reviewer
+// zero in on GAPs the agent gave up on so the human review budget is
+// spent where it matters most.
+type StatusFilter = 'all' | 'pending' | 'unresolvable';
 
 // Transient banner summarizing the last counter-example submission so
 // the reviewer can tell at a glance whether their pattern opened a new
@@ -18,6 +23,58 @@ function shorten(path: string): string {
   return parts.slice(-3).join('/');
 }
 
+// Shared status/retry chips used inline in each row and inside
+// <GapDetail>. Architecture.md §3 UnresolvedCall lifecycle:
+// retry_count ≥ 3 → status="unresolvable" → needs human attention.
+function GapStatusChips({
+  gap,
+  size = 'sm',
+}: {
+  gap: UnresolvedCall;
+  size?: 'sm' | 'md';
+}) {
+  const chips: { label: string; value: string; tone: string }[] = [];
+  if (gap.status) {
+    const tone =
+      gap.status === 'unresolvable'
+        ? 'bg-red-100 text-red-700 ring-1 ring-red-300'
+        : gap.status === 'resolved'
+        ? 'bg-green-100 text-green-700'
+        : gap.status === 'failed'
+        ? 'bg-red-100 text-red-700'
+        : 'bg-gray-100 text-gray-700';
+    chips.push({ label: 'status', value: gap.status, tone });
+  }
+  if (typeof gap.retry_count === 'number') {
+    const tone =
+      gap.retry_count >= 3
+        ? 'bg-red-100 text-red-700'
+        : gap.retry_count > 0
+        ? 'bg-amber-100 text-amber-700'
+        : 'bg-gray-100 text-gray-600';
+    chips.push({
+      label: 'retries',
+      value: `${gap.retry_count}/3`,
+      tone,
+    });
+  }
+  if (chips.length === 0) return null;
+  const px = size === 'sm' ? 'px-1.5 py-0' : 'px-2 py-0.5';
+  return (
+    <div className="flex flex-wrap gap-1 text-[11px]">
+      {chips.map((c) => (
+        <span
+          key={`${c.label}:${c.value}`}
+          className={`inline-flex items-center gap-1 rounded ${px} ${c.tone}`}
+        >
+          <span className="text-[9px] uppercase tracking-wide opacity-70">{c.label}</span>
+          <span className="font-mono">{c.value}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
 export default function ReviewQueue() {
   const [tab, setTab] = useState<Tab>('gaps');
   const [gaps, setGaps] = useState<UnresolvedCall[]>([]);
@@ -25,6 +82,7 @@ export default function ReviewQueue() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [busyId, setBusyId] = useState<string | null>(null);
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   // When non-null, the "Mark wrong" modal is open for this gap — the user
@@ -57,15 +115,38 @@ export default function ReviewQueue() {
 
   const filteredGaps = useMemo(() => {
     const term = filter.trim().toLowerCase();
-    if (!term) return gaps;
-    return gaps.filter(
-      (g) =>
+    const byStatus = (g: UnresolvedCall) => {
+      if (statusFilter === 'all') return true;
+      // GAPs default to "pending" on the backend (schema.py:79) so a
+      // missing status is treated as pending for filtering purposes.
+      const s = g.status ?? 'pending';
+      return s === statusFilter;
+    };
+    return gaps.filter((g) => {
+      if (!byStatus(g)) return false;
+      if (!term) return true;
+      return (
         g.caller_id.toLowerCase().includes(term) ||
         g.call_expression.toLowerCase().includes(term) ||
         g.call_type.toLowerCase().includes(term) ||
         (g.var_name ?? '').toLowerCase().includes(term)
-    );
-  }, [gaps, filter]);
+      );
+    });
+  }, [gaps, filter, statusFilter]);
+
+  // Counts drive the status-filter chip labels so reviewers see the
+  // unresolvable backlog without switching tabs — North Star #5 (state
+  // transparency).
+  const statusCounts = useMemo(() => {
+    let pending = 0;
+    let unresolvable = 0;
+    for (const g of gaps) {
+      const s = g.status ?? 'pending';
+      if (s === 'unresolvable') unresolvable += 1;
+      else pending += 1;
+    }
+    return { all: gaps.length, pending, unresolvable };
+  }, [gaps]);
 
   // Clamp selectedIndex when the filtered list shrinks/grows.
   useEffect(() => {
@@ -304,6 +385,32 @@ export default function ReviewQueue() {
 
       {tab === 'gaps' ? (
         <>
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="text-gray-500">Status:</span>
+            {(
+              [
+                { key: 'all', label: 'All', count: statusCounts.all, tone: 'bg-gray-100 text-gray-700 border-gray-300' },
+                { key: 'pending', label: 'Pending', count: statusCounts.pending, tone: 'bg-gray-100 text-gray-700 border-gray-300' },
+                { key: 'unresolvable', label: 'Unresolvable', count: statusCounts.unresolvable, tone: 'bg-red-50 text-red-700 border-red-300' },
+              ] as const
+            ).map((opt) => {
+              const active = statusFilter === opt.key;
+              return (
+                <button
+                  key={opt.key}
+                  className={`px-2 py-0.5 rounded border ${
+                    active
+                      ? 'bg-blue-600 text-white border-blue-600'
+                      : opt.tone + ' hover:bg-gray-50'
+                  }`}
+                  onClick={() => setStatusFilter(opt.key)}
+                  title={`Show ${opt.label.toLowerCase()} GAPs`}
+                >
+                  {opt.label} ({opt.count})
+                </button>
+              );
+            })}
+          </div>
           <input
             className="w-full border rounded px-3 py-1 text-sm"
             placeholder="Filter by caller, expression, call_type, var_name…"
@@ -377,9 +484,12 @@ export default function ReviewQueue() {
                         }`}
                       >
                         <td className="px-3 py-2">
-                          <span className="inline-block px-2 py-0.5 rounded bg-amber-50 text-amber-700 text-xs">
-                            {g.call_type}
-                          </span>
+                          <div className="flex flex-col gap-1">
+                            <span className="inline-block px-2 py-0.5 rounded bg-amber-50 text-amber-700 text-xs self-start">
+                              {g.call_type}
+                            </span>
+                            <GapStatusChips gap={g} />
+                          </div>
                         </td>
                         <td className="px-3 py-2 font-mono text-xs">
                           {g.call_expression}
@@ -620,27 +730,11 @@ function GapDetail({ gap }: { gap: UnresolvedCall }) {
   if (gap.var_type) {
     chips.push({ label: 'type', value: gap.var_type, tone: 'bg-slate-100 text-slate-700' });
   }
-  if (typeof gap.retry_count === 'number') {
-    chips.push({
-      label: 'retries',
-      value: String(gap.retry_count),
-      tone: gap.retry_count > 0 ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-600',
-    });
-  }
-  if (gap.status) {
-    const tone =
-      gap.status === 'resolved'
-        ? 'bg-green-100 text-green-700'
-        : gap.status === 'failed'
-        ? 'bg-red-100 text-red-700'
-        : 'bg-gray-100 text-gray-700';
-    chips.push({ label: 'status', value: gap.status, tone });
-  }
 
   return (
     <div className="rounded border border-blue-200 bg-white p-3 space-y-2">
-      {chips.length > 0 ? (
-        <div className="flex flex-wrap gap-1 text-xs">
+      {chips.length > 0 || gap.status || typeof gap.retry_count === 'number' ? (
+        <div className="flex flex-wrap items-center gap-2 text-xs">
           {chips.map((c) => (
             <span
               key={`${c.label}:${c.value}`}
@@ -650,6 +744,7 @@ function GapDetail({ gap }: { gap: UnresolvedCall }) {
               <span className="font-mono break-all">{c.value}</span>
             </span>
           ))}
+          <GapStatusChips gap={gap} size="md" />
         </div>
       ) : null}
       {snippet ? (
