@@ -61,6 +61,11 @@
 - **Orchestrator 轮询**: 每 2s 读取
 - **API 响应**: 聚合所有 source 点进度
 
+> **Superseded (部分) by [ADR 0004](./0004-progress-json-schema-correction.md) — 2026-05-13**
+> 实际落地的 canonical schema 为 `{gaps_fixed, gaps_total, current_gap}`（与
+> `/api/v1/analyze/status` + 前端 `SourceProgress` interface 对齐）。
+> hook 侧双读新旧事件键、单写 canonical schema；详见 ADR 0004。
+
 ### H6: LLM 后端 config 驱动命令构造
 - **决策**: 从 config 读取 `agent.backend` → 选择对应的 `command + args` → 构造 subprocess 命令
 

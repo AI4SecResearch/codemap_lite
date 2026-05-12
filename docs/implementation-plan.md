@@ -151,7 +151,10 @@
 - **文件**: `codemap_lite/agent/hooks/`
 - **验收标准**:
   - 文档化 stdin JSON schema（PostToolUse: tool_name, params, result; Notification: message）
-  - progress.json schema: `{fixed_gaps: int, total_gaps: int, current_gap_id: str}`
+  - progress.json schema: `{gaps_fixed: int, gaps_total: int, current_gap: str}`
+    （canonical schema，见 [ADR 0004](adr/0004-progress-json-schema-correction.md)；
+    历史版本 `{fixed_gaps, total_gaps, current_gap_id}` 已被 ADR 0004 取代，
+    hook 侧为兼容保留对旧 event 键的读取，但始终写 canonical key）
   - JSONL 格式: 每行含 tool_name, params, result_summary, timestamp
 
 ### 2.5 Repair Orchestrator（核心）

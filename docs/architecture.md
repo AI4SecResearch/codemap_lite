@@ -193,6 +193,16 @@ Agent 的工作流程（CLAUDE.md 中描述）：
 Hook 脚本将推理信息写入：
 1. **推理日志**：`logs/repair/{source_id}/{gap_id}.jsonl`（JSONL 格式，每次 PostToolUse 追加一行：工具名、参数、结果摘要、时间戳）
 2. **进度文件**：`logs/repair/{source_id}/progress.json`（当前 source 已修复 GAP 数、总 GAP 数、当前处理的 GAP ID）
+
+   **Schema**（由 ADR 0004 固化，覆盖 ADR 0001 H5 / implementation-plan §2.4 的早期拼写）：
+   ```json
+   {
+     "gaps_fixed": 3,
+     "gaps_total": 10,
+     "current_gap": "gap_002"
+   }
+   ```
+   这也是 `/api/v1/analyze/status` 的 `sources[]` 元素契约（见 §8），前端 `SourceProgress` interface 直接消费。
 3. **Neo4j RepairLog**：修复完成后，从 `.jsonl` 提取关键步骤写入 RepairLog 节点的 reasoning_summary
 
 **进度通信机制**：
