@@ -71,6 +71,13 @@ export interface Stats {
   total_calls: number;
   total_unresolved: number;
   total_source_points: number;
+  /**
+   * Breakdown of `total_unresolved` by `UnresolvedCall.status`
+   * (architecture.md §3 GAP 生命周期). Keys are the status string
+   * (`"pending"` or `"unresolvable"`); values are counts. Optional
+   * for backward compat with older stubs.
+   */
+  unresolved_by_status?: Record<string, number>;
 }
 
 export interface SourceProgress {

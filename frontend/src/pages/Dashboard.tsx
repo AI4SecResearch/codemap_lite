@@ -5,15 +5,23 @@ function StatCard({
   title,
   value,
   hint,
+  tone = 'default',
 }: {
   title: string;
   value: number | string;
   hint?: string;
+  tone?: 'default' | 'alert';
 }) {
+  const toneClasses =
+    tone === 'alert'
+      ? 'bg-red-50 border-red-200'
+      : 'bg-white border';
+  const valueClasses =
+    tone === 'alert' ? 'text-red-700' : '';
   return (
-    <div className="bg-white rounded shadow-sm border p-4">
+    <div className={`${toneClasses} rounded shadow-sm p-4`}>
       <div className="text-xs uppercase tracking-wide text-gray-500">{title}</div>
-      <div className="text-3xl font-bold mt-1">{value}</div>
+      <div className={`text-3xl font-bold mt-1 ${valueClasses}`}>{value}</div>
       {hint ? <div className="text-xs text-gray-500 mt-1">{hint}</div> : null}
     </div>
   );
@@ -115,6 +123,14 @@ export default function Dashboard() {
         )
       : null;
 
+  const byStatus = stats?.unresolved_by_status ?? {};
+  const pendingGaps = byStatus.pending ?? 0;
+  const unresolvableGaps = byStatus.unresolvable ?? 0;
+  const unresolvedHint =
+    stats && stats.total_unresolved > 0
+      ? `${pendingGaps} pending · ${unresolvableGaps} unresolvable`
+      : 'needs repair';
+
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
@@ -144,7 +160,7 @@ export default function Dashboard() {
         </div>
       ) : null}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
         <StatCard
           title="Source Points"
           value={stats?.total_source_points ?? '-'}
@@ -160,7 +176,13 @@ export default function Dashboard() {
         <StatCard
           title="Unresolved GAPs"
           value={stats?.total_unresolved ?? '-'}
-          hint="needs repair"
+          hint={unresolvedHint}
+        />
+        <StatCard
+          title="Unresolvable"
+          value={stats ? unresolvableGaps : '-'}
+          hint="agent gave up (>=3 retries)"
+          tone={unresolvableGaps > 0 ? 'alert' : 'default'}
         />
       </div>
 

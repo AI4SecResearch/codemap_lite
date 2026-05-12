@@ -439,7 +439,7 @@ DELETE /api/v1/reviews/{id}
 # 反例库
 GET  /api/v1/feedback             # 浏览反例
 POST /api/v1/feedback             # 新增反例（审阅标记错误时触发，架构 §5）
-GET  /api/v1/stats                # 统计
+GET  /api/v1/stats                # 统计（含 unresolved_by_status 分桶：pending / unresolvable）
 ```
 
 ---

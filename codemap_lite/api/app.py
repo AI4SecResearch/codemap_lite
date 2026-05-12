@@ -88,11 +88,21 @@ def create_app(
     def get_stats(request: Any = None) -> dict[str, Any]:
         s = app.state.store
         stats = getattr(app.state, "analysis_stats", {})
+        # Breakdown by UnresolvedCall.status (architecture.md §3 GAP lifecycle:
+        # pending → agent repair → node deleted, or 3 retries → "unresolvable").
+        # Surface the unresolvable backlog on the Dashboard so reviewers see
+        # GAPs the agent has abandoned without drilling into ReviewQueue
+        # (北极星指标 #5 状态透明度).
+        by_status: dict[str, int] = {}
+        for u in s._unresolved_calls.values():
+            key = getattr(u, "status", None) or "pending"
+            by_status[key] = by_status.get(key, 0) + 1
         return {
             "total_functions": len(s._functions),
             "total_files": len(s._files),
             "total_calls": len(s._calls_edges),
             "total_unresolved": len(s._unresolved_calls),
+            "unresolved_by_status": by_status,
             "total_source_points": len(getattr(app.state, "source_points", [])),
             **stats,
         }

@@ -530,3 +530,47 @@ class TestFeedbackEndpoint:
         assert "total_files" in data
         assert "total_calls" in data
         assert "total_unresolved" in data
+        # New breakdown surfaces GAP lifecycle on the Dashboard without
+        # drilling into ReviewQueue (architecture.md §3 UnresolvedCall 生命周期).
+        assert "unresolved_by_status" in data
+        assert data["unresolved_by_status"] == {}
+
+    def test_get_stats_unresolved_by_status(self) -> None:
+        """/stats buckets UnresolvedCall nodes by `status` so the Dashboard
+        can distinguish retryable pending GAPs from agent-abandoned ones
+        (architecture.md §3: retry_count ≥ 3 → status="unresolvable")."""
+        client, store = get_test_client()
+        fn = FunctionNode(
+            signature="def a()", name="a", file_path="f.py",
+            start_line=1, end_line=3, body_hash="h1", id="caller",
+        )
+        store.create_function(fn)
+        store.create_unresolved_call(
+            UnresolvedCallNode(
+                caller_id="caller", call_expression="fp()", call_file="f.py",
+                call_line=2, call_type="indirect", source_code_snippet="fp()",
+                var_name=None, var_type=None, id="g1", status="pending",
+                retry_count=1,
+            )
+        )
+        store.create_unresolved_call(
+            UnresolvedCallNode(
+                caller_id="caller", call_expression="gp()", call_file="f.py",
+                call_line=3, call_type="indirect", source_code_snippet="gp()",
+                var_name=None, var_type=None, id="g2", status="unresolvable",
+                retry_count=3,
+            )
+        )
+        store.create_unresolved_call(
+            UnresolvedCallNode(
+                caller_id="caller", call_expression="hp()", call_file="f.py",
+                call_line=4, call_type="indirect", source_code_snippet="hp()",
+                var_name=None, var_type=None, id="g3", status="unresolvable",
+                retry_count=3,
+            )
+        )
+        resp = client.get("/api/v1/stats")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total_unresolved"] == 3
+        assert data["unresolved_by_status"] == {"pending": 1, "unresolvable": 2}
