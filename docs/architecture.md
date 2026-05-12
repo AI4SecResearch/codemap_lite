@@ -337,6 +337,7 @@ frontend/src/pages/
 - Dashboard 的 StatCard 支持可选 `to` 链接，点击跳转到对应子视图的**预筛选**状态。
 - `Unresolved GAPs` → `/review?status=pending`；`Unresolvable` → `/review?status=unresolvable`。
 - `ReviewQueue` 挂载时读 `?status=` query param，若值 ∈ `{all, pending, unresolvable}` 就作为初始 `statusFilter`；之后用户手动切换筛选也双向同步到 URL，保证链接可分享/可书签。
+- ReviewQueue 的 "反例已保存" 横幅把 pattern 链到 `/feedback?pattern=<encoded>`；`FeedbackLog` 挂载时读 `?pattern=` 并高亮（ring + 蓝底）+ `scrollIntoView` 到匹配的 CounterExample 卡片，让审阅者当场确认"下一轮会被注入到 repair CLAUDE.md 的 pattern 就是这条"（北极星 #5）。
 - 未来新增 drill-down 链接时沿用相同约定：`?<filterName>=<value>`，命中则透传，否则忽略（宽松解析，架构契约优先）。
 
 ---

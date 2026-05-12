@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { api, Review, UnresolvedCall } from '../api/client';
 
 type Tab = 'gaps' | 'reviews';
@@ -416,7 +416,18 @@ export default function ReviewQueue() {
                 : 'New counter-example pattern saved'}
             </div>
             <div className="text-xs opacity-80">
-              <span className="font-mono break-all">{lastFeedback.pattern}</span>
+              {/*
+                architecture.md §5 跨页面 drill-down 契约：把 pattern
+                链到 FeedbackLog，审阅者一键确认"下一轮 repair CLAUDE.md
+                注入的就是这条"（北极星 #5 反例命中）。
+              */}
+              <Link
+                to={`/feedback?pattern=${encodeURIComponent(lastFeedback.pattern)}`}
+                className="font-mono break-all underline decoration-dotted underline-offset-2 hover:decoration-solid"
+                title="View in Feedback Log"
+              >
+                {lastFeedback.pattern}
+              </Link>
               <span className="mx-2 opacity-60">·</span>
               <span>Library size: {lastFeedback.total}</span>
             </div>
