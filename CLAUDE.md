@@ -204,7 +204,7 @@ codemap-lite serve    [--config PATH] [--port 8000]     # 启 FastAPI
 - ~~`codemap_lite/agent/icsl_tools.py` 架构里描述为 CLI（`icsl_tools.py query-reachable / write-edge / check-complete`），当前实现是 **3 个 Python 函数** + `GraphStoreProtocol`。Agent subprocess 侧的 CLI 封装尚未落地。~~ **已完成（2026-05-12）**：`icsl_tools.py` 增加 argparse 入口 + `__main__` 守卫，三个子命令直通 in-process 函数；`repair_orchestrator._inject_files` 将文件复制到 `.icslpreprocess/icsl_tools.py`；新增 6 个 CLI 测试；对齐 architecture.md §3 Repair Agent 工具协议。
 - 仓库无 `pytest.ini` / `pyproject.toml [tool.pytest]`，跑测试依赖默认发现。
 - 无 `black` / `ruff` / `mypy` 配置文件——依赖全局 `~/.claude/rules/coding-style.md` 的默认值。
-- `codemap-lite repair` 和 `status` 的 CLI 实现是 stub（只打印），真实编排走 `analysis/repair_orchestrator.py` + `tests/run_e2e_repair.py`。
+- `codemap-lite repair` / `status` / `serve` 已从 stub 升级为真实编排（2026-05-12）：`repair` 读 config → `SourcePointClient.load_from_file` 或 `.fetch()` → `RepairOrchestrator.run_repairs` 并发修复并汇总成功/失败；`status` 读 `.icslpreprocess/state.json` + `logs/repair/*/progress.json`；`serve` 真实 `uvicorn.run(create_app(), host, port)`。`analyze` 增量分支保持原状。
 - `docs/agents/domain.md` 规定仓库根目录应有一个 `CONTEXT.md`，目前不存在——本 CLAUDE.md 暂时兼任 root context；待 domain docs 成熟再单独拆出。
 - 仓库暂无 `.github/workflows/` CI，Loop Workflow 里的"push only after green"当前以**本地** `pytest` + `npm run build` 为准。
 - gap-analysis 历史：`docs/adr/0001-gap-analysis-corrections.md` / `0002-gap-analysis-round2.md` / `0003-gap-analysis-round3.md`。
@@ -216,6 +216,7 @@ codemap-lite serve    [--config PATH] [--port 8000]     # 启 FastAPI
 - 2026-05-12 · initial-landing: codemap_lite 六层 + frontend + tests + docs/ADR 首次落地到 origin/main（11 个分层 commit），对齐 architecture.md §1-§10；pytest 108/108 绿，`npm run build` 绿。
 - 2026-05-12 · frontend: CallGraphView 加 resolved_by 五档视觉语言（teal/green/blue/purple/orange）+ llm 虚线 + ★ 标记 + 左下角图例；对齐 architecture.md §2 CALLS.resolved_by 枚举，兑现北极星指标 #2（调用链可信度可见性）。
 - 2026-05-12 · agent: `icsl_tools.py` 补齐 argparse CLI（`query-reachable` / `write-edge` / `check-complete`）+ `__main__`；`repair_orchestrator._inject_files` 把文件复制到 `.icslpreprocess/icsl_tools.py`；closes Known gap #1，对齐 architecture.md §3 Repair Agent 工具协议；pytest 114/114 绿，`npm run build` 绿。
+- 2026-05-12 · cli: `codemap_lite/cli.py` 的 `repair` / `status` / `serve` 从 stub 升级为真实编排——`repair` 接入 `SourcePointClient` + `RepairOrchestrator`（并发 + 汇总 + `--source-points-file` 离线模式 + `--log-dir`），`status` 读 `.icslpreprocess/state.json` + `logs/repair/*/progress.json`，`serve` 真实 `uvicorn.run(create_app(), host, port)`；新增 7 个 CliRunner 测试；closes Known gap #4，对齐 architecture.md §9 (ADR #50)；pytest 121/121 绿，`npm run build` 绿。
 
 ---
 
