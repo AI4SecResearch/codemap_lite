@@ -211,9 +211,18 @@ export default function Dashboard() {
           title="Source Points"
           value={stats?.total_source_points ?? '-'}
           hint="archdoc entry points"
+          to="/sources"
         />
-        <StatCard title="Files" value={stats?.total_files ?? '-'} />
-        <StatCard title="Functions" value={stats?.total_functions ?? '-'} />
+        <StatCard
+          title="Files"
+          value={stats?.total_files ?? '-'}
+          to="/functions"
+        />
+        <StatCard
+          title="Functions"
+          value={stats?.total_functions ?? '-'}
+          to="/functions"
+        />
         <StatCard
           title="Resolved Calls"
           value={stats?.total_calls ?? '-'}

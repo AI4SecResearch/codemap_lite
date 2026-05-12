@@ -336,6 +336,7 @@ frontend/src/pages/
 ### 跨页面 drill-down 契约
 - Dashboard 的 StatCard 支持可选 `to` 链接，点击跳转到对应子视图的**预筛选**状态。
 - `Unresolved GAPs` → `/review?status=pending`；`Unresolvable` → `/review?status=unresolvable`。
+- 非 backlog 类 StatCard 也承载导航意图：`Source Points` → `/sources`、`Files` → `/functions`（FunctionBrowser 左栏即文件树）、`Functions` → `/functions`。目标子视图无需预筛选时，`to` 直接指向列表根路径；`to` 约定是轻量 affordance（右侧 `›` 暗示可点），不强制所有 StatCard 都带。
 - `ReviewQueue` 挂载时读 `?status=` query param，若值 ∈ `{all, pending, unresolvable}` 就作为初始 `statusFilter`；之后用户手动切换筛选也双向同步到 URL，保证链接可分享/可书签。
 - ReviewQueue 的 "反例已保存" 横幅把 pattern 链到 `/feedback?pattern=<encoded>`；`FeedbackLog` 挂载时读 `?pattern=` 并高亮（ring + 蓝底）+ `scrollIntoView` 到匹配的 CounterExample 卡片，让审阅者当场确认"下一轮会被注入到 repair CLAUDE.md 的 pattern 就是这条"（北极星 #5）。
 - 左侧导航的活体 chip 在 alert/warn tone 下自动把 NavLink 指向对应的预筛选子视图——Review chip `alert` 时 `to="/review?status=unresolvable"`、`warn` 时 `to="/review?status=pending"`、`default` 时回到 `/review`——与 StatCard drill-down 共用 query 约定，让"看到红色 chip 就 1 次点击落到 agent 放弃的 GAP 列表"成为从任意页面都成立的快捷路径。
