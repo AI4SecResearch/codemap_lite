@@ -97,12 +97,23 @@ def create_app(
         for u in s._unresolved_calls.values():
             key = getattr(u, "status", None) or "pending"
             by_status[key] = by_status.get(key, 0) + 1
+        # Breakdown of CALLS edges by resolved_by (architecture.md §4 CALLS
+        # 边属性: symbol_table / signature / dataflow / context / llm).
+        # Surface the llm-repaired edge backlog on the Dashboard — per §5
+        # 审阅对象是"单条 CALLS 边（特别是 resolved_by='llm' 的）", so the
+        # review-critical population should be visible at the top level
+        # without drilling into ReviewQueue (北极星指标 #2 调用链可信度).
+        by_resolved: dict[str, int] = {}
+        for e in s._calls_edges:
+            key = e.props.resolved_by or "unknown"
+            by_resolved[key] = by_resolved.get(key, 0) + 1
         return {
             "total_functions": len(s._functions),
             "total_files": len(s._files),
             "total_calls": len(s._calls_edges),
             "total_unresolved": len(s._unresolved_calls),
             "unresolved_by_status": by_status,
+            "calls_by_resolved_by": by_resolved,
             "total_source_points": len(getattr(app.state, "source_points", [])),
             **stats,
         }

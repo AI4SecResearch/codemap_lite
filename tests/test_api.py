@@ -534,6 +534,10 @@ class TestFeedbackEndpoint:
         # drilling into ReviewQueue (architecture.md §3 UnresolvedCall 生命周期).
         assert "unresolved_by_status" in data
         assert data["unresolved_by_status"] == {}
+        # Breakdown by CallsEdgeProps.resolved_by (architecture.md §4 +
+        # §5 审阅对象：单条 CALLS 边，特别是 resolved_by='llm' 的).
+        assert "calls_by_resolved_by" in data
+        assert data["calls_by_resolved_by"] == {}
 
     def test_get_stats_unresolved_by_status(self) -> None:
         """/stats buckets UnresolvedCall nodes by `status` so the Dashboard
@@ -574,3 +578,42 @@ class TestFeedbackEndpoint:
         data = resp.json()
         assert data["total_unresolved"] == 3
         assert data["unresolved_by_status"] == {"pending": 1, "unresolvable": 2}
+
+    def test_get_stats_calls_by_resolved_by(self) -> None:
+        """/stats buckets CALLS edges by `resolved_by` so the Dashboard
+        can surface the llm-repaired edge backlog without drilling into
+        ReviewQueue (architecture.md §4 CALLS 边属性 + §5 审阅对象：
+        单条 CALLS 边，特别是 resolved_by='llm' 的)."""
+        client, store = get_test_client()
+        for fid in ("a", "b", "c", "d"):
+            store.create_function(
+                FunctionNode(
+                    signature=f"def {fid}()", name=fid, file_path="f.py",
+                    start_line=1, end_line=3, body_hash=f"h-{fid}", id=fid,
+                )
+            )
+        store.create_calls_edge("a", "b", CallsEdgeProps(
+            resolved_by="symbol_table", call_type="direct",
+            call_file="f.py", call_line=2,
+        ))
+        store.create_calls_edge("a", "c", CallsEdgeProps(
+            resolved_by="llm", call_type="indirect",
+            call_file="f.py", call_line=3,
+        ))
+        store.create_calls_edge("b", "d", CallsEdgeProps(
+            resolved_by="llm", call_type="indirect",
+            call_file="f.py", call_line=4,
+        ))
+        store.create_calls_edge("c", "d", CallsEdgeProps(
+            resolved_by="signature", call_type="indirect",
+            call_file="f.py", call_line=5,
+        ))
+        resp = client.get("/api/v1/stats")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total_calls"] == 4
+        assert data["calls_by_resolved_by"] == {
+            "symbol_table": 1,
+            "llm": 2,
+            "signature": 1,
+        }

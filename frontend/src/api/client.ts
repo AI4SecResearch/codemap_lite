@@ -78,6 +78,17 @@ export interface Stats {
    * for backward compat with older stubs.
    */
   unresolved_by_status?: Record<string, number>;
+  /**
+   * Breakdown of `total_calls` by `CallsEdgeProps.resolved_by`
+   * (architecture.md §4). Keys are the 5-valued resolver enum
+   * (`symbol_table` / `signature` / `dataflow` / `context` / `llm`);
+   * values are counts. Surfaces the llm-repaired edge backlog on
+   * the Dashboard so reviewers can see how many CALLS edges are
+   * review-critical per architecture.md §5 (审阅对象：
+   * 单条 CALLS 边，特别是 resolved_by='llm' 的). Optional for
+   * backward compat with older stubs.
+   */
+  calls_by_resolved_by?: Record<string, number>;
 }
 
 export interface SourceProgress {

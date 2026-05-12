@@ -10,14 +10,20 @@ function StatCard({
   title: string;
   value: number | string;
   hint?: string;
-  tone?: 'default' | 'alert';
+  tone?: 'default' | 'alert' | 'warn';
 }) {
   const toneClasses =
     tone === 'alert'
       ? 'bg-red-50 border-red-200'
+      : tone === 'warn'
+      ? 'bg-amber-50 border-amber-200'
       : 'bg-white border';
   const valueClasses =
-    tone === 'alert' ? 'text-red-700' : '';
+    tone === 'alert'
+      ? 'text-red-700'
+      : tone === 'warn'
+      ? 'text-amber-700'
+      : '';
   return (
     <div className={`${toneClasses} rounded shadow-sm p-4`}>
       <div className="text-xs uppercase tracking-wide text-gray-500">{title}</div>
@@ -131,6 +137,19 @@ export default function Dashboard() {
       ? `${pendingGaps} pending · ${unresolvableGaps} unresolvable`
       : 'needs repair';
 
+  // LLM-repaired CALLS edges are the review-critical population
+  // (architecture.md §5 审阅对象：单条 CALLS 边，特别是 resolved_by='llm').
+  // Surface the count so reviewers see the backlog without drilling
+  // into ReviewQueue (北极星指标 #2 调用链可信度).
+  const byResolved = stats?.calls_by_resolved_by ?? {};
+  const llmCalls = byResolved.llm ?? 0;
+  const resolvedHint =
+    resolvedPct !== null
+      ? llmCalls > 0
+        ? `${resolvedPct}% resolved · ${llmCalls} via llm`
+        : `${resolvedPct}% resolved`
+      : undefined;
+
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
@@ -160,7 +179,7 @@ export default function Dashboard() {
         </div>
       ) : null}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-7 gap-4">
         <StatCard
           title="Source Points"
           value={stats?.total_source_points ?? '-'}
@@ -171,7 +190,13 @@ export default function Dashboard() {
         <StatCard
           title="Resolved Calls"
           value={stats?.total_calls ?? '-'}
-          hint={resolvedPct !== null ? `${resolvedPct}% resolved` : undefined}
+          hint={resolvedHint}
+        />
+        <StatCard
+          title="LLM Repaired"
+          value={stats ? llmCalls : '-'}
+          hint="needs review (resolved_by=llm)"
+          tone={llmCalls > 0 ? 'warn' : 'default'}
         />
         <StatCard
           title="Unresolved GAPs"
