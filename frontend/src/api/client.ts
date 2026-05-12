@@ -122,6 +122,16 @@ export interface Stats {
    * 进度与可观测性). Optional for backward compat with older stubs.
    */
   total_feedback?: number;
+  /**
+   * Total `RepairLogNode` count (architecture.md §4 RepairLog schema +
+   * ADR #51 属性引用契约). Each successful llm-resolved CALLS edge has
+   * a paired RepairLog row recording llm_response + reasoning_summary +
+   * timestamp; this field exposes the cumulative repair provenance
+   * volume so the Dashboard can advertise "N edges repaired by llm
+   * (audit trail available)" without hitting `/repair-logs`. Optional
+   * for backward compat with older stubs.
+   */
+  total_repair_logs?: number;
 }
 
 export interface SourceProgress {
@@ -161,6 +171,32 @@ export interface CounterExample {
   wrong_target: string;
   correct_target: string;
   pattern: string;
+}
+
+/**
+ * Repair provenance record persisted alongside an llm-resolved CALLS
+ * edge (architecture.md §4 RepairLog schema + ADR #51 属性引用契约).
+ *
+ * The `(caller_id, callee_id, call_location)` triple locates the
+ * matching CALLS edge — there is no relationship edge between RepairLog
+ * and Function nodes (per ADR #51, attribute-only association). The
+ * frontend uses this to populate an inspector panel when reviewers
+ * click an llm-repaired edge in CallGraphView.
+ */
+export interface RepairLog {
+  id: string;
+  caller_id: string;
+  callee_id: string;
+  /** Format: `<file>:<line>` (e.g. `foo.cpp:42`). */
+  call_location: string;
+  /** Always `"llm"` today; reserved for future repair methods. */
+  repair_method: string;
+  /** Raw agent stdout/llm reply that produced the resolution. */
+  llm_response: string;
+  /** ISO-8601 UTC timestamp of when the edge was written. */
+  timestamp: string;
+  /** Human-readable summary of the agent's reasoning chain. */
+  reasoning_summary: string;
 }
 
 /**
@@ -285,4 +321,20 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(example),
     }),
+
+  // Repair logs (architecture.md §4 + §8 + ADR #51)
+  getRepairLogs: (params?: {
+    caller?: string;
+    callee?: string;
+    location?: string;
+  }) => {
+    const qs = new URLSearchParams();
+    if (params?.caller) qs.set('caller', params.caller);
+    if (params?.callee) qs.set('callee', params.callee);
+    if (params?.location) qs.set('location', params.location);
+    const q = qs.toString();
+    return fetchJson<RepairLog[]>(
+      `/api/v1/repair-logs${q ? `?${q}` : ''}`
+    );
+  },
 };

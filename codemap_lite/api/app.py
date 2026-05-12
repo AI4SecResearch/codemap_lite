@@ -19,6 +19,7 @@ from codemap_lite.api.routes.source_points import create_source_points_router
 from codemap_lite.api.routes.analyze import create_analyze_router
 from codemap_lite.api.routes.review import create_review_router
 from codemap_lite.api.routes.feedback import create_feedback_router
+from codemap_lite.api.routes.repair_logs import create_repair_logs_router
 
 
 def create_app(
@@ -133,6 +134,12 @@ def create_app(
         # store is not wired (tests / in-memory demos).
         fb = getattr(app.state, "feedback_store", None)
         total_feedback = len(fb.list_all()) if fb is not None else 0
+        # RepairLog count (architecture.md §3 修复成功时 + §4 RepairLog
+        # schema + ADR #51). Surfaces total LLM repair activity so the
+        # frontend can render a Dashboard StatCard linking into the
+        # repair-logs audit endpoint without reviewers manually
+        # spelunking the graph (北极星指标 #2 + #5).
+        total_repair_logs = len(getattr(s, "_repair_logs", {}))
         return {
             "total_functions": len(s._functions),
             "total_files": len(s._files),
@@ -143,6 +150,7 @@ def create_app(
             "calls_by_resolved_by": by_resolved,
             "total_source_points": len(getattr(app.state, "source_points", [])),
             "total_feedback": total_feedback,
+            "total_repair_logs": total_repair_logs,
             **stats,
         }
 
@@ -152,6 +160,7 @@ def create_app(
     app.include_router(create_analyze_router(), prefix="/api/v1")
     app.include_router(create_review_router(), prefix="/api/v1")
     app.include_router(create_feedback_router(), prefix="/api/v1")
+    app.include_router(create_repair_logs_router(), prefix="/api/v1")
 
     # Mount static files (standalone HTML frontend)
     static_dir = Path(__file__).parent / "static"

@@ -13,6 +13,7 @@ from codemap_lite.graph.schema import (
     CallsEdgeProps,
     FileNode,
     FunctionNode,
+    RepairLogNode,
     UnresolvedCallNode,
 )
 
@@ -543,6 +544,11 @@ class TestFeedbackEndpoint:
         # the left-nav chip can render deterministically (北极星 #5).
         assert "total_feedback" in data
         assert data["total_feedback"] == 0
+        # RepairLog count (architecture.md §4 + §8). Surfaces total LLM
+        # repair volume so the Dashboard can advertise cumulative repair
+        # provenance without hitting /repair-logs.
+        assert "total_repair_logs" in data
+        assert data["total_repair_logs"] == 0
 
     def test_get_stats_total_feedback_with_store(self, tmp_path) -> None:
         """/stats reports `total_feedback` from the wired FeedbackStore so
@@ -725,3 +731,101 @@ class TestFeedbackEndpoint:
         resp = client.get("/api/v1/stats")
         assert resp.status_code == 200
         assert resp.json()["unresolved_by_category"] == {}
+
+
+def _make_repair_log(
+    *,
+    caller_id: str = "func_a",
+    callee_id: str = "func_b",
+    call_location: str = "foo.cpp:42",
+    log_id: str | None = None,
+    reasoning_summary: str = "vtable resolved via static analysis",
+) -> RepairLogNode:
+    kwargs: dict = dict(
+        caller_id=caller_id,
+        callee_id=callee_id,
+        call_location=call_location,
+        repair_method="llm",
+        llm_response="agent stdout",
+        timestamp="2026-05-13T12:00:00+00:00",
+        reasoning_summary=reasoning_summary,
+    )
+    if log_id is not None:
+        kwargs["id"] = log_id
+    return RepairLogNode(**kwargs)
+
+
+class TestRepairLogsEndpoint:
+    """architecture.md §4 RepairLog schema + §8 GET /repair-logs +
+    ADR #51 属性引用契约 — the (caller_id, callee_id, call_location)
+    triple locates the matching CALLS edge so the frontend
+    CallGraphView can render an audit panel for any selected
+    `resolved_by='llm'` edge."""
+
+    def test_list_all_repair_logs_empty(self) -> None:
+        client, _ = get_test_client()
+        resp = client.get("/api/v1/repair-logs")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_list_returns_persisted_logs(self) -> None:
+        client, store = get_test_client()
+        log = _make_repair_log(log_id="r1")
+        store.create_repair_log(log)
+        resp = client.get("/api/v1/repair-logs")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body) == 1
+        assert body[0]["id"] == "r1"
+        assert body[0]["caller_id"] == "func_a"
+        assert body[0]["callee_id"] == "func_b"
+        assert body[0]["call_location"] == "foo.cpp:42"
+        assert body[0]["repair_method"] == "llm"
+        assert body[0]["reasoning_summary"].startswith("vtable")
+
+    def test_filter_by_triple_locates_single_log(self) -> None:
+        client, store = get_test_client()
+        store.create_repair_log(
+            _make_repair_log(call_location="foo.cpp:42", log_id="r1")
+        )
+        store.create_repair_log(
+            _make_repair_log(call_location="foo.cpp:99", log_id="r2")
+        )
+        resp = client.get(
+            "/api/v1/repair-logs",
+            params={
+                "caller": "func_a",
+                "callee": "func_b",
+                "location": "foo.cpp:42",
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body) == 1
+        assert body[0]["id"] == "r1"
+
+    def test_filter_by_caller_only(self) -> None:
+        client, store = get_test_client()
+        store.create_repair_log(_make_repair_log(caller_id="func_a", log_id="r1"))
+        store.create_repair_log(_make_repair_log(caller_id="func_z", log_id="r2"))
+        resp = client.get("/api/v1/repair-logs", params={"caller": "func_a"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body) == 1
+        assert body[0]["id"] == "r1"
+
+    def test_total_repair_logs_in_stats(self) -> None:
+        """/stats reports `total_repair_logs` so the Dashboard can show
+        cumulative llm-repair volume without hitting /repair-logs
+        (architecture.md §8 stats契约)."""
+        client, store = get_test_client()
+        # Empty case still surfaces the field.
+        empty = client.get("/api/v1/stats").json()
+        assert empty["total_repair_logs"] == 0
+
+        store.create_repair_log(_make_repair_log(log_id="r1"))
+        store.create_repair_log(
+            _make_repair_log(log_id="r2", call_location="foo.cpp:99")
+        )
+        populated = client.get("/api/v1/stats").json()
+        assert populated["total_repair_logs"] == 2

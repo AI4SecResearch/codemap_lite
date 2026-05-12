@@ -7,6 +7,7 @@ from codemap_lite.graph.schema import (
     CallsEdgeProps,
     FileNode,
     FunctionNode,
+    RepairLogNode,
     UnresolvedCallNode,
 )
 from codemap_lite.graph.neo4j_store import InMemoryGraphStore
@@ -312,3 +313,62 @@ class TestUpdateUnresolvedCallRetryState:
             reason="gate_failed: irrelevant",
         )
         assert store._unresolved_calls == {}
+
+
+class TestRepairLogPersistence:
+    """architecture.md §3 修复成功时 + §4 RepairLog schema + ADR #51 —
+    每条 LLM 修复都落一行 RepairLog，通过 (caller_id, callee_id,
+    call_location) 三元组定位对应的 CALLS 边（不通过关系边）。"""
+
+    def _make_log(
+        self,
+        caller_id: str = "func_a",
+        callee_id: str = "func_b",
+        call_location: str = "foo.cpp:42",
+        llm_response: str = "agent reply",
+        reasoning_summary: str = "indirect call resolved via vtable",
+    ) -> RepairLogNode:
+        return RepairLogNode(
+            caller_id=caller_id,
+            callee_id=callee_id,
+            call_location=call_location,
+            repair_method="llm",
+            llm_response=llm_response,
+            timestamp="2026-05-13T12:00:00+00:00",
+            reasoning_summary=reasoning_summary,
+        )
+
+    def test_create_and_retrieve_repair_log(self, store):
+        log = self._make_log()
+        returned_id = store.create_repair_log(log)
+        assert returned_id == log.id
+        all_logs = store.get_repair_logs()
+        assert len(all_logs) == 1
+        assert all_logs[0].id == log.id
+        assert all_logs[0].repair_method == "llm"
+
+    def test_filter_by_triple_locates_single_log(self, store):
+        # Two LLM-repaired edges in the same file but different sites —
+        # the (caller, callee, location) triple should pick exactly one.
+        store.create_repair_log(self._make_log(call_location="foo.cpp:42"))
+        store.create_repair_log(self._make_log(call_location="foo.cpp:99"))
+
+        hit = store.get_repair_logs(
+            caller_id="func_a",
+            callee_id="func_b",
+            call_location="foo.cpp:42",
+        )
+        assert len(hit) == 1
+        assert hit[0].call_location == "foo.cpp:42"
+
+    def test_filter_by_caller_only(self, store):
+        store.create_repair_log(self._make_log(caller_id="func_a"))
+        store.create_repair_log(self._make_log(caller_id="func_other"))
+
+        hits = store.get_repair_logs(caller_id="func_a")
+        assert len(hits) == 1
+        assert hits[0].caller_id == "func_a"
+
+    def test_no_match_returns_empty_list(self, store):
+        store.create_repair_log(self._make_log())
+        assert store.get_repair_logs(caller_id="nope") == []

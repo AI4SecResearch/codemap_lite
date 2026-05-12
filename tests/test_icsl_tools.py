@@ -45,9 +45,13 @@ def test_write_edge_creates_calls_and_repair_log(mock_graph_store):
         "call_line": 42,
         "resolved_by": "llm",
     }
-    # Verify repair log was created
+    # Verify repair log was created (typed RepairLogNode now, not dict)
     assert len(mock_graph_store.repair_logs) == 1
-    assert mock_graph_store.repair_logs[0]["caller_id"] == "func_001"
+    log = mock_graph_store.repair_logs[0]
+    assert log.caller_id == "func_001"
+    assert log.callee_id == "func_002"
+    assert log.call_location == "test.cpp:42"
+    assert log.repair_method == "llm"
 
 
 def test_write_edge_skips_if_exists(mock_graph_store):

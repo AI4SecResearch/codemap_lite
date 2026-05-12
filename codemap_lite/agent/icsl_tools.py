@@ -32,7 +32,6 @@ import argparse
 import dataclasses
 import json
 import sys
-import time
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -60,6 +59,8 @@ def write_edge(
     call_file: str,
     call_line: int,
     store: GraphStoreProtocol,
+    llm_response: str = "",
+    reasoning_summary: str = "",
 ) -> dict[str, Any]:
     """Write a CALLS edge, create RepairLog, and delete the UnresolvedCall."""
     # Check if edge already exists (skip if so)
@@ -75,14 +76,28 @@ def write_edge(
     }
     store.create_calls_edge(caller_id, callee_id, props)
 
-    # Create RepairLog
-    repair_log = {
-        "caller_id": caller_id,
-        "callee_id": callee_id,
-        "call_location": f"{call_file}:{call_line}",
-        "repair_method": "llm",
-        "timestamp": time.time(),
-    }
+    # Create RepairLog (architecture.md §4 RepairLog schema + ADR #51
+    # 属性引用契约: caller_id + callee_id + call_location 三元组定位
+    # 该边的修复过程, 不通过关系边). The ``llm_response`` +
+    # ``reasoning_summary`` fields default to empty strings so legacy
+    # callers keep working — the agent prompt now forwards both, but
+    # the static-analysis path that pre-creates symbol-table edges
+    # does not. Lazy-import ``RepairLogNode`` so the subprocess CLI's
+    # ``--help`` works without codemap_lite on sys.path (the in-process
+    # repair path already has it).
+    from datetime import datetime, timezone
+
+    from codemap_lite.graph.schema import RepairLogNode
+
+    repair_log = RepairLogNode(
+        caller_id=caller_id,
+        callee_id=callee_id,
+        call_location=f"{call_file}:{call_line}",
+        repair_method="llm",
+        llm_response=llm_response,
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        reasoning_summary=reasoning_summary,
+    )
     store.create_repair_log(repair_log)
 
     # Delete the UnresolvedCall

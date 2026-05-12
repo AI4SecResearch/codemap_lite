@@ -9,6 +9,7 @@ from codemap_lite.graph.schema import (
     CallsEdgeProps,
     FileNode,
     FunctionNode,
+    RepairLogNode,
     UnresolvedCallNode,
 )
 
@@ -41,6 +42,15 @@ class GraphStore(Protocol):
         self, call_id: str, timestamp: str, reason: str
     ) -> None: ...
 
+    def create_repair_log(self, node: RepairLogNode) -> str: ...
+
+    def get_repair_logs(
+        self,
+        caller_id: str | None = None,
+        callee_id: str | None = None,
+        call_location: str | None = None,
+    ) -> list[RepairLogNode]: ...
+
     def delete_function(self, id: str) -> None: ...
 
     def delete_calls_edges_for_function(self, function_id: str) -> None: ...
@@ -67,6 +77,7 @@ class InMemoryGraphStore:
         self._files: dict[str, FileNode] = {}
         self._calls_edges: list[_CallsEdge] = []
         self._unresolved_calls: dict[str, UnresolvedCallNode] = {}
+        self._repair_logs: dict[str, RepairLogNode] = {}
 
     def create_function(self, node: FunctionNode) -> str:
         self._functions[node.id] = node
@@ -143,6 +154,39 @@ class InMemoryGraphStore:
             id=existing.id,
         )
         self._unresolved_calls[call_id] = replaced
+
+    def create_repair_log(self, node: RepairLogNode) -> str:
+        """Persist a RepairLog node (architecture.md §3 修复成功时).
+
+        Called from ``icsl_tools.write_edge`` after a successful LLM
+        repair to capture the audit trail (caller_id + callee_id +
+        call_location locator per ADR #51, plus repair_method,
+        llm_response, timestamp, reasoning_summary).
+        """
+        self._repair_logs[node.id] = node
+        return node.id
+
+    def get_repair_logs(
+        self,
+        caller_id: str | None = None,
+        callee_id: str | None = None,
+        call_location: str | None = None,
+    ) -> list[RepairLogNode]:
+        """Query RepairLog entries with optional exact-match filters.
+
+        The ``(caller_id, callee_id, call_location)`` triple is the
+        architecture.md §4 property-reference contract used by
+        CallGraphView to locate the RepairLog for a selected
+        ``resolved_by='llm'`` CALLS edge.
+        """
+        results = list(self._repair_logs.values())
+        if caller_id is not None:
+            results = [r for r in results if r.caller_id == caller_id]
+        if callee_id is not None:
+            results = [r for r in results if r.callee_id == callee_id]
+        if call_location is not None:
+            results = [r for r in results if r.call_location == call_location]
+        return results
 
     def delete_function(self, id: str) -> None:
         self._functions.pop(id, None)
@@ -241,6 +285,17 @@ class Neo4jGraphStore:
     def update_unresolved_call_retry_state(
         self, call_id: str, timestamp: str, reason: str
     ) -> None:
+        raise NotImplementedError("Neo4j driver not yet wired")
+
+    def create_repair_log(self, node: RepairLogNode) -> str:
+        raise NotImplementedError("Neo4j driver not yet wired")
+
+    def get_repair_logs(
+        self,
+        caller_id: str | None = None,
+        callee_id: str | None = None,
+        call_location: str | None = None,
+    ) -> list[RepairLogNode]:
         raise NotImplementedError("Neo4j driver not yet wired")
 
     def delete_function(self, id: str) -> None:
