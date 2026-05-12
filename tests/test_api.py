@@ -1,6 +1,8 @@
 """Tests for the FastAPI REST API layer."""
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -203,6 +205,61 @@ class TestAnalyzeEndpoint:
         data = resp.json()
         assert "state" in data
         assert "progress" in data
+        # sources[] is always present (empty when no target_dir / no
+        # progress files yet) — architecture.md §3, ADR #52.
+        assert data["sources"] == []
+
+    def test_analyze_status_aggregates_progress_files(self, tmp_path) -> None:
+        store = InMemoryGraphStore()
+        app = create_app(store=store, target_dir=tmp_path)
+        client = TestClient(app)
+
+        repair_root = tmp_path / "logs" / "repair"
+        (repair_root / "src_001").mkdir(parents=True)
+        (repair_root / "src_001" / "progress.json").write_text(
+            json.dumps({"gaps_fixed": 2, "gaps_total": 5, "current_gap": "gap_003"}),
+            encoding="utf-8",
+        )
+        (repair_root / "src_002").mkdir(parents=True)
+        (repair_root / "src_002" / "progress.json").write_text(
+            json.dumps({"gaps_fixed": 3, "gaps_total": 3, "current_gap": None}),
+            encoding="utf-8",
+        )
+
+        resp = client.get("/api/v1/analyze/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        sources = {s["source_id"]: s for s in data["sources"]}
+        assert set(sources.keys()) == {"src_001", "src_002"}
+        assert sources["src_001"]["gaps_fixed"] == 2
+        assert sources["src_001"]["gaps_total"] == 5
+        assert sources["src_001"]["current_gap"] == "gap_003"
+        assert sources["src_002"]["gaps_fixed"] == 3
+        assert sources["src_002"]["current_gap"] is None
+        # Overall progress is (2+3) / (5+3) = 0.625
+        assert data["progress"] == pytest.approx(0.625)
+
+    def test_analyze_status_ignores_unreadable_progress(self, tmp_path) -> None:
+        store = InMemoryGraphStore()
+        app = create_app(store=store, target_dir=tmp_path)
+        client = TestClient(app)
+
+        repair_root = tmp_path / "logs" / "repair"
+        (repair_root / "src_bad").mkdir(parents=True)
+        (repair_root / "src_bad" / "progress.json").write_text(
+            "not json {{", encoding="utf-8"
+        )
+        (repair_root / "src_ok").mkdir(parents=True)
+        (repair_root / "src_ok" / "progress.json").write_text(
+            json.dumps({"gaps_fixed": 1, "gaps_total": 2, "current_gap": "g"}),
+            encoding="utf-8",
+        )
+
+        resp = client.get("/api/v1/analyze/status")
+        assert resp.status_code == 200
+        sources = {s["source_id"]: s for s in resp.json()["sources"]}
+        assert "src_bad" not in sources
+        assert sources["src_ok"]["gaps_total"] == 2
 
 
 class TestSourcePointsEndpoint:

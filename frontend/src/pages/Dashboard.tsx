@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { api, Stats, AnalyzeStatus } from '../api/client';
+import { api, Stats, AnalyzeStatus, SourceProgress } from '../api/client';
 
 function StatCard({
   title,
@@ -15,6 +15,48 @@ function StatCard({
       <div className="text-xs uppercase tracking-wide text-gray-500">{title}</div>
       <div className="text-3xl font-bold mt-1">{value}</div>
       {hint ? <div className="text-xs text-gray-500 mt-1">{hint}</div> : null}
+    </div>
+  );
+}
+
+function SourceProgressCard({ row }: { row: SourceProgress }) {
+  const pct =
+    row.gaps_total > 0
+      ? Math.min(100, Math.round((row.gaps_fixed / row.gaps_total) * 100))
+      : 0;
+  const done = row.gaps_total > 0 && row.gaps_fixed >= row.gaps_total;
+  const barColor = done ? 'bg-green-500' : 'bg-blue-500';
+  return (
+    <div className="bg-white rounded border shadow-sm p-3 space-y-1.5">
+      <div className="flex items-center justify-between gap-2">
+        <div
+          className="font-mono text-xs text-gray-700 truncate"
+          title={row.source_id}
+        >
+          {row.source_id}
+        </div>
+        <div className="text-xs text-gray-500 shrink-0">
+          {row.gaps_fixed}/{row.gaps_total}
+        </div>
+      </div>
+      <div className="h-1.5 w-full rounded bg-gray-100 overflow-hidden">
+        <div
+          className={`h-full ${barColor}`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <div className="text-[11px] text-gray-500 truncate">
+        {done ? (
+          <span className="text-green-700">done</span>
+        ) : row.current_gap ? (
+          <>
+            current:{' '}
+            <span className="font-mono text-gray-700">{row.current_gap}</span>
+          </>
+        ) : (
+          <span className="text-gray-400">idle</span>
+        )}
+      </div>
     </div>
   );
 }
@@ -157,6 +199,28 @@ export default function Dashboard() {
         <p className="text-xs text-gray-500 mt-3">
           Status polls every 2s. Triggering analysis is async on the server.
         </p>
+      </div>
+
+      <div className="bg-white rounded shadow-sm border p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-semibold">Repair Progress</h2>
+          <span className="text-xs text-gray-500">
+            {status?.sources?.length ?? 0} source
+            {(status?.sources?.length ?? 0) === 1 ? '' : 's'}
+          </span>
+        </div>
+        {status?.sources && status.sources.length > 0 ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {status.sources.map((row) => (
+              <SourceProgressCard key={row.source_id} row={row} />
+            ))}
+          </div>
+        ) : (
+          <div className="text-sm text-gray-500">
+            No repair runs yet. Trigger the repair agent to populate
+            per-source progress.
+          </div>
+        )}
       </div>
     </div>
   );

@@ -186,5 +186,9 @@ def test_serve_launches_uvicorn_with_create_app(tmp_path):
             )
 
     assert result.exit_code == 0, result.output
-    create_app.assert_called_once_with()
+    # target_dir is wired through so /analyze/status can aggregate
+    # logs/repair/*/progress.json (architecture.md §3, ADR #52).
+    create_app.assert_called_once()
+    kwargs = create_app.call_args.kwargs
+    assert kwargs["target_dir"] == (tmp_path / "target")
     fake_uvicorn.run.assert_called_once_with(fake_app, host="127.0.0.1", port=9123)

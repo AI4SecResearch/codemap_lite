@@ -73,10 +73,18 @@ export interface Stats {
   total_source_points: number;
 }
 
+export interface SourceProgress {
+  source_id: string;
+  gaps_fixed: number;
+  gaps_total: number;
+  current_gap?: string | null;
+}
+
 export interface AnalyzeStatus {
   state: string;
   progress: number;
   mode?: string;
+  sources?: SourceProgress[];
 }
 
 export interface Subgraph {

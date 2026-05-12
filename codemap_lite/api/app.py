@@ -20,12 +20,21 @@ from codemap_lite.api.routes.review import create_review_router
 from codemap_lite.api.routes.feedback import create_feedback_router
 
 
-def create_app(store: GraphStore | None = None) -> FastAPI:
+def create_app(
+    store: GraphStore | None = None,
+    target_dir: Path | None = None,
+) -> FastAPI:
     """Create and configure the FastAPI application.
 
     Args:
         store: GraphStore instance for dependency injection.
                Defaults to InMemoryGraphStore if not provided.
+        target_dir: Project target directory (``project.target_dir``
+            from ``config.yaml``). Wired into ``app.state`` so routes
+            can read repair hook artefacts like
+            ``logs/repair/{source_id}/progress.json``
+            (architecture.md §3, ADR #52). Optional — tests and pure
+            in-memory demos can omit it.
     """
     if store is None:
         store = InMemoryGraphStore()
@@ -51,6 +60,9 @@ def create_app(store: GraphStore | None = None) -> FastAPI:
     app.state.analyze_state: dict[str, Any] = {"state": "idle", "progress": 0.0}
     app.state.source_points: list[dict[str, Any]] = []
     app.state.analysis_stats: dict[str, Any] = {}
+    # Used by /api/v1/analyze/status to aggregate hook-written
+    # progress files (architecture.md §3, ADR #52).
+    app.state.target_dir = target_dir
 
     # Health check
     @app.get("/health")

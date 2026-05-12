@@ -186,10 +186,10 @@ def serve(
 
     from codemap_lite.api.app import create_app
 
-    # Loads settings to validate the config path exists, even though
-    # the API layer does not currently wire every section through.
-    _load_settings(config)
+    settings = _load_settings(config)
 
-    app_instance = create_app()
+    # Pass target_dir through to the app so /api/v1/analyze/status can
+    # aggregate logs/repair/*/progress.json (architecture.md §3, ADR #52).
+    app_instance = create_app(target_dir=Path(settings.project.target_dir))
     uvicorn.run(app_instance, host=host, port=port)
 
