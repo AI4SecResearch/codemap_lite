@@ -1,7 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import cytoscape, { Core, ElementDefinition, NodeSingular } from 'cytoscape';
-import { api, Subgraph, FunctionNode, UnresolvedCall } from '../api/client';
+import cytoscape, {
+  Core,
+  EdgeSingular,
+  ElementDefinition,
+  NodeSingular,
+} from 'cytoscape';
+import {
+  api,
+  Subgraph,
+  CallEdge,
+  FunctionNode,
+  RepairLog,
+  UnresolvedCall,
+} from '../api/client';
 
 type StartKind = 'function' | 'source' | null;
 
@@ -76,6 +88,11 @@ function buildElements(
         kind: 'resolved',
         callType: e.props.call_type,
         resolvedBy: e.props.resolved_by,
+        // architecture.md §5 RepairLog inspector 契约：llm 边被选中时
+        // 用 (caller_id, callee_id, call_location) 三元组拉 RepairLog —
+        // 把整条 CallEdge 挂到 data.edge 让 tap handler 直接消费，避免
+        // 再去 graph.edges 里二次查找。
+        edge: e,
       },
       classes: `resolved ${e.props.resolved_by}`,
     });
@@ -212,6 +229,172 @@ function Legend({
   );
 }
 
+function formatTimestamp(ts: string): string {
+  // RepairLog.timestamp is ISO-8601 UTC (architecture.md §4 schema),
+  // but we keep epoch-seconds fallback per §5 contract ("ISO-8601 或
+  // epoch-seconds 都接受"). Render in the reviewer's local timezone so
+  // "when did the LLM repair this edge" reads naturally.
+  if (!ts) return 'unknown';
+  const asNum = Number(ts);
+  const d = Number.isFinite(asNum) && /^\d+(\.\d+)?$/.test(ts)
+    ? new Date(asNum * 1000)
+    : new Date(ts);
+  if (Number.isNaN(d.getTime())) return ts;
+  return d.toLocaleString();
+}
+
+const LLM_RESPONSE_PREVIEW_CHARS = 320;
+
+/**
+ * Inspector body for `resolved_by='llm'` CALLS edges. Per
+ * architecture.md §5 RepairLog inspector 契约: fetch
+ * `RepairLogNode[]` via `api.getRepairLogs({caller, callee, location})`
+ * (the (caller_id, callee_id, call_location) triple is the
+ * RepairLog identity per ADR #51) and render timestamp +
+ * reasoning_summary + truncated llm_response with an expand toggle.
+ *
+ * Closes North Star #2 (调用链可信度): a reviewer who clicks an
+ * orange dashed ★ edge gets the LLM's reasoning surfaced inline
+ * instead of having to grep `logs/repair/<source_id>/*.jsonl`.
+ */
+function EdgeLlmInspector({ edge }: { edge: CallEdge }) {
+  const [logs, setLogs] = useState<RepairLog[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const location = `${edge.props.call_file}:${edge.props.call_line}`;
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    setLogs(null);
+    setExpanded({});
+    api
+      .getRepairLogs({
+        caller: edge.caller_id,
+        callee: edge.callee_id,
+        location,
+      })
+      .then((data) => {
+        if (!cancelled) setLogs(data);
+      })
+      .catch((e) => {
+        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [edge.caller_id, edge.callee_id, location]);
+
+  return (
+    <div className="space-y-2 text-xs">
+      <div>
+        <div className="font-semibold text-sm text-orange-700 flex items-center gap-1.5">
+          <span aria-hidden>★</span>
+          <span>LLM-repaired edge</span>
+        </div>
+        <div className="text-gray-500">{edge.props.call_type}</div>
+      </div>
+      <div>
+        <div className="text-gray-500">Caller</div>
+        <div className="font-mono break-all">{edge.caller_id}</div>
+      </div>
+      <div>
+        <div className="text-gray-500">Callee</div>
+        <div className="font-mono break-all">{edge.callee_id}</div>
+      </div>
+      <div>
+        <div className="text-gray-500">Location</div>
+        <div className="font-mono break-all">{location}</div>
+      </div>
+
+      <div className="pt-1 border-t mt-2">
+        <div className="font-semibold text-xs text-gray-700 mb-1">
+          Repair Log
+        </div>
+        {loading ? (
+          <div className="text-gray-500">Loading repair history…</div>
+        ) : null}
+        {error ? (
+          <div className="text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1">
+            {error}
+          </div>
+        ) : null}
+        {!loading && !error && logs && logs.length === 0 ? (
+          <div className="text-gray-500 italic">
+            No repair log entries for this edge — the LLM resolution
+            predates the RepairLog persistence rollout, or the
+            audit record was not written.
+          </div>
+        ) : null}
+        {logs && logs.length > 0 ? (
+          <ul className="space-y-2">
+            {logs.map((log) => {
+              const isExpanded = expanded[log.id] === true;
+              const trunc =
+                log.llm_response.length > LLM_RESPONSE_PREVIEW_CHARS
+                  ? log.llm_response.slice(0, LLM_RESPONSE_PREVIEW_CHARS) + '…'
+                  : log.llm_response;
+              const visible = isExpanded ? log.llm_response : trunc;
+              const canToggle =
+                log.llm_response.length > LLM_RESPONSE_PREVIEW_CHARS;
+              return (
+                <li
+                  key={log.id}
+                  className="border rounded bg-orange-50/50 px-2 py-1.5 space-y-1"
+                >
+                  <div className="flex items-center justify-between gap-2 text-[11px] text-gray-600">
+                    <span title={log.timestamp}>
+                      {formatTimestamp(log.timestamp)}
+                    </span>
+                    <span className="px-1.5 rounded bg-orange-200 text-orange-900 font-mono text-[10px]">
+                      {log.repair_method}
+                    </span>
+                  </div>
+                  {log.reasoning_summary ? (
+                    <div className="text-gray-800 whitespace-pre-wrap">
+                      {log.reasoning_summary}
+                    </div>
+                  ) : (
+                    <div className="text-gray-400 italic">
+                      No reasoning summary recorded
+                    </div>
+                  )}
+                  {log.llm_response ? (
+                    <div className="space-y-0.5">
+                      <pre className="bg-white border rounded px-2 py-1 text-[11px] font-mono whitespace-pre-wrap break-words max-h-72 overflow-auto">
+                        {visible}
+                      </pre>
+                      {canToggle ? (
+                        <button
+                          type="button"
+                          className="text-[11px] text-blue-600 hover:underline"
+                          onClick={() =>
+                            setExpanded((prev) => ({
+                              ...prev,
+                              [log.id]: !isExpanded,
+                            }))
+                          }
+                        >
+                          {isExpanded ? 'Show less' : 'Show full response'}
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function NodeInspector({
   selected,
   onExpand,
@@ -329,6 +512,9 @@ function NodeInspector({
         </Link>
       </div>
     );
+  }
+  if (selected.kind === 'edge_llm') {
+    return <EdgeLlmInspector edge={selected.data as CallEdge} />;
   }
   if (selected.kind === 'file' || selected.kind === 'module') {
     const data = selected.data as { label: string; id: string };
@@ -649,6 +835,16 @@ export default function CallGraphView() {
       } else if (kind === 'file' || kind === 'module') {
         setSelected({ kind, data: { id: n.id(), label: n.data('label') } });
       }
+    });
+    // architecture.md §5 RepairLog inspector 契约：resolved_by='llm' 的
+    // 边被选中时，把整条 CallEdge 抛给 inspector，让 EdgeLlmInspector
+    // 用 (caller_id, callee_id, call_file:call_line) 三元组拉
+    // RepairLogNode[]。其它 4 档 resolved_by 边暂不挂 inspector
+    // —— 它们是确定性解析，没有需要审阅的 LLM 推理痕迹。
+    cy.on('tap', 'edge.resolved.llm', (evt) => {
+      const e = evt.target as EdgeSingular;
+      const edge = e.data('edge') as CallEdge | undefined;
+      if (edge) setSelected({ kind: 'edge_llm', data: edge });
     });
     cy.on('tap', (evt) => {
       if (evt.target === cy) setSelected(null);
