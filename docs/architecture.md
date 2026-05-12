@@ -333,6 +333,12 @@ frontend/src/pages/
 └── FeedbackLog.tsx        # 反例库浏览
 ```
 
+### 跨页面 drill-down 契约
+- Dashboard 的 StatCard 支持可选 `to` 链接，点击跳转到对应子视图的**预筛选**状态。
+- `Unresolved GAPs` → `/review?status=pending`；`Unresolvable` → `/review?status=unresolvable`。
+- `ReviewQueue` 挂载时读 `?status=` query param，若值 ∈ `{all, pending, unresolvable}` 就作为初始 `statusFilter`；之后用户手动切换筛选也双向同步到 URL，保证链接可分享/可书签。
+- 未来新增 drill-down 链接时沿用相同约定：`?<filterName>=<value>`，命中则透传，否则忽略（宽松解析，架构契约优先）。
+
 ---
 
 ## 6. 项目结构

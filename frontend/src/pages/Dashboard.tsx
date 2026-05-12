@@ -1,16 +1,22 @@
 import { useEffect, useState, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { api, Stats, AnalyzeStatus, SourceProgress } from '../api/client';
 
+// architecture.md §5 跨页面 drill-down 契约：Dashboard StatCard
+// 可选 `to` 让卡片本身承载跳转（pre-filtered 子视图），减少审阅者
+// 从"看到 backlog 数字"到"打开对应筛选列表"的点击数（北极星指标 #1）。
 function StatCard({
   title,
   value,
   hint,
   tone = 'default',
+  to,
 }: {
   title: string;
   value: number | string;
   hint?: string;
   tone?: 'default' | 'alert' | 'warn';
+  to?: string;
 }) {
   const toneClasses =
     tone === 'alert'
@@ -24,13 +30,34 @@ function StatCard({
       : tone === 'warn'
       ? 'text-amber-700'
       : '';
-  return (
-    <div className={`${toneClasses} rounded shadow-sm p-4`}>
-      <div className="text-xs uppercase tracking-wide text-gray-500">{title}</div>
+  const interactive = to
+    ? 'cursor-pointer hover:shadow transition-shadow hover:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-400'
+    : '';
+  const body = (
+    <>
+      <div className="text-xs uppercase tracking-wide text-gray-500 flex items-center gap-1">
+        <span>{title}</span>
+        {to ? (
+          <span aria-hidden className="text-gray-400">
+            ›
+          </span>
+        ) : null}
+      </div>
       <div className={`text-3xl font-bold mt-1 ${valueClasses}`}>{value}</div>
       {hint ? <div className="text-xs text-gray-500 mt-1">{hint}</div> : null}
-    </div>
+    </>
   );
+  if (to) {
+    return (
+      <Link
+        to={to}
+        className={`${toneClasses} ${interactive} rounded shadow-sm p-4 block no-underline text-inherit`}
+      >
+        {body}
+      </Link>
+    );
+  }
+  return <div className={`${toneClasses} rounded shadow-sm p-4`}>{body}</div>;
 }
 
 function SourceProgressCard({ row }: { row: SourceProgress }) {
@@ -202,12 +229,14 @@ export default function Dashboard() {
           title="Unresolved GAPs"
           value={stats?.total_unresolved ?? '-'}
           hint={unresolvedHint}
+          to="/review?status=pending"
         />
         <StatCard
           title="Unresolvable"
           value={stats ? unresolvableGaps : '-'}
           hint="agent gave up (>=3 retries)"
           tone={unresolvableGaps > 0 ? 'alert' : 'default'}
+          to="/review?status=unresolvable"
         />
       </div>
 

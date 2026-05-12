@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { api, Review, UnresolvedCall } from '../api/client';
 
 type Tab = 'gaps' | 'reviews';
@@ -7,6 +8,12 @@ type Tab = 'gaps' | 'reviews';
 // zero in on GAPs the agent gave up on so the human review budget is
 // spent where it matters most.
 type StatusFilter = 'all' | 'pending' | 'unresolvable';
+
+const STATUS_FILTERS: readonly StatusFilter[] = ['all', 'pending', 'unresolvable'];
+
+function isStatusFilter(v: string | null): v is StatusFilter {
+  return v !== null && (STATUS_FILTERS as readonly string[]).includes(v);
+}
 
 // Transient banner summarizing the last counter-example submission so
 // the reviewer can tell at a glance whether their pattern opened a new
@@ -76,13 +83,22 @@ function GapStatusChips({
 }
 
 export default function ReviewQueue() {
+  // architecture.md §5 跨页面 drill-down 契约：`?status=` 可选 query
+  // param 用作 statusFilter 初值，也在用户切换筛选时回写到 URL，让
+  // Dashboard StatCard 的链接能深链到预筛选列表（北极星 #1 & #5）。
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initialStatus: StatusFilter = (() => {
+    const raw = searchParams.get('status');
+    return isStatusFilter(raw) ? raw : 'all';
+  })();
+
   const [tab, setTab] = useState<Tab>('gaps');
   const [gaps, setGaps] = useState<UnresolvedCall[]>([]);
   const [reviews, setReviews] = useState<Review[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>(initialStatus);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   // When non-null, the "Mark wrong" modal is open for this gap — the user
@@ -91,6 +107,37 @@ export default function ReviewQueue() {
   const [wrongFor, setWrongFor] = useState<UnresolvedCall | null>(null);
   const [lastFeedback, setLastFeedback] = useState<FeedbackOutcome | null>(null);
   const tableRef = useRef<HTMLDivElement | null>(null);
+
+  // Keep `?status=` in the URL in sync with the current filter, so
+  // refresh / bookmark / share all preserve the drill-down state.
+  useEffect(() => {
+    const current = searchParams.get('status');
+    if (statusFilter === 'all') {
+      if (current !== null) {
+        const next = new URLSearchParams(searchParams);
+        next.delete('status');
+        setSearchParams(next, { replace: true });
+      }
+    } else if (current !== statusFilter) {
+      const next = new URLSearchParams(searchParams);
+      next.set('status', statusFilter);
+      setSearchParams(next, { replace: true });
+    }
+  }, [statusFilter, searchParams, setSearchParams]);
+
+  // React to external URL changes (e.g. reviewer clicking a second
+  // Dashboard link while already on /review) — unlike component mount
+  // we can't rely on the initial read; treat URL as source of truth.
+  useEffect(() => {
+    const raw = searchParams.get('status');
+    const want: StatusFilter = isStatusFilter(raw) ? raw : 'all';
+    if (want !== statusFilter) {
+      setStatusFilter(want);
+    }
+    // Intentionally only re-run on searchParams — statusFilter is
+    // the outgoing sync direction (covered by the effect above).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
