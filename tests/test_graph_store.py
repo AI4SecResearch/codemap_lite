@@ -270,3 +270,45 @@ class TestReachableSubgraph:
         # fn_c is at depth 2, should not be included
         assert fn_c.id not in node_ids
 
+
+
+class TestUpdateUnresolvedCallRetryState:
+    """architecture.md §3 Retry 审计字段 — each failed gate check stamps
+    last_attempt_timestamp + last_attempt_reason on pending GAPs so the
+    frontend can surface them without trawling JSONL logs."""
+
+    def test_stamps_timestamp_and_reason(self, store):
+        gap = UnresolvedCallNode(
+            caller_id="caller_x",
+            call_expression="fn_ptr(x)",
+            call_file="foo.cpp",
+            call_line=42,
+            call_type="indirect",
+            source_code_snippet="fn_ptr(x);",
+            var_name="fn_ptr",
+            var_type="void (*)(int)",
+        )
+        store.create_unresolved_call(gap)
+
+        store.update_unresolved_call_retry_state(
+            call_id=gap.id,
+            timestamp="2026-05-13T12:34:56+00:00",
+            reason="gate_failed: remaining pending GAPs",
+        )
+        updated = store._unresolved_calls[gap.id]
+        assert updated.last_attempt_timestamp == "2026-05-13T12:34:56+00:00"
+        assert updated.last_attempt_reason == "gate_failed: remaining pending GAPs"
+        # Non-audit fields are preserved — immutable dataclass round-trip.
+        assert updated.caller_id == gap.caller_id
+        assert updated.candidates == []
+        assert updated.id == gap.id
+
+    def test_missing_id_is_a_noop(self, store):
+        # Silent noop so the orchestrator can call this without having
+        # to pre-check existence; matches the Neo4j MERGE semantics.
+        store.update_unresolved_call_retry_state(
+            call_id="does-not-exist",
+            timestamp="2026-05-13T12:34:56+00:00",
+            reason="gate_failed: irrelevant",
+        )
+        assert store._unresolved_calls == {}

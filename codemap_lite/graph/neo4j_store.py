@@ -37,6 +37,10 @@ class GraphStore(Protocol):
         self, caller_id: str | None = None, status: str | None = None
     ) -> list[UnresolvedCallNode]: ...
 
+    def update_unresolved_call_retry_state(
+        self, call_id: str, timestamp: str, reason: str
+    ) -> None: ...
+
     def delete_function(self, id: str) -> None: ...
 
     def delete_calls_edges_for_function(self, function_id: str) -> None: ...
@@ -109,6 +113,36 @@ class InMemoryGraphStore:
         if status is not None:
             results = [n for n in results if n.status == status]
         return results
+
+    def update_unresolved_call_retry_state(
+        self, call_id: str, timestamp: str, reason: str
+    ) -> None:
+        """Stamp the latest retry outcome onto an UnresolvedCall.
+
+        architecture.md §3 Retry 审计字段: each time Orchestrator bumps
+        retry_count, it must record when + why so the frontend GapDetail
+        can surface the last failed attempt without trawling JSONL logs.
+        """
+        existing = self._unresolved_calls.get(call_id)
+        if existing is None:
+            return
+        replaced = UnresolvedCallNode(
+            caller_id=existing.caller_id,
+            call_expression=existing.call_expression,
+            call_file=existing.call_file,
+            call_line=existing.call_line,
+            call_type=existing.call_type,
+            source_code_snippet=existing.source_code_snippet,
+            var_name=existing.var_name,
+            var_type=existing.var_type,
+            candidates=list(existing.candidates),
+            retry_count=existing.retry_count,
+            status=existing.status,
+            last_attempt_timestamp=timestamp,
+            last_attempt_reason=reason,
+            id=existing.id,
+        )
+        self._unresolved_calls[call_id] = replaced
 
     def delete_function(self, id: str) -> None:
         self._functions.pop(id, None)
@@ -202,6 +236,11 @@ class Neo4jGraphStore:
     def get_unresolved_calls(
         self, caller_id: str | None = None, status: str | None = None
     ) -> list[UnresolvedCallNode]:
+        raise NotImplementedError("Neo4j driver not yet wired")
+
+    def update_unresolved_call_retry_state(
+        self, call_id: str, timestamp: str, reason: str
+    ) -> None:
         raise NotImplementedError("Neo4j driver not yet wired")
 
     def delete_function(self, id: str) -> None:

@@ -957,6 +957,29 @@ function GapDetail({ gap }: { gap: UnresolvedCall }) {
     chips.push({ label: 'type', value: gap.var_type, tone: 'bg-slate-100 text-slate-700' });
   }
 
+  // architecture.md §3 Retry 审计字段: show the orchestrator-stamped
+  // last-attempt reason + timestamp inline so reviewers don't have to
+  // open logs/repair/<source>/*.jsonl to see why the agent gave up
+  // (North Star #1 review time + #5 state transparency).
+  const lastReason = gap.last_attempt_reason?.trim();
+  const lastTimestamp = gap.last_attempt_timestamp?.trim();
+  const hasLastAttempt = Boolean(lastReason || lastTimestamp);
+  const category = lastReason?.split(':', 1)[0].trim();
+  const categoryTone =
+    category === 'gate_failed'
+      ? 'bg-amber-50 border-amber-200 text-amber-800'
+      : category === 'agent_error' ||
+        category === 'subprocess_crash' ||
+        category === 'subprocess_timeout'
+      ? 'bg-red-50 border-red-200 text-red-800'
+      : 'bg-gray-50 border-gray-200 text-gray-800';
+  const humanTimestamp = lastTimestamp
+    ? (() => {
+        const d = new Date(lastTimestamp);
+        return Number.isNaN(d.getTime()) ? lastTimestamp : d.toLocaleString();
+      })()
+    : null;
+
   return (
     <div className="rounded border border-blue-200 bg-white p-3 space-y-2">
       {chips.length > 0 || gap.status || typeof gap.retry_count === 'number' ? (
@@ -971,6 +994,26 @@ function GapDetail({ gap }: { gap: UnresolvedCall }) {
             </span>
           ))}
           <GapStatusChips gap={gap} size="md" />
+        </div>
+      ) : null}
+      {hasLastAttempt ? (
+        <div className={`rounded border px-2 py-1.5 text-xs ${categoryTone}`}>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] uppercase tracking-wide opacity-70">
+              last attempt
+            </span>
+            {humanTimestamp ? (
+              <span
+                className="font-mono text-[11px] opacity-80"
+                title={lastTimestamp ?? undefined}
+              >
+                {humanTimestamp}
+              </span>
+            ) : null}
+          </div>
+          {lastReason ? (
+            <div className="font-mono break-words mt-0.5">{lastReason}</div>
+          ) : null}
         </div>
       ) : null}
       {snippet ? (

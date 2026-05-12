@@ -49,6 +49,20 @@ export interface UnresolvedCall {
   candidates?: string[];
   retry_count?: number;
   status?: string;
+  /**
+   * ISO-8601 UTC timestamp of the most recent failed repair attempt
+   * (architecture.md §3 Retry 审计字段). Written by the orchestrator
+   * each time the gate check fails; undefined means either never
+   * attempted or no graph_store was configured.
+   */
+  last_attempt_timestamp?: string | null;
+  /**
+   * Human-readable reason (≤200 chars, `<category>: <summary>`) for the
+   * last failed attempt. `<category>` ∈ `{gate_failed, agent_error,
+   * subprocess_timeout, subprocess_crash}`. Surfaced in ReviewQueue
+   * GapDetail so reviewers don't need to read JSONL logs.
+   */
+  last_attempt_reason?: string | null;
   id?: string;
 }
 

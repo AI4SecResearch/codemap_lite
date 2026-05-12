@@ -113,12 +113,16 @@ Orchestrator: icsl_tools.py check-complete --source <id>
     ↓
 无残留 → SourcePoint.status = "complete" ✅
 有残留 → 残留 GAP 的 retry_count++
+         + last_attempt_timestamp = ISO-8601 now
+         + last_attempt_reason = 门禁给出的理由（例如 "gate_failed: <summary>" / "agent_exited_without_edge"）
     ├─ retry_count < 3 → 重启 Agent（新 CLI subprocess）
     └─ retry_count ≥ 3 → GAP.status = "unresolvable"
                           SourcePoint.status = "partial_complete"
 ```
 
 **GAP 级别重试**：每个 UnresolvedCall 独立追踪 retry_count，最多 3 次。已修复的 GAP 不会被重复处理（Agent 检查边已存在后跳过）。
+
+**Retry 审计字段**：`last_attempt_timestamp` + `last_attempt_reason` 在每次 retry_count 递增时由 Orchestrator 写回 UnresolvedCall 节点，**供前端 ReviewQueue `GapDetail` 直接展示**——审阅者不必翻 `logs/repair/<source_id>/*.jsonl` 就能看到"最后一次修复尝试失败的原因 + 时间"。契约：`last_attempt_timestamp` = ISO-8601 UTC 字符串；`last_attempt_reason` = 人读短句（≤200 字），格式约定 `<category>: <summary>`，`<category> ∈ {gate_failed, agent_error, subprocess_timeout, subprocess_crash}`。
 
 ### Agent 内循环
 
@@ -250,7 +254,7 @@ agent:
 | `File` | 源文件 | file_path, hash, primary_language |
 | `Function` | 函数 | signature, name, file_path, start_line, end_line, body_hash |
 | `SourcePoint` | 外部输入入口 | entry_point_kind, reason, function_id, status |
-| `UnresolvedCall` | 未解析的间接调用 | caller_id, call_expression, call_file, call_line, call_type, source_code_snippet, var_name, var_type, candidates, retry_count, status |
+| `UnresolvedCall` | 未解析的间接调用 | caller_id, call_expression, call_file, call_line, call_type, source_code_snippet, var_name, var_type, candidates, retry_count, status, last_attempt_timestamp, last_attempt_reason |
 | `RepairLog` | 修复审计日志 | caller_id, callee_id, call_location, repair_method, llm_response, timestamp, reasoning_summary |
 
 ### 关系类型

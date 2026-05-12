@@ -265,3 +265,94 @@ async def test_orchestrator_falls_back_when_feedback_store_missing(tmp_path):
     await orchestrator.run_repairs(["src_001"])
 
     assert captured["ce"] == ""
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_stamps_retry_audit_on_gate_failure(tmp_path):
+    """Failed gate check → pending GAPs on the source must get
+    ``last_attempt_timestamp`` + ``last_attempt_reason`` stamped by the
+    orchestrator so the frontend GapDetail surfaces "last attempt failed
+    at <ts> because <reason>" without reading JSONL logs
+    (architecture.md §3 Retry 审计字段).
+    """
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import FunctionNode, UnresolvedCallNode
+
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    store = InMemoryGraphStore()
+    caller = FunctionNode(
+        signature="void src_001(int)",
+        name="src_001",
+        file_path="foo.cpp",
+        start_line=1,
+        end_line=10,
+        body_hash="h",
+        id="src_001",
+    )
+    store.create_function(caller)
+    gap = UnresolvedCallNode(
+        caller_id="src_001",
+        call_expression="fn_ptr(x)",
+        call_file="foo.cpp",
+        call_line=7,
+        call_type="indirect",
+        source_code_snippet="fn_ptr(x);",
+        var_name="fn_ptr",
+        var_type="void (*)(int)",
+    )
+    store.create_unresolved_call(gap)
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        command="echo",
+        args=["done"],
+        max_concurrency=1,
+        neo4j_uri="bolt://localhost:7687",
+        neo4j_user="neo4j",
+        neo4j_password="test",
+        graph_store=store,
+    )
+    orchestrator = RepairOrchestrator(config=config)
+    orchestrator._check_gate = AsyncMock(return_value=False)
+
+    results = await orchestrator.run_repairs(["src_001"])
+
+    assert results[0].success is False
+    assert results[0].attempts == 3
+    stamped = store._unresolved_calls[gap.id]
+    assert stamped.last_attempt_timestamp is not None
+    # ISO-8601 UTC string — the orchestrator uses datetime.now(timezone.utc).isoformat()
+    assert "T" in stamped.last_attempt_timestamp
+    assert stamped.last_attempt_reason is not None
+    assert stamped.last_attempt_reason.startswith("gate_failed:")
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_noop_retry_stamp_when_graph_store_missing(tmp_path):
+    """Without a graph_store, retry stamping must noop silently so
+    existing callers that don't wire Neo4j stay green."""
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        command="echo",
+        args=["done"],
+        max_concurrency=1,
+        neo4j_uri="bolt://localhost:7687",
+        neo4j_user="neo4j",
+        neo4j_password="test",
+        # graph_store deliberately omitted
+    )
+    orchestrator = RepairOrchestrator(config=config)
+    orchestrator._check_gate = AsyncMock(return_value=False)
+
+    results = await orchestrator.run_repairs(["src_001"])
+
+    # Should not raise and should still run the full retry budget.
+    assert results[0].success is False
+    assert results[0].attempts == 3

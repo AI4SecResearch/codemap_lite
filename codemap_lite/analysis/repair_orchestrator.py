@@ -6,10 +6,12 @@ import json
 import os
 import shutil
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from codemap_lite.analysis.feedback_store import FeedbackStore
+from codemap_lite.graph.neo4j_store import GraphStore
 
 
 @dataclass
@@ -32,6 +34,11 @@ class RepairConfig:
     # 反馈机制 step 4). When set, the latest rendered markdown is written
     # to ``.icslpreprocess/counter_examples.md`` before each agent launch.
     feedback_store: FeedbackStore | None = None
+    # GraphStore used to stamp retry audit fields onto failing UnresolvedCalls
+    # (architecture.md §3 Retry 审计字段). When set, each gate failure writes
+    # last_attempt_timestamp + last_attempt_reason so the frontend GapDetail
+    # can surface "last attempt failure reason + time" without reading JSONL.
+    graph_store: GraphStore | None = None
 
 
 @dataclass
@@ -52,6 +59,10 @@ class RepairOrchestrator:
     def __init__(self, config: RepairConfig) -> None:
         self._config = config
         self._progress: dict[str, dict[str, Any]] = {}
+        # Per-source BFS cache for retry audit write-back. Populated on
+        # first gate failure per source; kept for the lifetime of the run
+        # since the reachable set does not shrink across retries.
+        self._reachable_cache: dict[str, set[str]] = {}
 
     def _inject_files(
         self,
@@ -203,6 +214,14 @@ class RepairOrchestrator:
                     return SourceRepairResult(
                         source_id=source_id, success=True, attempts=attempts
                     )
+                # Gate failed — stamp retry audit fields onto every pending
+                # UnresolvedCall for this source so ReviewQueue can surface
+                # "last attempt failed at <ts> because <reason>"
+                # (architecture.md §3 Retry 审计字段).
+                self._record_retry_attempt(
+                    source_id=source_id,
+                    reason="gate_failed: remaining pending GAPs",
+                )
             finally:
                 self._cleanup_injection(target_dir)
 
@@ -217,6 +236,42 @@ class RepairOrchestrator:
         """Check if all reachable GAPs for a source are resolved. Override in tests."""
         # In production, this calls icsl_tools.check_complete
         return True
+
+    def _record_retry_attempt(self, source_id: str, reason: str) -> None:
+        """Stamp last_attempt_{timestamp,reason} on every pending GAP for source.
+
+        architecture.md §3 Retry 审计字段: after each failed gate check,
+        the orchestrator is responsible for writing the audit fields to
+        Neo4j. Silently noop when no graph_store is configured so existing
+        tests and stub deployments stay green.
+        """
+        store = self._config.graph_store
+        if store is None:
+            return
+        timestamp = datetime.now(timezone.utc).isoformat()
+        for gap in store.get_unresolved_calls(status="pending"):
+            # Limit audit stamp to GAPs actually owned by this source's
+            # caller chain — but we don't have cheap reverse lookup here,
+            # so stamp all pending GAPs for this source's caller set via
+            # the source_id's reachable subgraph.
+            if self._is_gap_in_source(store, source_id, gap.caller_id):
+                store.update_unresolved_call_retry_state(
+                    call_id=gap.id, timestamp=timestamp, reason=reason
+                )
+
+    def _is_gap_in_source(
+        self, store: GraphStore, source_id: str, caller_id: str
+    ) -> bool:
+        """Return True if caller_id is reachable from source_id.
+
+        Cached per run to avoid re-BFS for every GAP in the same source.
+        """
+        reachable = self._reachable_cache.get(source_id)
+        if reachable is None:
+            subgraph = store.get_reachable_subgraph(source_id)
+            reachable = {fn.id for fn in subgraph["nodes"]}
+            self._reachable_cache[source_id] = reachable
+        return caller_id in reachable
 
     async def run_repairs(self, source_ids: list[str]) -> list[SourceRepairResult]:
         """Run repairs for multiple source points with concurrency control."""

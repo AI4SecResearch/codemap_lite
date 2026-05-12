@@ -77,6 +77,8 @@ class UnresolvedCallNode:
     candidates: list[str] = field(default_factory=list)
     retry_count: int = 0
     status: str = "pending"
+    last_attempt_timestamp: str | None = None
+    last_attempt_reason: str | None = None
     id: str = field(default_factory=lambda: str(uuid4()))
 
     def __hash__(self) -> int:
