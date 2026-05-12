@@ -61,8 +61,19 @@ class FeedbackStore:
         # Generate markdown (agent-readable)
         self._write_md()
 
-    def _write_md(self) -> None:
-        md_path = self._md_path()
+    def render_markdown(self) -> str:
+        """Render the current counter examples as agent-readable markdown.
+
+        Used both by :meth:`_write_md` (persistent copy next to the JSON
+        store) and by :class:`RepairOrchestrator` which injects the latest
+        snapshot into ``<target>/.icslpreprocess/counter_examples.md``
+        before each agent launch (architecture.md §3 反馈机制 step 4).
+        Returns an empty string when no examples exist so callers can
+        fall back to the "no counter examples yet" stub.
+        """
+        if not self._examples:
+            return ""
+
         lines = ["# Counter Examples (反例库)\n"]
         lines.append("以下是之前修复中出现的错误模式，请避免重复：\n")
 
@@ -73,4 +84,8 @@ class FeedbackStore:
             lines.append(f"- **正确目标**: `{ex.correct_target}`")
             lines.append("")
 
-        md_path.write_text("\n".join(lines), encoding="utf-8")
+        return "\n".join(lines)
+
+    def _write_md(self) -> None:
+        md_path = self._md_path()
+        md_path.write_text(self.render_markdown(), encoding="utf-8")

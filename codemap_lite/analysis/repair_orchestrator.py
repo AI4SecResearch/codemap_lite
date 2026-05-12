@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from codemap_lite.analysis.feedback_store import FeedbackStore
+
 
 @dataclass
 class RepairConfig:
@@ -26,6 +28,10 @@ class RepairConfig:
     env: dict[str, str] = field(default_factory=dict)
     # Capture subprocess stdout/stderr to these files (appended). None disables capture.
     log_dir: Path | None = None
+    # Counter-example source for agent feedback loop (architecture.md §3
+    # 反馈机制 step 4). When set, the latest rendered markdown is written
+    # to ``.icslpreprocess/counter_examples.md`` before each agent launch.
+    feedback_store: FeedbackStore | None = None
 
 
 @dataclass
@@ -148,11 +154,18 @@ class RepairOrchestrator:
         while attempts < max_attempts:
             attempts += 1
 
-            # Inject files
+            # Inject files — re-render counter examples each attempt so
+            # newly added feedback lands in the next agent launch
+            # (architecture.md §3 反馈机制 step 4).
+            counter_examples = (
+                self._config.feedback_store.render_markdown()
+                if self._config.feedback_store is not None
+                else ""
+            )
             self._inject_files(
                 target_dir=target_dir,
                 source_id=source_id,
-                counter_examples="",
+                counter_examples=counter_examples,
             )
 
             try:

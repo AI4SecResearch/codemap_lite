@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from codemap_lite.analysis.feedback_store import CounterExample, FeedbackStore
 from codemap_lite.analysis.repair_orchestrator import (
     RepairOrchestrator,
     RepairConfig,
@@ -163,3 +164,104 @@ async def test_orchestrator_retries_on_gate_failure(repair_config, tmp_path):
     results = await orchestrator.run_repairs(["src_001"])
     assert results[0].attempts == 3
     assert results[0].success is True
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_injects_feedback_store_counter_examples(tmp_path):
+    """Counter examples from FeedbackStore must land in .icslpreprocess/counter_examples.md.
+
+    architecture.md §3 反馈机制 step 4: "更新 counter_examples.md（最新反例库）".
+    """
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    store = FeedbackStore(storage_dir=tmp_path / "feedback")
+    store.add(
+        CounterExample(
+            call_context="dispatcher->handle(req)",
+            wrong_target="legacy_handler",
+            correct_target="modern_handler",
+            pattern="dispatcher vtable resolution must prefer modern_handler",
+        )
+    )
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        command="echo",
+        args=["done"],
+        max_concurrency=1,
+        neo4j_uri="bolt://localhost:7687",
+        neo4j_user="neo4j",
+        neo4j_password="test",
+        feedback_store=store,
+    )
+    orchestrator = RepairOrchestrator(config=config)
+
+    captured: dict[str, str] = {}
+    orig_inject = orchestrator._inject_files
+
+    def spy(target_dir, source_id, counter_examples):
+        captured["ce"] = counter_examples
+        orig_inject(
+            target_dir=target_dir,
+            source_id=source_id,
+            counter_examples=counter_examples,
+        )
+        # Snapshot the written file before _cleanup_injection removes it.
+        captured["on_disk"] = (
+            target_dir / ".icslpreprocess" / "counter_examples.md"
+        ).read_text(encoding="utf-8")
+
+    orchestrator._inject_files = spy  # type: ignore[assignment]
+    orchestrator._check_gate = AsyncMock(return_value=True)
+
+    await orchestrator.run_repairs(["src_001"])
+
+    # Rendered markdown passed to _inject_files
+    assert "dispatcher->handle(req)" in captured["ce"]
+    assert "legacy_handler" in captured["ce"]
+    assert "modern_handler" in captured["ce"]
+    assert "dispatcher vtable resolution" in captured["ce"]
+    # And the same content hit .icslpreprocess/counter_examples.md
+    assert "dispatcher->handle(req)" in captured["on_disk"]
+    assert "modern_handler" in captured["on_disk"]
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_falls_back_when_feedback_store_missing(tmp_path):
+    """No FeedbackStore → counter_examples.md keeps the stub so agent injection
+    still succeeds; backwards-compatible with existing RepairConfig callers."""
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        command="echo",
+        args=["done"],
+        max_concurrency=1,
+        neo4j_uri="bolt://localhost:7687",
+        neo4j_user="neo4j",
+        neo4j_password="test",
+        # feedback_store deliberately omitted
+    )
+    orchestrator = RepairOrchestrator(config=config)
+
+    captured: dict[str, str] = {}
+    orig_inject = orchestrator._inject_files
+
+    def spy(target_dir, source_id, counter_examples):
+        captured["ce"] = counter_examples
+        orig_inject(
+            target_dir=target_dir,
+            source_id=source_id,
+            counter_examples=counter_examples,
+        )
+
+    orchestrator._inject_files = spy  # type: ignore[assignment]
+    orchestrator._check_gate = AsyncMock(return_value=True)
+
+    await orchestrator.run_repairs(["src_001"])
+
+    assert captured["ce"] == ""

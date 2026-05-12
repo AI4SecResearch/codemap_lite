@@ -82,6 +82,7 @@ def repair(
     with the configured agent backend, and runs repairs concurrently
     (``agent.max_concurrency``). Prints a per-source summary at the end.
     """
+    from codemap_lite.analysis.feedback_store import FeedbackStore
     from codemap_lite.analysis.repair_orchestrator import (
         RepairConfig,
         RepairOrchestrator,
@@ -101,9 +102,17 @@ def repair(
         typer.echo("No source points to repair.")
         return
 
+    target_dir = Path(settings.project.target_dir)
+    # Share the same persistent store `serve` uses so feedback submitted
+    # via the API flows into the next repair run's CLAUDE.md injection
+    # (architecture.md §3 反馈机制 step 4).
+    feedback_store = FeedbackStore(
+        storage_dir=target_dir / ".codemap_lite" / "feedback"
+    )
+
     orch = RepairOrchestrator(
         RepairConfig(
-            target_dir=Path(settings.project.target_dir),
+            target_dir=target_dir,
             backend=settings.agent.backend,
             command=command,
             args=args,
@@ -112,6 +121,7 @@ def repair(
             neo4j_user=settings.neo4j.user,
             neo4j_password=settings.neo4j.password,
             log_dir=Path(log_dir) if log_dir else None,
+            feedback_store=feedback_store,
         )
     )
 
