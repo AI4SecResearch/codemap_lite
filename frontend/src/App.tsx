@@ -17,6 +17,10 @@ import { api, type Stats } from './api/client';
  * - `warn`    — amber pill (attention but not urgent)
  * - `alert`   — red pill (actively demands review)
  *
+ * `to` optionally overrides the NavLink target so warn/alert chips can
+ * deep-link into the pre-filtered sub-view (architecture.md §5 跨页面
+ * drill-down 契约). When omitted, the nav item's static `path` wins.
+ *
  * Kept as a pure derivation so the nav poller stays thin and each nav
  * item owns its own "what does the number mean" logic.
  */
@@ -24,6 +28,7 @@ type BadgeSpec = {
   count: number;
   tone: 'default' | 'warn' | 'alert';
   title: string;
+  to?: string;
 };
 
 type NavItem = {
@@ -67,6 +72,11 @@ const navItems: NavItem[] = [
         return {
           count: total,
           tone: 'alert',
+          // Auto drill-down: when the agent has abandoned a GAP we want
+          // "see red chip → 1 click → land on the abandoned list" to
+          // hold from any page, not just from the Dashboard StatCard
+          // (architecture.md §5 跨页面 drill-down 契约).
+          to: '/review?status=unresolvable',
           title: `${pending} pending · ${unresolvable} unresolvable — agent gave up on ${unresolvable} GAP${
             unresolvable === 1 ? '' : 's'
           }`,
@@ -76,6 +86,7 @@ const navItems: NavItem[] = [
         return {
           count: total,
           tone: 'warn',
+          to: '/review?status=pending',
           title: `${pending} pending GAP${pending === 1 ? '' : 's'} awaiting repair`,
         };
       }
@@ -132,10 +143,14 @@ export default function App() {
               {navItems.map((item) => {
                 const badge =
                   item.deriveBadge && stats ? item.deriveBadge(stats) : null;
+                // Nav chip may override the NavLink target so warn/alert
+                // chips deep-link into pre-filtered sub-views; default
+                // tone keeps the static path (architecture.md §5).
+                const to = badge?.to ?? item.path;
                 return (
                   <NavLink
                     key={item.path}
-                    to={item.path}
+                    to={to}
                     className={({ isActive }) =>
                       `text-sm inline-flex items-center gap-1.5 ${
                         isActive
