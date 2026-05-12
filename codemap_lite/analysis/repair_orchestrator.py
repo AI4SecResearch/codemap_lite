@@ -14,6 +14,17 @@ from codemap_lite.analysis.feedback_store import FeedbackStore
 from codemap_lite.graph.neo4j_store import GraphStore
 
 
+# architecture.md §3 Retry 审计字段: last_attempt_reason ≤ 200 chars.
+_MAX_REASON_LEN = 200
+
+
+def _truncate_reason(reason: str) -> str:
+    """Clip reason strings to the architecture-mandated 200-char cap."""
+    if len(reason) <= _MAX_REASON_LEN:
+        return reason
+    return reason[: _MAX_REASON_LEN - 1] + "…"
+
+
 @dataclass
 class RepairConfig:
     """Configuration for the repair orchestrator."""
@@ -196,14 +207,28 @@ class RepairOrchestrator:
                     stderr_target = log_fh
 
                 try:
-                    proc = await asyncio.create_subprocess_exec(
-                        *cmd,
-                        cwd=str(target_dir),
-                        stdout=stdout_target,
-                        stderr=stderr_target,
-                        env=env,
-                    )
-                    await proc.communicate()
+                    try:
+                        proc = await asyncio.create_subprocess_exec(
+                            *cmd,
+                            cwd=str(target_dir),
+                            stdout=stdout_target,
+                            stderr=stderr_target,
+                            env=env,
+                        )
+                        await proc.communicate()
+                    except (OSError, FileNotFoundError) as exc:
+                        # Subprocess failed to spawn or crashed mid-flight
+                        # (e.g. missing CLI binary). Per architecture.md §3
+                        # Retry 审计字段, stamp subprocess_crash and keep the
+                        # retry loop alive — never let the exception bubble
+                        # out and silently kill the source's retry budget.
+                        self._record_retry_attempt(
+                            source_id=source_id,
+                            reason=_truncate_reason(
+                                f"subprocess_crash: {type(exc).__name__}: {exc}"
+                            ),
+                        )
+                        continue
                 finally:
                     if log_fh is not None:
                         log_fh.close()

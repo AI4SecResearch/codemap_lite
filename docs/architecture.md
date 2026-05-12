@@ -122,7 +122,7 @@ Orchestrator: icsl_tools.py check-complete --source <id>
 
 **GAP 级别重试**：每个 UnresolvedCall 独立追踪 retry_count，最多 3 次。已修复的 GAP 不会被重复处理（Agent 检查边已存在后跳过）。
 
-**Retry 审计字段**：`last_attempt_timestamp` + `last_attempt_reason` 在每次 retry_count 递增时由 Orchestrator 写回 UnresolvedCall 节点，**供前端 ReviewQueue `GapDetail` 直接展示**——审阅者不必翻 `logs/repair/<source_id>/*.jsonl` 就能看到"最后一次修复尝试失败的原因 + 时间"。契约：`last_attempt_timestamp` = ISO-8601 UTC 字符串；`last_attempt_reason` = 人读短句（≤200 字），格式约定 `<category>: <summary>`，`<category> ∈ {gate_failed, agent_error, subprocess_timeout, subprocess_crash}`。
+**Retry 审计字段**：`last_attempt_timestamp` + `last_attempt_reason` 在每次 retry_count 递增时由 Orchestrator 写回 UnresolvedCall 节点，**供前端 ReviewQueue `GapDetail` 直接展示**——审阅者不必翻 `logs/repair/<source_id>/*.jsonl` 就能看到"最后一次修复尝试失败的原因 + 时间"。契约：`last_attempt_timestamp` = ISO-8601 UTC 字符串；`last_attempt_reason` = 人读短句（≤200 字），格式约定 `<category>: <summary>`，`<category> ∈ {gate_failed, agent_error, subprocess_timeout, subprocess_crash}`。**非门禁失败同样记账**：Agent 子进程 spawn 失败（例如 CLI 二进制缺失）、运行时崩溃、超时等非门禁路径的异常，Orchestrator 捕获后按相同契约 stamp（category 对应 `subprocess_crash` / `subprocess_timeout` / `agent_error`，summary 摘取异常类型 + 消息），**并继续走 retry 循环直到用完预算**，不允许让异常冒出 `_run_single_repair` 杀掉该 source 的重试。
 
 ### Agent 内循环
 

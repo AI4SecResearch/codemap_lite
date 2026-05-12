@@ -356,3 +356,76 @@ async def test_orchestrator_noop_retry_stamp_when_graph_store_missing(tmp_path):
     # Should not raise and should still run the full retry budget.
     assert results[0].success is False
     assert results[0].attempts == 3
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_handles_subprocess_spawn_failure(tmp_path):
+    """Missing CLI binary → each attempt must stamp ``subprocess_crash``
+    and retry loop must keep going through the full 3-attempt budget
+    (architecture.md §3 Retry 审计字段: 非门禁失败同样记账).
+
+    Before this fix, the FileNotFoundError from asyncio.create_subprocess_exec
+    bubbled out of ``_run_single_repair`` on the first attempt — no stamp,
+    no retry, the whole source silently died. Now the exception is caught
+    per-attempt, stamped with the ``subprocess_crash`` category, and the
+    while loop continues so ReviewQueue.GapDetail surfaces the failure.
+    """
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import FunctionNode, UnresolvedCallNode
+
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    store = InMemoryGraphStore()
+    caller = FunctionNode(
+        signature="void src_001(int)",
+        name="src_001",
+        file_path="foo.cpp",
+        start_line=1,
+        end_line=10,
+        body_hash="h",
+        id="src_001",
+    )
+    store.create_function(caller)
+    gap = UnresolvedCallNode(
+        caller_id="src_001",
+        call_expression="fn_ptr(x)",
+        call_file="foo.cpp",
+        call_line=7,
+        call_type="indirect",
+        source_code_snippet="fn_ptr(x);",
+        var_name="fn_ptr",
+        var_type="void (*)(int)",
+    )
+    store.create_unresolved_call(gap)
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        # Intentionally unreachable path so create_subprocess_exec raises
+        # FileNotFoundError on every attempt.
+        command="/nonexistent-binary-codemap-test-xyz",
+        args=["done"],
+        max_concurrency=1,
+        neo4j_uri="bolt://localhost:7687",
+        neo4j_user="neo4j",
+        neo4j_password="test",
+        graph_store=store,
+    )
+    orchestrator = RepairOrchestrator(config=config)
+    # Gate should never be consulted since spawn fails first; make this
+    # explicit so a regression that skips past the except branch fails loud.
+    gate_mock = AsyncMock(return_value=True)
+    orchestrator._check_gate = gate_mock
+
+    results = await orchestrator.run_repairs(["src_001"])
+
+    assert results[0].success is False
+    assert results[0].attempts == 3
+    gate_mock.assert_not_called()
+    stamped = store._unresolved_calls[gap.id]
+    assert stamped.last_attempt_timestamp is not None
+    assert stamped.last_attempt_reason is not None
+    assert stamped.last_attempt_reason.startswith("subprocess_crash:")
+    # ≤200-char cap from architecture.md §3 Retry 审计字段.
+    assert len(stamped.last_attempt_reason) <= 200
