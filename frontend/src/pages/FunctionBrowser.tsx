@@ -12,8 +12,30 @@ function groupByFile(functions: FunctionNode[]): Map<string, FunctionNode[]> {
   return m;
 }
 
+// architecture.md §5 跨页面 drill-down 契约：每行函数挂一个 GAP count
+// chip，点击跳 /review?caller=<id>。Chip 颜色按 backlog 大小分三档
+// (gray 0 / amber 1-2 / red 3+) 与其它 backlog surface（nav chip、
+// Dashboard StatCard）保持同一视觉语言（北极星 #1 + #2 + #5）。
+function GapChip({ count, href }: { count: number; href: string }) {
+  if (count === 0) return null;
+  const tone =
+    count >= 3
+      ? 'bg-red-100 text-red-800 hover:bg-red-200'
+      : 'bg-amber-100 text-amber-800 hover:bg-amber-200';
+  return (
+    <Link
+      to={href}
+      className={`inline-flex items-center justify-center min-w-[1.25rem] px-1.5 rounded-full text-[10px] font-semibold leading-[1.125rem] ${tone}`}
+      title={`${count} unresolved GAP${count === 1 ? '' : 's'} — review`}
+    >
+      {count}
+    </Link>
+  );
+}
+
 export default function FunctionBrowser() {
   const [functions, setFunctions] = useState<FunctionNode[]>([]);
+  const [gapCounts, setGapCounts] = useState<Map<string, number>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
@@ -25,8 +47,21 @@ export default function FunctionBrowser() {
     (async () => {
       setLoading(true);
       try {
-        const data = await api.getFunctions();
-        if (!cancelled) setFunctions(data);
+        // api.listUnresolved already supports pagination; 500 covers the
+        // CastEngine baseline with headroom. A missing/failed call just
+        // leaves the chip map empty (non-blocking — GAP chip is a
+        // surface affordance, not the page's primary payload).
+        const [fns, unresolved] = await Promise.all([
+          api.getFunctions(),
+          api.listUnresolved(500, 0).catch(() => ({ total: 0, items: [] })),
+        ]);
+        if (cancelled) return;
+        setFunctions(fns);
+        const counts = new Map<string, number>();
+        for (const g of unresolved.items) {
+          counts.set(g.caller_id, (counts.get(g.caller_id) ?? 0) + 1);
+        }
+        setGapCounts(counts);
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -40,6 +75,18 @@ export default function FunctionBrowser() {
 
   const grouped = useMemo(() => groupByFile(functions), [functions]);
   const files = useMemo(() => Array.from(grouped.keys()).sort(), [grouped]);
+
+  // Per-file GAP sums so the left file tree can surface which files
+  // host the heaviest backlog without the reviewer opening each one.
+  const fileGapSums = useMemo(() => {
+    const sums = new Map<string, number>();
+    for (const [file, fns] of grouped.entries()) {
+      let total = 0;
+      for (const f of fns) total += gapCounts.get(f.id) ?? 0;
+      sums.set(file, total);
+    }
+    return sums;
+  }, [grouped, gapCounts]);
 
   const filteredFiles = useMemo(() => {
     const term = fileSearch.trim().toLowerCase();
@@ -95,6 +142,7 @@ export default function FunctionBrowser() {
                 {filteredFiles.map((f) => {
                   const isSel = f === shownFile;
                   const count = grouped.get(f)?.length ?? 0;
+                  const gaps = fileGapSums.get(f) ?? 0;
                   const short = f.split('/').slice(-3).join('/');
                   return (
                     <li
@@ -105,7 +153,21 @@ export default function FunctionBrowser() {
                       title={f}
                       onClick={() => setSelectedFile(f)}
                     >
-                      <div className="truncate">{short}</div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="truncate flex-1">{short}</span>
+                        {gaps > 0 ? (
+                          <span
+                            className={`shrink-0 inline-flex items-center justify-center min-w-[1rem] px-1 rounded-full text-[9px] font-semibold leading-[1rem] ${
+                              gaps >= 3
+                                ? 'bg-red-100 text-red-700'
+                                : 'bg-amber-100 text-amber-700'
+                            }`}
+                            title={`${gaps} unresolved GAP${gaps === 1 ? '' : 's'} in this file`}
+                          >
+                            {gaps}
+                          </span>
+                        ) : null}
+                      </div>
                       <div className="text-[10px] text-gray-500">
                         {count} fn
                       </div>
@@ -152,30 +214,45 @@ export default function FunctionBrowser() {
                       Lines
                     </th>
                     <th className="px-3 py-2 text-left font-medium text-gray-500">
+                      GAPs
+                    </th>
+                    <th className="px-3 py-2 text-left font-medium text-gray-500">
                       Action
                     </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
-                  {filteredFunctions.map((f) => (
-                    <tr key={f.id} className="hover:bg-gray-50 align-top">
-                      <td className="px-3 py-2 font-mono text-xs">{f.name}</td>
-                      <td className="px-3 py-2 font-mono text-xs text-gray-600">
-                        {f.signature}
-                      </td>
-                      <td className="px-3 py-2 text-xs text-gray-500">
-                        {f.start_line}-{f.end_line}
-                      </td>
-                      <td className="px-3 py-2">
-                        <Link
-                          to={`/graph?function=${encodeURIComponent(f.id)}`}
-                          className="text-blue-600 hover:underline text-xs"
-                        >
-                          View chain →
-                        </Link>
-                      </td>
-                    </tr>
-                  ))}
+                  {filteredFunctions.map((f) => {
+                    const gapCount = gapCounts.get(f.id) ?? 0;
+                    return (
+                      <tr key={f.id} className="hover:bg-gray-50 align-top">
+                        <td className="px-3 py-2 font-mono text-xs">{f.name}</td>
+                        <td className="px-3 py-2 font-mono text-xs text-gray-600">
+                          {f.signature}
+                        </td>
+                        <td className="px-3 py-2 text-xs text-gray-500">
+                          {f.start_line}-{f.end_line}
+                        </td>
+                        <td className="px-3 py-2">
+                          <GapChip
+                            count={gapCount}
+                            href={`/review?caller=${encodeURIComponent(f.id)}`}
+                          />
+                          {gapCount === 0 ? (
+                            <span className="text-xs text-gray-300">—</span>
+                          ) : null}
+                        </td>
+                        <td className="px-3 py-2">
+                          <Link
+                            to={`/graph?function=${encodeURIComponent(f.id)}`}
+                            className="text-blue-600 hover:underline text-xs"
+                          >
+                            View chain →
+                          </Link>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             )}

@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api, Review, UnresolvedCall } from '../api/client';
 
@@ -83,14 +83,16 @@ function GapStatusChips({
 }
 
 export default function ReviewQueue() {
-  // architecture.md §5 跨页面 drill-down 契约：`?status=` 可选 query
-  // param 用作 statusFilter 初值，也在用户切换筛选时回写到 URL，让
-  // Dashboard StatCard 的链接能深链到预筛选列表（北极星 #1 & #5）。
+  // architecture.md §5 跨页面 drill-down 契约：`?status=` + `?caller=`
+  // 两个可选 query param 都作为对应筛选器的初值，也在用户切换/清除时
+  // 回写到 URL，让 Dashboard StatCard、nav chip、FunctionBrowser GAP
+  // chip 的链接能深链到预筛选列表（北极星 #1 & #5）。
   const [searchParams, setSearchParams] = useSearchParams();
   const initialStatus: StatusFilter = (() => {
     const raw = searchParams.get('status');
     return isStatusFilter(raw) ? raw : 'all';
   })();
+  const initialCaller: string | null = searchParams.get('caller');
 
   const [tab, setTab] = useState<Tab>('gaps');
   const [gaps, setGaps] = useState<UnresolvedCall[]>([]);
@@ -99,6 +101,7 @@ export default function ReviewQueue() {
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>(initialStatus);
+  const [callerFilter, setCallerFilter] = useState<string | null>(initialCaller);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   // When non-null, the "Mark wrong" modal is open for this gap — the user
@@ -125,6 +128,24 @@ export default function ReviewQueue() {
     }
   }, [statusFilter, searchParams, setSearchParams]);
 
+  // Mirror sync for `?caller=` — FunctionBrowser GAP chips deep-link
+  // into a pre-filtered caller view; clearing the chip strips the param
+  // so bookmarks/share behave like the status filter.
+  useEffect(() => {
+    const current = searchParams.get('caller');
+    if (callerFilter === null || callerFilter === '') {
+      if (current !== null) {
+        const next = new URLSearchParams(searchParams);
+        next.delete('caller');
+        setSearchParams(next, { replace: true });
+      }
+    } else if (current !== callerFilter) {
+      const next = new URLSearchParams(searchParams);
+      next.set('caller', callerFilter);
+      setSearchParams(next, { replace: true });
+    }
+  }, [callerFilter, searchParams, setSearchParams]);
+
   // React to external URL changes (e.g. reviewer clicking a second
   // Dashboard link while already on /review) — unlike component mount
   // we can't rely on the initial read; treat URL as source of truth.
@@ -134,8 +155,13 @@ export default function ReviewQueue() {
     if (want !== statusFilter) {
       setStatusFilter(want);
     }
-    // Intentionally only re-run on searchParams — statusFilter is
-    // the outgoing sync direction (covered by the effect above).
+    const rawCaller = searchParams.get('caller');
+    const wantCaller = rawCaller && rawCaller.length > 0 ? rawCaller : null;
+    if (wantCaller !== callerFilter) {
+      setCallerFilter(wantCaller);
+    }
+    // Intentionally only re-run on searchParams — outgoing sync is
+    // covered by the effects above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
@@ -169,8 +195,16 @@ export default function ReviewQueue() {
       const s = g.status ?? 'pending';
       return s === statusFilter;
     };
+    // architecture.md §5 drill-down 契约：?caller=<function_id> 精确匹配
+    // caller_id，让 FunctionBrowser 的 GAP chip 一键预筛选该函数的
+    // backlog（跨页面检索免手敲 caller_id）。
+    const byCaller = (g: UnresolvedCall) => {
+      if (!callerFilter) return true;
+      return g.caller_id === callerFilter;
+    };
     return gaps.filter((g) => {
       if (!byStatus(g)) return false;
+      if (!byCaller(g)) return false;
       if (!term) return true;
       return (
         g.caller_id.toLowerCase().includes(term) ||
@@ -179,7 +213,7 @@ export default function ReviewQueue() {
         (g.var_name ?? '').toLowerCase().includes(term)
       );
     });
-  }, [gaps, filter, statusFilter]);
+  }, [gaps, filter, statusFilter, callerFilter]);
 
   // Counts drive the status-filter chip labels so reviewers see the
   // unresolvable backlog without switching tabs — North Star #5 (state
@@ -443,6 +477,28 @@ export default function ReviewQueue() {
 
       {tab === 'gaps' ? (
         <>
+          {callerFilter ? (
+            // architecture.md §5 drill-down 契约：回应 `?caller=` — 给
+            // 审阅者一个可见、可清除的筛选 chip 表明当前列表已被按函数
+            // 预筛选（否则空列表很容易被误读成 backlog 已清或 search
+            // 挡住了）。点 × 清除即回写 URL 去掉 ?caller=.
+            <div className="flex items-center gap-2 text-xs bg-blue-50 border border-blue-200 rounded px-2 py-1">
+              <span className="text-gray-600">Filtering by caller:</span>
+              <span
+                className="font-mono text-blue-700 truncate max-w-[32rem]"
+                title={callerFilter}
+              >
+                {shorten(callerFilter)}
+              </span>
+              <button
+                className="ml-auto text-[11px] text-blue-700 hover:underline"
+                onClick={() => setCallerFilter(null)}
+                title="Clear caller filter"
+              >
+                × Clear
+              </button>
+            </div>
+          ) : null}
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <span className="text-gray-500">Status:</span>
             {(
@@ -552,28 +608,43 @@ export default function ReviewQueue() {
                           <div className="text-xs text-gray-500">
                             {gaps.length} GAP{gaps.length === 1 ? '' : 's'}{' '}
                             hidden by{' '}
-                            {statusFilter !== 'all' && filter.trim() ? (
-                              <>
-                                status=
-                                <span className="font-mono">{statusFilter}</span>{' '}
-                                and search=
-                                <span className="font-mono">
-                                  &ldquo;{filter.trim()}&rdquo;
+                            {(() => {
+                              const parts: ReactNode[] = [];
+                              if (statusFilter !== 'all') {
+                                parts.push(
+                                  <span key="s">
+                                    status=
+                                    <span className="font-mono">{statusFilter}</span>
+                                  </span>
+                                );
+                              }
+                              if (callerFilter) {
+                                parts.push(
+                                  <span key="c">
+                                    caller=
+                                    <span className="font-mono">
+                                      {shorten(callerFilter)}
+                                    </span>
+                                  </span>
+                                );
+                              }
+                              if (filter.trim()) {
+                                parts.push(
+                                  <span key="q">
+                                    search=
+                                    <span className="font-mono">
+                                      &ldquo;{filter.trim()}&rdquo;
+                                    </span>
+                                  </span>
+                                );
+                              }
+                              return parts.map((p, i) => (
+                                <span key={i}>
+                                  {i > 0 ? ' and ' : ''}
+                                  {p}
                                 </span>
-                              </>
-                            ) : statusFilter !== 'all' ? (
-                              <>
-                                status=
-                                <span className="font-mono">{statusFilter}</span>
-                              </>
-                            ) : (
-                              <>
-                                search=
-                                <span className="font-mono">
-                                  &ldquo;{filter.trim()}&rdquo;
-                                </span>
-                              </>
-                            )}
+                              ));
+                            })()}
                             .
                           </div>
                           <div className="flex justify-center gap-2 pt-1">
@@ -583,6 +654,14 @@ export default function ReviewQueue() {
                                 onClick={() => setStatusFilter('all')}
                               >
                                 Show all statuses
+                              </button>
+                            ) : null}
+                            {callerFilter ? (
+                              <button
+                                className="px-2 py-0.5 rounded border text-xs hover:bg-gray-50"
+                                onClick={() => setCallerFilter(null)}
+                              >
+                                Clear caller filter
                               </button>
                             ) : null}
                             {filter.trim() ? (
