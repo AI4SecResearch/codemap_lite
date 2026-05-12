@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>codemap-lite Dashboard</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
+<style>
+  #cy { width: 100%; height: 500px; border: 1px solid #e5e7eb; border-radius: 8px; }
+  .tab-active { border-bottom: 2px solid #3b82f6; color: #3b82f6; font-weight: 600; }
+  .card { background: white; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); padding: 1.5rem; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 9999px; font-size: 0.75rem; font-weight: 500; }
+  .loading { animation: pulse 1.5s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+</style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+<div id="app">
+  <!-- Header -->
+  <header class="bg-white shadow-sm border-b">
+    <div class="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
+      <h1 class="text-xl font-bold text-gray-900">codemap-lite</h1>
+      <div id="status-badge" class="badge bg-gray-100 text-gray-600">Connecting...</div>
+    </div>
+  </header>
+
+  <!-- Tabs -->
+  <nav class="max-w-7xl mx-auto px-4 mt-4 flex gap-6 border-b">
+    <button onclick="showTab('dashboard')" class="tab pb-2 tab-active" id="tab-dashboard">Dashboard</button>
+    <button onclick="showTab('source-points')" class="tab pb-2" id="tab-source-points">Source Points</button>
+    <button onclick="showTab('functions')" class="tab pb-2" id="tab-functions">Functions</button>
+    <button onclick="showTab('call-graph')" class="tab pb-2" id="tab-call-graph">Call Graph</button>
+    <button onclick="showTab('gaps')" class="tab pb-2" id="tab-gaps">GAPs</button>
+  </nav>
+
+  <!-- Content -->
+  <main class="max-w-7xl mx-auto px-4 py-6">
+    <!-- Dashboard -->
+    <div id="page-dashboard">
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
+        <div class="card text-center">
+          <div class="text-3xl font-bold text-blue-600" id="stat-files">-</div>
+          <div class="text-sm text-gray-500 mt-1">Files</div>
+        </div>
+        <div class="card text-center">
+          <div class="text-3xl font-bold text-green-600" id="stat-functions">-</div>
+          <div class="text-sm text-gray-500 mt-1">Functions</div>
+        </div>
+        <div class="card text-center">
+          <div class="text-3xl font-bold text-purple-600" id="stat-calls">-</div>
+          <div class="text-sm text-gray-500 mt-1">Call Edges</div>
+        </div>
+        <div class="card text-center">
+          <div class="text-3xl font-bold text-orange-600" id="stat-unresolved">-</div>
+          <div class="text-sm text-gray-500 mt-1">GAPs (Unresolved)</div>
+        </div>
+        <div class="card text-center">
+          <div class="text-3xl font-bold text-red-600" id="stat-source-points">-</div>
+          <div class="text-sm text-gray-500 mt-1">Source Points</div>
+        </div>
+      </div>
+      <!-- Source Points by Kind -->
+      <div class="card mb-6">
+        <h3 class="font-semibold text-gray-700 mb-3">Source Points by Kind</h3>
+        <div id="sp-by-kind" class="flex flex-wrap gap-2"></div>
+      </div>
+      <!-- Analysis Log -->
+      <div class="card">
+        <h3 class="font-semibold text-gray-700 mb-3">Live Progress</h3>
+        <div id="progress-log" class="font-mono text-xs text-gray-600 max-h-64 overflow-y-auto bg-gray-50 p-3 rounded"></div>
+      </div>
+    </div>
+
+    <!-- Source Points Page -->
+    <div id="page-source-points" class="hidden">
+      <div class="card mb-4">
+        <div class="flex gap-2 mb-3">
+          <select id="sp-filter-kind" onchange="loadSourcePoints()" class="border rounded px-2 py-1 text-sm">
+            <option value="">All Kinds</option>
+          </select>
+          <input id="sp-search" type="text" placeholder="Search signature..." oninput="filterSPTable()" class="border rounded px-2 py-1 text-sm flex-1">
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="bg-gray-50">
+              <tr>
+                <th class="text-left p-2">Kind</th>
+                <th class="text-left p-2">Signature</th>
+                <th class="text-left p-2">File</th>
+                <th class="text-left p-2">Line</th>
+                <th class="text-left p-2">Reason</th>
+              </tr>
+            </thead>
+            <tbody id="sp-table-body"></tbody>
+          </table>
+        </div>
+        <div id="sp-pagination" class="mt-3 text-sm text-gray-500"></div>
+      </div>
+    </div>
+
+    <!-- Functions Page -->
+    <div id="page-functions" class="hidden">
+      <div class="card">
+        <div class="flex gap-2 mb-3">
+          <input id="fn-search" type="text" placeholder="Search function name..." oninput="filterFunctions()" class="border rounded px-2 py-1 text-sm flex-1">
+          <select id="fn-file-filter" onchange="loadFunctions()" class="border rounded px-2 py-1 text-sm max-w-xs">
+            <option value="">All Files</option>
+          </select>
+        </div>
+        <div class="overflow-x-auto max-h-96 overflow-y-auto">
+          <table class="w-full text-sm">
+            <thead class="bg-gray-50 sticky top-0">
+              <tr>
+                <th class="text-left p-2">Name</th>
+                <th class="text-left p-2">File</th>
+                <th class="text-left p-2">Lines</th>
+                <th class="text-left p-2">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="fn-table-body"></tbody>
+          </table>
+        </div>
+        <div id="fn-count" class="mt-3 text-sm text-gray-500"></div>
+      </div>
+    </div>
+
+    <!-- Call Graph Page -->
+    <div id="page-call-graph" class="hidden">
+      <div class="card mb-4">
+        <div class="flex gap-2 mb-3">
+          <input id="cg-function-id" type="text" placeholder="Enter function ID..." class="border rounded px-2 py-1 text-sm flex-1">
+          <input id="cg-depth" type="number" value="3" min="1" max="20" class="border rounded px-2 py-1 text-sm w-20">
+          <button onclick="loadCallGraph()" class="bg-blue-500 text-white px-3 py-1 rounded text-sm hover:bg-blue-600">Show Graph</button>
+        </div>
+      </div>
+      <div class="card">
+        <div id="cy"></div>
+        <div id="cg-info" class="mt-3 text-sm text-gray-500"></div>
+      </div>
+    </div>
+
+    <!-- GAPs Page -->
+    <div id="page-gaps" class="hidden">
+      <div class="card">
+        <h3 class="font-semibold text-gray-700 mb-3">Unresolved Calls (GAPs)</h3>
+        <div id="gaps-summary" class="mb-3 text-sm text-gray-500"></div>
+        <div class="overflow-x-auto max-h-96 overflow-y-auto">
+          <table class="w-full text-sm">
+            <thead class="bg-gray-50 sticky top-0">
+              <tr>
+                <th class="text-left p-2">Callee Name</th>
+                <th class="text-left p-2">Call Type</th>
+                <th class="text-left p-2">File</th>
+                <th class="text-left p-2">Line</th>
+                <th class="text-left p-2">Candidates</th>
+              </tr>
+            </thead>
+            <tbody id="gaps-table-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+const API = window.location.origin;
+let allSourcePoints = [];
+let allFunctions = [];
+let cy = null;
+
+// Tab navigation
+function showTab(name) {
+  document.querySelectorAll('[id^="page-"]').forEach(p => p.classList.add('hidden'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('tab-active'));
+  document.getElementById('page-' + name).classList.remove('hidden');
+  document.getElementById('tab-' + name).classList.add('tab-active');
+  if (name === 'source-points') loadSourcePoints();
+  if (name === 'functions') loadFunctions();
+  if (name === 'gaps') loadGaps();
+}
+
+// Polling for stats
+async function pollStats() {
+  try {
+    const res = await fetch(API + '/api/v1/stats');
+    if (!res.ok) return;
+    const data = await res.json();
+    document.getElementById('stat-files').textContent = data.total_files || 0;
+    document.getElementById('stat-functions').textContent = data.total_functions || 0;
+    document.getElementById('stat-calls').textContent = data.total_calls || 0;
+    document.getElementById('stat-unresolved').textContent = data.total_unresolved || 0;
+    document.getElementById('stat-source-points').textContent = data.total_source_points || 0;
+    document.getElementById('status-badge').textContent = 'Connected';
+    document.getElementById('status-badge').className = 'badge bg-green-100 text-green-700';
+  } catch(e) {
+    document.getElementById('status-badge').textContent = 'Disconnected';
+    document.getElementById('status-badge').className = 'badge bg-red-100 text-red-700';
+  }
+}
+
+// Source points summary
+async function loadSPSummary() {
+  try {
+    const res = await fetch(API + '/api/v1/source-points/summary');
+    const data = await res.json();
+    const container = document.getElementById('sp-by-kind');
+    container.innerHTML = '';
+    const colors = {ipc:'blue', ability_lifecycle:'green', ffi:'purple', socket_recv:'orange', file_read:'red'};
+    for (const [kind, count] of Object.entries(data.by_kind || {})) {
+      const c = colors[kind] || 'gray';
+      container.innerHTML += `<span class="badge bg-${c}-100 text-${c}-700">${kind}: ${count}</span>`;
+    }
+    // Populate filter dropdown
+    const sel = document.getElementById('sp-filter-kind');
+    sel.innerHTML = '<option value="">All Kinds</option>';
+    for (const kind of Object.keys(data.by_kind || {})) {
+      sel.innerHTML += `<option value="${kind}">${kind}</option>`;
+    }
+  } catch(e) {}
+}
+
+// Source points table
+async function loadSourcePoints() {
+  const kind = document.getElementById('sp-filter-kind').value;
+  const url = kind ? `${API}/api/v1/source-points?kind=${kind}` : `${API}/api/v1/source-points`;
+  try {
+    const res = await fetch(url);
+    allSourcePoints = await res.json();
+    renderSPTable(allSourcePoints);
+  } catch(e) {}
+}
+
+function filterSPTable() {
+  const q = document.getElementById('sp-search').value.toLowerCase();
+  const filtered = allSourcePoints.filter(sp =>
+    (sp.signature || '').toLowerCase().includes(q) || (sp.file || '').toLowerCase().includes(q)
+  );
+  renderSPTable(filtered);
+}
+
+function renderSPTable(items) {
+  const tbody = document.getElementById('sp-table-body');
+  const show = items.slice(0, 100);
+  tbody.innerHTML = show.map(sp => `
+    <tr class="border-t hover:bg-gray-50">
+      <td class="p-2"><span class="badge bg-blue-100 text-blue-700">${sp.kind || '-'}</span></td>
+      <td class="p-2 font-mono text-xs">${sp.signature || '-'}</td>
+      <td class="p-2 text-xs truncate max-w-xs" title="${sp.file || ''}">${(sp.file || '').split('/').pop()}</td>
+      <td class="p-2">${sp.line || '-'}</td>
+      <td class="p-2 text-xs text-gray-500 truncate max-w-xs" title="${sp.reason || ''}">${sp.reason || '-'}</td>
+    </tr>
+  `).join('');
+  document.getElementById('sp-pagination').textContent = `Showing ${show.length} of ${items.length}`;
+}
+
+// Functions
+async function loadFunctions() {
+  const file = document.getElementById('fn-file-filter').value;
+  const url = file ? `${API}/api/v1/functions?file=${encodeURIComponent(file)}` : `${API}/api/v1/functions`;
+  try {
+    const res = await fetch(url);
+    allFunctions = await res.json();
+    renderFnTable(allFunctions);
+  } catch(e) {}
+}
+
+function filterFunctions() {
+  const q = document.getElementById('fn-search').value.toLowerCase();
+  const filtered = allFunctions.filter(fn => (fn.name || '').toLowerCase().includes(q));
+  renderFnTable(filtered);
+}
+
+function renderFnTable(items) {
+  const tbody = document.getElementById('fn-table-body');
+  const show = items.slice(0, 200);
+  tbody.innerHTML = show.map(fn => `
+    <tr class="border-t hover:bg-gray-50">
+      <td class="p-2 font-mono text-xs">${fn.name || '-'}</td>
+      <td class="p-2 text-xs truncate max-w-xs" title="${fn.file_path || ''}">${(fn.file_path || '').split('/').pop()}</td>
+      <td class="p-2 text-xs">${fn.start_line || '?'}-${fn.end_line || '?'}</td>
+      <td class="p-2"><button onclick="showCallGraphFor('${fn.id}')" class="text-blue-500 hover:underline text-xs">Graph</button></td>
+    </tr>
+  `).join('');
+  document.getElementById('fn-count').textContent = `Showing ${show.length} of ${items.length} functions`;
+}
+
+function showCallGraphFor(id) {
+  document.getElementById('cg-function-id').value = id;
+  showTab('call-graph');
+  loadCallGraph();
+}
+
+// Call Graph (Cytoscape)
+async function loadCallGraph() {
+  const fnId = document.getElementById('cg-function-id').value.trim();
+  const depth = document.getElementById('cg-depth').value || 3;
+  if (!fnId) return;
+  try {
+    const res = await fetch(`${API}/api/v1/functions/${encodeURIComponent(fnId)}/call-chain?depth=${depth}`);
+    if (!res.ok) { document.getElementById('cg-info').textContent = 'Function not found'; return; }
+    const data = await res.json();
+    renderCytoscape(data);
+    document.getElementById('cg-info').textContent =
+      `Nodes: ${data.nodes.length}, Edges: ${data.edges.length}, Unresolved: ${data.unresolved.length}`;
+  } catch(e) { document.getElementById('cg-info').textContent = 'Error: ' + e.message; }
+}
+
+function renderCytoscape(data) {
+  const elements = [];
+  for (const n of data.nodes) {
+    elements.push({ data: { id: n.id, label: n.name || n.id.split('/').pop() } });
+  }
+  for (const e of data.edges) {
+    elements.push({ data: { source: e.caller_id, target: e.callee_id, label: e.props.resolved_by || '' } });
+  }
+  for (const u of data.unresolved) {
+    const uid = 'gap_' + u.id;
+    elements.push({ data: { id: uid, label: '? ' + (u.callee_name || 'unknown') }, classes: 'gap' });
+    elements.push({ data: { source: u.caller_id, target: uid }, classes: 'gap-edge' });
+  }
+  if (cy) cy.destroy();
+  cy = cytoscape({
+    container: document.getElementById('cy'),
+    elements: elements,
+    style: [
+      { selector: 'node', style: { 'label': 'data(label)', 'font-size': '10px', 'background-color': '#3b82f6', 'color': '#1f2937', 'text-valign': 'bottom', 'text-margin-y': 5, 'width': 20, 'height': 20 } },
+      { selector: 'node.gap', style: { 'background-color': '#f97316', 'shape': 'diamond' } },
+      { selector: 'edge', style: { 'width': 1.5, 'line-color': '#9ca3af', 'target-arrow-color': '#9ca3af', 'target-arrow-shape': 'triangle', 'curve-style': 'bezier', 'font-size': '8px' } },
+      { selector: 'edge.gap-edge', style: { 'line-style': 'dashed', 'line-color': '#f97316' } },
+    ],
+    layout: { name: 'breadthfirst', directed: true, spacingFactor: 1.5 },
+  });
+}
+
+// GAPs
+async function loadGaps() {
+  try {
+    const res = await fetch(`${API}/api/v1/unresolved-calls?limit=200`);
+    const data = await res.json();
+    document.getElementById('gaps-summary').textContent = `Total unresolved calls: ${data.total}`;
+    const tbody = document.getElementById('gaps-table-body');
+    tbody.innerHTML = data.items.map(uc => `
+      <tr class="border-t hover:bg-gray-50">
+        <td class="p-2 font-mono text-xs">${uc.call_expression || '-'}</td>
+        <td class="p-2"><span class="badge bg-orange-100 text-orange-700">${uc.call_type || '-'}</span></td>
+        <td class="p-2 text-xs truncate max-w-xs" title="${uc.call_file || ''}">${(uc.call_file || '').split('/').pop()}</td>
+        <td class="p-2">${uc.call_line || '-'}</td>
+        <td class="p-2 text-xs">${(uc.candidates || []).length > 0 ? uc.candidates.join(', ') : 'none'}</td>
+      </tr>
+    `).join('');
+  } catch(e) { document.getElementById('gaps-summary').textContent = 'Error loading GAPs'; }
+}
+
+// Progress log
+function addLog(msg) {
+  const el = document.getElementById('progress-log');
+  const ts = new Date().toLocaleTimeString();
+  el.innerHTML += `<div>[${ts}] ${msg}</div>`;
+  el.scrollTop = el.scrollHeight;
+}
+
+// Init
+async function init() {
+  await pollStats();
+  await loadSPSummary();
+  setInterval(pollStats, 3000);
+  setInterval(loadSPSummary, 10000);
+  addLog('Dashboard connected. Polling for updates...');
+}
+init();
+</script>
+
+</body>
+</html>
