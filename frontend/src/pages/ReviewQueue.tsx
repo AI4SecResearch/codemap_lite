@@ -15,6 +15,41 @@ function isStatusFilter(v: string | null): v is StatusFilter {
   return v !== null && (STATUS_FILTERS as readonly string[]).includes(v);
 }
 
+// architecture.md §3 Retry 审计字段 locks 4 categories — reviewers
+// triaging ops (LLM stall / CLI misconfig) vs agent logic failures
+// should be able to isolate one bucket instead of eye-scanning the
+// 4 colored chips in GapDetail. Mirrors the ?status= contract.
+type CategoryFilter =
+  | 'all'
+  | 'gate_failed'
+  | 'agent_error'
+  | 'subprocess_crash'
+  | 'subprocess_timeout';
+
+const CATEGORY_FILTERS: readonly CategoryFilter[] = [
+  'all',
+  'gate_failed',
+  'agent_error',
+  'subprocess_crash',
+  'subprocess_timeout',
+];
+
+function isCategoryFilter(v: string | null): v is CategoryFilter {
+  return v !== null && (CATEGORY_FILTERS as readonly string[]).includes(v);
+}
+
+// Extract the <category> prefix from a last_attempt_reason (format
+// `<category>: <summary>`, architecture.md §3). Returns null if
+// the reason is missing / malformed so "no audit stamp yet" GAPs
+// aren't miscategorized into any bucket.
+function extractCategory(reason: string | null | undefined): string | null {
+  if (!reason) return null;
+  const idx = reason.indexOf(':');
+  if (idx < 0) return null;
+  const prefix = reason.slice(0, idx).trim();
+  return prefix.length > 0 ? prefix : null;
+}
+
 // Transient banner summarizing the last counter-example submission so
 // the reviewer can tell at a glance whether their pattern opened a new
 // rule or merged into an existing one — architecture.md §3 反馈机制
@@ -92,6 +127,10 @@ export default function ReviewQueue() {
     const raw = searchParams.get('status');
     return isStatusFilter(raw) ? raw : 'all';
   })();
+  const initialCategory: CategoryFilter = (() => {
+    const raw = searchParams.get('category');
+    return isCategoryFilter(raw) ? raw : 'all';
+  })();
   const initialCaller: string | null = searchParams.get('caller');
 
   const [tab, setTab] = useState<Tab>('gaps');
@@ -101,6 +140,7 @@ export default function ReviewQueue() {
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>(initialStatus);
+  const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>(initialCategory);
   const [callerFilter, setCallerFilter] = useState<string | null>(initialCaller);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
@@ -146,6 +186,23 @@ export default function ReviewQueue() {
     }
   }, [callerFilter, searchParams, setSearchParams]);
 
+  // Mirror sync for `?category=` — architecture.md §5 extends the
+  // drill-down contract to the 4 retry categories (Retry 审计字段).
+  useEffect(() => {
+    const current = searchParams.get('category');
+    if (categoryFilter === 'all') {
+      if (current !== null) {
+        const next = new URLSearchParams(searchParams);
+        next.delete('category');
+        setSearchParams(next, { replace: true });
+      }
+    } else if (current !== categoryFilter) {
+      const next = new URLSearchParams(searchParams);
+      next.set('category', categoryFilter);
+      setSearchParams(next, { replace: true });
+    }
+  }, [categoryFilter, searchParams, setSearchParams]);
+
   // React to external URL changes (e.g. reviewer clicking a second
   // Dashboard link while already on /review) — unlike component mount
   // we can't rely on the initial read; treat URL as source of truth.
@@ -159,6 +216,11 @@ export default function ReviewQueue() {
     const wantCaller = rawCaller && rawCaller.length > 0 ? rawCaller : null;
     if (wantCaller !== callerFilter) {
       setCallerFilter(wantCaller);
+    }
+    const rawCategory = searchParams.get('category');
+    const wantCategory: CategoryFilter = isCategoryFilter(rawCategory) ? rawCategory : 'all';
+    if (wantCategory !== categoryFilter) {
+      setCategoryFilter(wantCategory);
     }
     // Intentionally only re-run on searchParams — outgoing sync is
     // covered by the effects above.
@@ -202,9 +264,20 @@ export default function ReviewQueue() {
       if (!callerFilter) return true;
       return g.caller_id === callerFilter;
     };
+    // architecture.md §3 Retry 审计字段 + §5 drill-down 契约：按
+    // last_attempt_reason 的 <category>: 前缀精确匹配。未 stamp 过的
+    // GAP（category === null）在 all 以外的任何 bucket 都不命中——
+    // reviewer 在问"哪些 agent_error 还没修掉"时，把"还没试过"的
+    // GAP 算进去只会污染信号。
+    const byCategory = (g: UnresolvedCall) => {
+      if (categoryFilter === 'all') return true;
+      const cat = extractCategory(g.last_attempt_reason);
+      return cat === categoryFilter;
+    };
     return gaps.filter((g) => {
       if (!byStatus(g)) return false;
       if (!byCaller(g)) return false;
+      if (!byCategory(g)) return false;
       if (!term) return true;
       return (
         g.caller_id.toLowerCase().includes(term) ||
@@ -213,7 +286,7 @@ export default function ReviewQueue() {
         (g.var_name ?? '').toLowerCase().includes(term)
       );
     });
-  }, [gaps, filter, statusFilter, callerFilter]);
+  }, [gaps, filter, statusFilter, callerFilter, categoryFilter]);
 
   // Counts drive the status-filter chip labels so reviewers see the
   // unresolvable backlog without switching tabs — North Star #5 (state
@@ -227,6 +300,27 @@ export default function ReviewQueue() {
       else pending += 1;
     }
     return { all: gaps.length, pending, unresolvable };
+  }, [gaps]);
+
+  // architecture.md §3 Retry 审计字段 categories. Total-bucket counts
+  // let reviewers see backlog skew across the 4 failure modes without
+  // clicking each chip (North Star #5 state transparency).
+  const categoryCounts = useMemo(() => {
+    const counts = {
+      all: gaps.length,
+      gate_failed: 0,
+      agent_error: 0,
+      subprocess_crash: 0,
+      subprocess_timeout: 0,
+    };
+    for (const g of gaps) {
+      const cat = extractCategory(g.last_attempt_reason);
+      if (cat === 'gate_failed') counts.gate_failed += 1;
+      else if (cat === 'agent_error') counts.agent_error += 1;
+      else if (cat === 'subprocess_crash') counts.subprocess_crash += 1;
+      else if (cat === 'subprocess_timeout') counts.subprocess_timeout += 1;
+    }
+    return counts;
   }, [gaps]);
 
   // Clamp selectedIndex when the filtered list shrinks/grows.
@@ -525,6 +619,46 @@ export default function ReviewQueue() {
               );
             })}
           </div>
+          {/*
+            architecture.md §5 drill-down 契约扩展：`?category=<cat>`
+            isolates GAPs whose last_attempt_reason starts with one of
+            the 4 Retry 审计字段 categories. Tones match GapDetail
+            last-attempt 分色 (§5) so chip ↔ panel share one visual
+            language — North Star #1 (category triage ≥1 scroll → 1
+            click) + #5 (state transparency across list + detail).
+          */}
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="text-gray-500">Category:</span>
+            {(
+              [
+                { key: 'all', label: 'All', count: categoryCounts.all, tone: 'bg-gray-100 text-gray-700 border-gray-300' },
+                { key: 'gate_failed', label: 'gate_failed', count: categoryCounts.gate_failed, tone: 'bg-amber-50 text-amber-800 border-amber-300' },
+                { key: 'agent_error', label: 'agent_error', count: categoryCounts.agent_error, tone: 'bg-red-50 text-red-800 border-red-300' },
+                { key: 'subprocess_crash', label: 'subprocess_crash', count: categoryCounts.subprocess_crash, tone: 'bg-fuchsia-50 text-fuchsia-800 border-fuchsia-300' },
+                { key: 'subprocess_timeout', label: 'subprocess_timeout', count: categoryCounts.subprocess_timeout, tone: 'bg-orange-50 text-orange-800 border-orange-300' },
+              ] as const
+            ).map((opt) => {
+              const active = categoryFilter === opt.key;
+              return (
+                <button
+                  key={opt.key}
+                  className={`px-2 py-0.5 rounded border ${
+                    active
+                      ? 'bg-blue-600 text-white border-blue-600'
+                      : opt.tone + ' hover:brightness-95'
+                  }`}
+                  onClick={() => setCategoryFilter(opt.key)}
+                  title={
+                    opt.key === 'all'
+                      ? 'Show GAPs regardless of retry category'
+                      : `Show GAPs whose last_attempt_reason starts with ${opt.key}:`
+                  }
+                >
+                  <span className="font-mono">{opt.label}</span> ({opt.count})
+                </button>
+              );
+            })}
+          </div>
           <input
             className="w-full border rounded px-3 py-1 text-sm"
             placeholder="Filter by caller, expression, call_type, var_name…"
@@ -628,6 +762,14 @@ export default function ReviewQueue() {
                                   </span>
                                 );
                               }
+                              if (categoryFilter !== 'all') {
+                                parts.push(
+                                  <span key="cat">
+                                    category=
+                                    <span className="font-mono">{categoryFilter}</span>
+                                  </span>
+                                );
+                              }
                               if (filter.trim()) {
                                 parts.push(
                                   <span key="q">
@@ -662,6 +804,14 @@ export default function ReviewQueue() {
                                 onClick={() => setCallerFilter(null)}
                               >
                                 Clear caller filter
+                              </button>
+                            ) : null}
+                            {categoryFilter !== 'all' ? (
+                              <button
+                                className="px-2 py-0.5 rounded border text-xs hover:bg-gray-50"
+                                onClick={() => setCategoryFilter('all')}
+                              >
+                                Show all categories
                               </button>
                             ) : null}
                             {filter.trim() ? (
