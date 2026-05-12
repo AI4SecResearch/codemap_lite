@@ -629,7 +629,23 @@ export default function ReviewQueue() {
                           className="px-3 py-2 font-mono text-xs text-gray-600"
                           title={g.caller_id}
                         >
-                          {shorten(g.caller_id)}
+                          {/*
+                            architecture.md §5 跨页面 drill-down 契约：
+                            caller → CallGraphView 预选中。CallGraphView
+                            已经消费 `?function=` 并高亮 root，审阅者看
+                            GAP 的同时一次点击就能看到它在调用链里是哪
+                            条 edge（北极星 #1 GAP 审阅耗时 + #2 调用链
+                            可信度可见性）。stopPropagation 避免点击时
+                            顺手触发行选中——否则导航前行会闪一下背景。
+                          */}
+                          <Link
+                            to={`/graph?function=${encodeURIComponent(g.caller_id)}`}
+                            onClick={(e) => e.stopPropagation()}
+                            className="text-blue-600 hover:underline decoration-dotted underline-offset-2 hover:decoration-solid"
+                            title={`Open call graph for ${g.caller_id}`}
+                          >
+                            {shorten(g.caller_id)}
+                          </Link>
                         </td>
                         <td className="px-3 py-2 font-mono text-xs text-gray-600">
                           {shorten(g.call_file)}:{g.call_line}

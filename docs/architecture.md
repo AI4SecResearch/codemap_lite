@@ -340,6 +340,7 @@ frontend/src/pages/
 - `ReviewQueue` 挂载时读 `?status=` query param，若值 ∈ `{all, pending, unresolvable}` 就作为初始 `statusFilter`；之后用户手动切换筛选也双向同步到 URL，保证链接可分享/可书签。
 - ReviewQueue 的 "反例已保存" 横幅把 pattern 链到 `/feedback?pattern=<encoded>`；`FeedbackLog` 挂载时读 `?pattern=` 并高亮（ring + 蓝底）+ `scrollIntoView` 到匹配的 CounterExample 卡片，让审阅者当场确认"下一轮会被注入到 repair CLAUDE.md 的 pattern 就是这条"（北极星 #5）。
 - 左侧导航的活体 chip 在 alert/warn tone 下自动把 NavLink 指向对应的预筛选子视图——Review chip `alert` 时 `to="/review?status=unresolvable"`、`warn` 时 `to="/review?status=pending"`、`default` 时回到 `/review`——与 StatCard drill-down 共用 query 约定，让"看到红色 chip 就 1 次点击落到 agent 放弃的 GAP 列表"成为从任意页面都成立的快捷路径。
+- ReviewQueue 的 caller 单元格是 `<Link to="/graph?function=<encoded caller_id>">`；`CallGraphView` 挂载时读 `?function=` 作为起始点，`api.getCallChain(id, depth)` 拉子图并高亮 root——把 "审阅这条 GAP → 看它在调用链里是哪条边" 从"复制 id → 切页 → 粘贴"压成一次点击（北极星 #1 GAP 审阅耗时 + #2 调用链可信度——审阅时 llm 修复的 edge 在图里是哪条）。复用已有 `?function=` 约定，不新增 surface。
 - 未来新增 drill-down 链接时沿用相同约定：`?<filterName>=<value>`，命中则透传，否则忽略（宽松解析，架构契约优先）。
 
 ---
