@@ -217,6 +217,7 @@ codemap-lite serve    [--config PATH] [--port 8000]     # 启 FastAPI
 - 2026-05-12 · frontend: CallGraphView 加 resolved_by 五档视觉语言（teal/green/blue/purple/orange）+ llm 虚线 + ★ 标记 + 左下角图例；对齐 architecture.md §2 CALLS.resolved_by 枚举，兑现北极星指标 #2（调用链可信度可见性）。
 - 2026-05-12 · agent: `icsl_tools.py` 补齐 argparse CLI（`query-reachable` / `write-edge` / `check-complete`）+ `__main__`；`repair_orchestrator._inject_files` 把文件复制到 `.icslpreprocess/icsl_tools.py`；closes Known gap #1，对齐 architecture.md §3 Repair Agent 工具协议；pytest 114/114 绿，`npm run build` 绿。
 - 2026-05-12 · cli: `codemap_lite/cli.py` 的 `repair` / `status` / `serve` 从 stub 升级为真实编排——`repair` 接入 `SourcePointClient` + `RepairOrchestrator`（并发 + 汇总 + `--source-points-file` 离线模式 + `--log-dir`），`status` 读 `.icslpreprocess/state.json` + `logs/repair/*/progress.json`，`serve` 真实 `uvicorn.run(create_app(), host, port)`；新增 7 个 CliRunner 测试；closes Known gap #4，对齐 architecture.md §9 (ADR #50)；pytest 121/121 绿，`npm run build` 绿。
+- 2026-05-13 · frontend: ReviewQueue 加键盘导航——`j/↓` 下一条、`k/↑` 上一条、`y` Mark correct、`n` Mark wrong、`Esc` 清除选择；所选行 ring + 蓝底高亮、自动 `scrollIntoView`；快捷键提示条 + 过滤框/textarea 内自动禁用；兑现候选优化方向 #1（键盘快捷键）+ 北极星指标 #1（单 GAP 审阅耗时）；pytest 121/121 绿，`npm run build` 绿。
 
 ---
 

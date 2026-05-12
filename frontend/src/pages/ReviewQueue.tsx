@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, Review, UnresolvedCall } from '../api/client';
 
 type Tab = 'gaps' | 'reviews';
@@ -16,6 +16,8 @@ export default function ReviewQueue() {
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
+  const tableRef = useRef<HTMLDivElement | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -49,6 +51,27 @@ export default function ReviewQueue() {
         (g.var_name ?? '').toLowerCase().includes(term)
     );
   }, [gaps, filter]);
+
+  // Clamp selectedIndex when the filtered list shrinks/grows.
+  useEffect(() => {
+    if (selectedIndex === null) return;
+    if (filteredGaps.length === 0) {
+      setSelectedIndex(null);
+    } else if (selectedIndex >= filteredGaps.length) {
+      setSelectedIndex(filteredGaps.length - 1);
+    }
+  }, [filteredGaps, selectedIndex]);
+
+  // Scroll the selected row into view inside the scrollable table container.
+  useEffect(() => {
+    if (selectedIndex === null) return;
+    const container = tableRef.current;
+    if (!container) return;
+    const row = container.querySelector<HTMLTableRowElement>(
+      `tr[data-row-index="${selectedIndex}"]`
+    );
+    row?.scrollIntoView({ block: 'nearest' });
+  }, [selectedIndex]);
 
   const markCorrect = async (g: UnresolvedCall) => {
     const key = g.id ?? `${g.caller_id}:${g.call_line}`;
@@ -95,6 +118,73 @@ export default function ReviewQueue() {
       setBusyId(null);
     }
   };
+
+  // Keyboard shortcuts for the Unresolved GAPs tab.
+  // j/↓ next · k/↑ prev · y = mark correct · n = mark wrong · Esc = clear selection.
+  useEffect(() => {
+    if (tab !== 'gaps') return;
+
+    const handler = (e: KeyboardEvent) => {
+      // Never hijack keys while the user is typing into an input/textarea.
+      const target = e.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable) {
+          return;
+        }
+      }
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (filteredGaps.length === 0) return;
+
+      const move = (delta: number) => {
+        setSelectedIndex((cur) => {
+          if (cur === null) return delta > 0 ? 0 : filteredGaps.length - 1;
+          const next = cur + delta;
+          if (next < 0) return 0;
+          if (next >= filteredGaps.length) return filteredGaps.length - 1;
+          return next;
+        });
+      };
+
+      switch (e.key) {
+        case 'j':
+        case 'ArrowDown':
+          e.preventDefault();
+          move(1);
+          break;
+        case 'k':
+        case 'ArrowUp':
+          e.preventDefault();
+          move(-1);
+          break;
+        case 'y': {
+          if (selectedIndex === null) return;
+          const g = filteredGaps[selectedIndex];
+          if (!g) return;
+          e.preventDefault();
+          void markCorrect(g);
+          break;
+        }
+        case 'n': {
+          if (selectedIndex === null) return;
+          const g = filteredGaps[selectedIndex];
+          if (!g) return;
+          e.preventDefault();
+          void markWrong(g);
+          break;
+        }
+        case 'Escape':
+          if (selectedIndex !== null) {
+            e.preventDefault();
+            setSelectedIndex(null);
+          }
+          break;
+      }
+    };
+
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [tab, filteredGaps, selectedIndex, markCorrect, markWrong]);
 
   return (
     <div className="p-6 space-y-4">
@@ -146,7 +236,32 @@ export default function ReviewQueue() {
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
           />
-          <div className="bg-white border rounded shadow-sm overflow-auto">
+          <div className="text-xs text-gray-500 flex flex-wrap gap-x-3 gap-y-1">
+            <span>
+              <kbd className="px-1 py-0.5 border rounded bg-gray-50">j</kbd>/
+              <kbd className="px-1 py-0.5 border rounded bg-gray-50">↓</kbd> next
+            </span>
+            <span>
+              <kbd className="px-1 py-0.5 border rounded bg-gray-50">k</kbd>/
+              <kbd className="px-1 py-0.5 border rounded bg-gray-50">↑</kbd> prev
+            </span>
+            <span>
+              <kbd className="px-1 py-0.5 border rounded bg-gray-50">y</kbd> mark correct
+            </span>
+            <span>
+              <kbd className="px-1 py-0.5 border rounded bg-gray-50">n</kbd> mark wrong
+            </span>
+            <span>
+              <kbd className="px-1 py-0.5 border rounded bg-gray-50">Esc</kbd> clear
+            </span>
+            <span className="text-gray-400">
+              (disabled while typing in the filter box)
+            </span>
+          </div>
+          <div
+            ref={tableRef}
+            className="bg-white border rounded shadow-sm overflow-auto max-h-[70vh]"
+          >
             <table className="min-w-full divide-y divide-gray-200 text-sm">
               <thead className="bg-gray-50 sticky top-0">
                 <tr>
@@ -175,8 +290,18 @@ export default function ReviewQueue() {
                   filteredGaps.map((g, i) => {
                     const key = g.id ?? `${g.caller_id}:${g.call_line}:${i}`;
                     const busy = busyId === key;
+                    const selected = i === selectedIndex;
                     return (
-                      <tr key={key} className="hover:bg-gray-50 align-top">
+                      <tr
+                        key={key}
+                        data-row-index={i}
+                        onClick={() => setSelectedIndex(i)}
+                        className={`align-top cursor-pointer ${
+                          selected
+                            ? 'bg-blue-50 ring-2 ring-inset ring-blue-400'
+                            : 'hover:bg-gray-50'
+                        }`}
+                      >
                         <td className="px-3 py-2">
                           <span className="inline-block px-2 py-0.5 rounded bg-amber-50 text-amber-700 text-xs">
                             {g.call_type}
