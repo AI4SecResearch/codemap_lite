@@ -417,6 +417,90 @@ class TestFeedbackEndpoint:
         assert first["wrong_target"] == "logger.warn"
         assert first["correct_target"] == "on_event"
 
+    def test_post_feedback_persists_to_store(self, tmp_path) -> None:
+        """POST /api/v1/feedback routes the CounterExample into FeedbackStore.
+
+        Closes the write half of the feedback loop (architecture.md §5
+        审阅交互): after a human marks a repair wrong and fills the correct
+        target, the generalized reason lands in the store and the next
+        repair round picks it up via ``RepairOrchestrator``.
+        """
+        store_dir = tmp_path / ".codemap_lite" / "feedback"
+        feedback_store = FeedbackStore(storage_dir=store_dir)
+
+        app = create_app(store=InMemoryGraphStore(), feedback_store=feedback_store)
+        client = TestClient(app)
+
+        payload = {
+            "call_context": "dispatcher->handle(req)",
+            "wrong_target": "legacy_handler",
+            "correct_target": "modern_handler",
+            "pattern": "dispatcher vtable resolution must prefer modern_handler",
+        }
+        resp = client.post("/api/v1/feedback", json=payload)
+        assert resp.status_code == 201
+        assert resp.json() == payload
+
+        # Round-trips through GET and through the underlying store
+        stored = feedback_store.list_all()
+        assert len(stored) == 1
+        assert stored[0].pattern == payload["pattern"]
+
+        listing = client.get("/api/v1/feedback").json()
+        assert len(listing) == 1
+        assert listing[0]["correct_target"] == "modern_handler"
+
+    def test_post_feedback_dedupes_by_pattern(self, tmp_path) -> None:
+        """Posting the same pattern twice does not duplicate entries.
+
+        FeedbackStore.add() merges by pattern (architecture.md §3 反馈机制
+        step 4 "相似 → 总结合并"); the HTTP layer inherits that contract.
+        """
+        feedback_store = FeedbackStore(
+            storage_dir=tmp_path / ".codemap_lite" / "feedback"
+        )
+        app = create_app(store=InMemoryGraphStore(), feedback_store=feedback_store)
+        client = TestClient(app)
+
+        payload = {
+            "call_context": "cb(x)",
+            "wrong_target": "wrong_cb",
+            "correct_target": "right_cb",
+            "pattern": "callback must be selected by x.role",
+        }
+        assert client.post("/api/v1/feedback", json=payload).status_code == 201
+        assert client.post("/api/v1/feedback", json=payload).status_code == 201
+
+        assert len(client.get("/api/v1/feedback").json()) == 1
+
+    def test_post_feedback_requires_all_fields(self, tmp_path) -> None:
+        """Missing a required field → 422 (Pydantic validation)."""
+        feedback_store = FeedbackStore(
+            storage_dir=tmp_path / ".codemap_lite" / "feedback"
+        )
+        app = create_app(store=InMemoryGraphStore(), feedback_store=feedback_store)
+        client = TestClient(app)
+
+        resp = client.post(
+            "/api/v1/feedback",
+            json={"call_context": "foo()", "wrong_target": "a", "correct_target": "b"},
+        )
+        assert resp.status_code == 422
+
+    def test_post_feedback_without_store_returns_503(self) -> None:
+        """No store wired → 503 so the UI can surface a clear error."""
+        client, _ = get_test_client()
+        resp = client.post(
+            "/api/v1/feedback",
+            json={
+                "call_context": "foo()",
+                "wrong_target": "a",
+                "correct_target": "b",
+                "pattern": "p",
+            },
+        )
+        assert resp.status_code == 503
+
     def test_get_stats(self) -> None:
         client, store = get_test_client()
         fn = FunctionNode(

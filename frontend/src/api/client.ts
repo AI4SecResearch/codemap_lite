@@ -211,4 +211,10 @@ export const api = {
 
   // Feedback
   getFeedback: () => fetchJson<CounterExample[]>('/api/v1/feedback'),
+  createFeedback: (example: CounterExample) =>
+    fetchJson<CounterExample>('/api/v1/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(example),
+    }),
 };

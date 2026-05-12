@@ -17,6 +17,10 @@ export default function ReviewQueue() {
   const [filter, setFilter] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
+  // When non-null, the "Mark wrong" modal is open for this gap — the user
+  // fills the correct target + generalized pattern that will be POSTed to
+  // /api/v1/feedback (architecture.md §5 审阅标记错误时).
+  const [wrongFor, setWrongFor] = useState<UnresolvedCall | null>(null);
   const tableRef = useRef<HTMLDivElement | null>(null);
 
   const refresh = useCallback(async () => {
@@ -91,14 +95,36 @@ export default function ReviewQueue() {
   };
 
   const markWrong = async (g: UnresolvedCall) => {
+    // Open the counter-example modal — the actual POST happens in
+    // submitWrong(). Architecture.md §5 requires the reviewer to supply
+    // a correct target before we generate a counter example.
+    setWrongFor(g);
+  };
+
+  const submitWrong = async (
+    g: UnresolvedCall,
+    correctTarget: string,
+    pattern: string
+  ) => {
     const key = g.id ?? `${g.caller_id}:${g.call_line}`;
     setBusyId(key);
     try {
+      // Persist the counter example so the next repair round picks it up
+      // via RepairOrchestrator (architecture.md §3 反馈机制 step 4).
+      await api.createFeedback({
+        call_context: g.call_expression,
+        wrong_target: g.candidates?.[0] ?? '(unknown)',
+        correct_target: correctTarget,
+        pattern: pattern || correctTarget,
+      });
+      // Also record the reviewer's decision as a Review — preserves the
+      // existing audit trail surfaced in the Reviews tab.
       await api.createReview({
         function_id: g.caller_id,
-        comment: `marked wrong: ${g.call_expression} — trigger counter-example`,
+        comment: `marked wrong: ${g.call_expression} → ${correctTarget}`,
         status: 'rejected',
       });
+      setWrongFor(null);
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -432,6 +458,107 @@ export default function ReviewQueue() {
           </table>
         </div>
       )}
+      {wrongFor ? (
+        <MarkWrongModal
+          gap={wrongFor}
+          busy={
+            busyId === (wrongFor.id ?? `${wrongFor.caller_id}:${wrongFor.call_line}`)
+          }
+          onCancel={() => setWrongFor(null)}
+          onSubmit={(correct, pattern) => submitWrong(wrongFor, correct, pattern)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function MarkWrongModal({
+  gap,
+  busy,
+  onCancel,
+  onSubmit,
+}: {
+  gap: UnresolvedCall;
+  busy: boolean;
+  onCancel: () => void;
+  onSubmit: (correctTarget: string, pattern: string) => void;
+}) {
+  const [correctTarget, setCorrectTarget] = useState('');
+  const [pattern, setPattern] = useState('');
+
+  const canSubmit = correctTarget.trim().length > 0 && !busy;
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50"
+      onClick={onCancel}
+    >
+      <div
+        className="bg-white rounded shadow-lg w-full max-w-md p-4 space-y-3"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="text-lg font-semibold">Mark as wrong — add counter example</h2>
+        <p className="text-xs text-gray-500">
+          Architecture &sect;5: fill the correct target so the next repair
+          round avoids this mistake. The pattern (generalized rule) is
+          injected into the agent&rsquo;s <code>CLAUDE.md</code>.
+        </p>
+
+        <dl className="text-xs bg-gray-50 border rounded p-2 space-y-1">
+          <div className="flex gap-2">
+            <dt className="text-gray-500 w-24 shrink-0">call</dt>
+            <dd className="font-mono break-all">{gap.call_expression}</dd>
+          </div>
+          <div className="flex gap-2">
+            <dt className="text-gray-500 w-24 shrink-0">wrong target</dt>
+            <dd className="font-mono break-all text-red-700">
+              {gap.candidates?.[0] ?? '(unknown)'}
+            </dd>
+          </div>
+        </dl>
+
+        <label className="block text-sm">
+          <span className="text-gray-700">Correct target</span>
+          <input
+            autoFocus
+            className="mt-1 w-full border rounded px-2 py-1 text-sm font-mono"
+            placeholder="e.g. modern_handler"
+            value={correctTarget}
+            onChange={(e) => setCorrectTarget(e.target.value)}
+          />
+        </label>
+
+        <label className="block text-sm">
+          <span className="text-gray-700">
+            Generalized pattern{' '}
+            <span className="text-gray-400">(optional — defaults to correct target)</span>
+          </span>
+          <textarea
+            className="mt-1 w-full border rounded px-2 py-1 text-sm"
+            rows={2}
+            placeholder="e.g. dispatcher vtable resolution must prefer modern_handler"
+            value={pattern}
+            onChange={(e) => setPattern(e.target.value)}
+          />
+        </label>
+
+        <div className="flex justify-end gap-2 pt-1">
+          <button
+            className="px-3 py-1 rounded border text-sm hover:bg-gray-50"
+            onClick={onCancel}
+            disabled={busy}
+          >
+            Cancel
+          </button>
+          <button
+            className="px-3 py-1 rounded bg-red-600 text-white text-sm hover:bg-red-700 disabled:opacity-50"
+            onClick={() => onSubmit(correctTarget.trim(), pattern.trim())}
+            disabled={!canSubmit}
+          >
+            {busy ? 'Saving…' : 'Save counter example'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
