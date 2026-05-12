@@ -41,6 +41,12 @@ class RepairConfig:
     env: dict[str, str] = field(default_factory=dict)
     # Capture subprocess stdout/stderr to these files (appended). None disables capture.
     log_dir: Path | None = None
+    # Hard wall-clock timeout for a single agent subprocess. None = no timeout
+    # (architecture.md §3 超时护栏: default opt-in preserves the "Agent 自然完成"
+    # contract). When set, proc.communicate() is wrapped in asyncio.wait_for;
+    # on TimeoutError the orchestrator kills the subprocess and stamps
+    # `subprocess_timeout: <N>s` per architecture.md §3 Retry 审计字段.
+    subprocess_timeout_seconds: float | None = None
     # Counter-example source for agent feedback loop (architecture.md §3
     # 反馈机制 step 4). When set, the latest rendered markdown is written
     # to ``.icslpreprocess/counter_examples.md`` before each agent launch.
@@ -215,7 +221,31 @@ class RepairOrchestrator:
                             stderr=stderr_target,
                             env=env,
                         )
-                        await proc.communicate()
+                        timeout = self._config.subprocess_timeout_seconds
+                        if timeout is not None:
+                            try:
+                                await asyncio.wait_for(
+                                    proc.communicate(), timeout=timeout
+                                )
+                            except asyncio.TimeoutError:
+                                # architecture.md §3 超时护栏: kill the hung
+                                # agent, stamp subprocess_timeout, continue
+                                # the retry loop so the source's budget is
+                                # not silently burned by a wedged process.
+                                proc.kill()
+                                try:
+                                    await proc.wait()
+                                except Exception:
+                                    pass
+                                self._record_retry_attempt(
+                                    source_id=source_id,
+                                    reason=_truncate_reason(
+                                        f"subprocess_timeout: {timeout}s"
+                                    ),
+                                )
+                                continue
+                        else:
+                            await proc.communicate()
                     except (OSError, FileNotFoundError) as exc:
                         # Subprocess failed to spawn or crashed mid-flight
                         # (e.g. missing CLI binary). Per architecture.md §3

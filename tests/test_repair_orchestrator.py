@@ -502,3 +502,118 @@ async def test_orchestrator_stamps_agent_error_on_nonzero_exit(tmp_path):
     assert not stamped.last_attempt_reason.startswith("gate_failed:")
     # ≤200-char cap from architecture.md §3 Retry 审计字段.
     assert len(stamped.last_attempt_reason) <= 200
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_stamps_subprocess_timeout_on_hung_agent(tmp_path):
+    """Hung agent subprocess → wall-clock timeout must kill the process,
+    stamp ``subprocess_timeout: <N>s`` per attempt, and keep the retry loop
+    alive through the full 3-attempt budget.
+
+    architecture.md §3 超时护栏 makes this the 4th (and last) audit
+    category. Before this guard, a wedged CLI would occupy the source's
+    whole retry budget with no UI signal — nothing in GapDetail, nothing
+    in Dashboard; the only surface was a stuck progress.json. Now the
+    orchestrator enforces wall-clock fairness and the failure lands in
+    ReviewQueue as red subprocess_timeout alongside agent_error /
+    subprocess_crash / gate_failed (architecture.md §3 Retry 审计字段:
+    四档 category 完整落地).
+    """
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import FunctionNode, UnresolvedCallNode
+
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    store = InMemoryGraphStore()
+    caller = FunctionNode(
+        signature="void src_001(int)",
+        name="src_001",
+        file_path="foo.cpp",
+        start_line=1,
+        end_line=10,
+        body_hash="h",
+        id="src_001",
+    )
+    store.create_function(caller)
+    gap = UnresolvedCallNode(
+        caller_id="src_001",
+        call_expression="fn_ptr(x)",
+        call_file="foo.cpp",
+        call_line=7,
+        call_type="indirect",
+        source_code_snippet="fn_ptr(x);",
+        var_name="fn_ptr",
+        var_type="void (*)(int)",
+    )
+    store.create_unresolved_call(gap)
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        # ``sh -c 'sleep 5; :'`` reliably hangs for 5 s; the prompt
+        # appended by _build_command lands as ``$0`` and is ignored.
+        # (Plain ``sleep 5 <prompt>`` would error out as an invalid
+        # interval, landing in agent_error instead of timeout — exactly
+        # the regression this test is guarding against.)
+        command="sh",
+        args=["-c", "sleep 5; :"],
+        max_concurrency=1,
+        neo4j_uri="bolt://localhost:7687",
+        neo4j_user="neo4j",
+        neo4j_password="test",
+        graph_store=store,
+        # Small enough to trigger quickly, large enough to avoid CI flake.
+        subprocess_timeout_seconds=0.2,
+    )
+    orchestrator = RepairOrchestrator(config=config)
+    # Gate must not be consulted — timeout short-circuits before it.
+    gate_mock = AsyncMock(return_value=True)
+    orchestrator._check_gate = gate_mock
+
+    results = await orchestrator.run_repairs(["src_001"])
+
+    assert results[0].success is False
+    assert results[0].attempts == 3
+    gate_mock.assert_not_called()
+    stamped = store._unresolved_calls[gap.id]
+    assert stamped.last_attempt_timestamp is not None
+    assert stamped.last_attempt_reason is not None
+    assert stamped.last_attempt_reason.startswith("subprocess_timeout:")
+    assert "0.2s" in stamped.last_attempt_reason
+    # Must never collapse into neighbouring categories (regression guard).
+    assert not stamped.last_attempt_reason.startswith("gate_failed:")
+    assert not stamped.last_attempt_reason.startswith("agent_error:")
+    assert not stamped.last_attempt_reason.startswith("subprocess_crash:")
+    # ≤200-char cap from architecture.md §3 Retry 审计字段.
+    assert len(stamped.last_attempt_reason) <= 200
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_no_timeout_when_not_configured(tmp_path):
+    """Backwards compatibility: without ``subprocess_timeout_seconds``,
+    proc.communicate() must run without asyncio.wait_for so existing
+    callers preserve the ``不限时，Agent 自然完成`` contract from
+    architecture.md §3.
+    """
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        command="echo",
+        args=["done"],
+        max_concurrency=1,
+        neo4j_uri="bolt://localhost:7687",
+        neo4j_user="neo4j",
+        neo4j_password="test",
+        # subprocess_timeout_seconds deliberately omitted (default None)
+    )
+    orchestrator = RepairOrchestrator(config=config)
+    orchestrator._check_gate = AsyncMock(return_value=True)
+
+    results = await orchestrator.run_repairs(["src_001"])
+
+    assert results[0].success is True
+    assert results[0].attempts == 1

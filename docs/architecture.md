@@ -124,6 +124,8 @@ Orchestrator: icsl_tools.py check-complete --source <id>
 
 **Retry 审计字段**：`last_attempt_timestamp` + `last_attempt_reason` 在每次 retry_count 递增时由 Orchestrator 写回 UnresolvedCall 节点，**供前端 ReviewQueue `GapDetail` 直接展示**——审阅者不必翻 `logs/repair/<source_id>/*.jsonl` 就能看到"最后一次修复尝试失败的原因 + 时间"。契约：`last_attempt_timestamp` = ISO-8601 UTC 字符串；`last_attempt_reason` = 人读短句（≤200 字），格式约定 `<category>: <summary>`，`<category> ∈ {gate_failed, agent_error, subprocess_timeout, subprocess_crash}`。**非门禁失败同样记账**：Agent 子进程 spawn 失败（例如 CLI 二进制缺失）、运行时崩溃、超时等非门禁路径的异常，Orchestrator 捕获后按相同契约 stamp（category 对应 `subprocess_crash` / `subprocess_timeout` / `agent_error`，summary 摘取异常类型 + 消息），**并继续走 retry 循环直到用完预算**，不允许让异常冒出 `_run_single_repair` 杀掉该 source 的重试。
 
+**超时护栏（subprocess_timeout）**：`RepairConfig.subprocess_timeout_seconds` 是**可选 opt-in**（默认 `None` = 不限时，与 §3 开头"超时：不限时，Agent 自然完成"兼容）；当显式配置为正数时，Orchestrator 用 `asyncio.wait_for` 包住 `proc.communicate()`，到点抛 `asyncio.TimeoutError` → Orchestrator `proc.kill()` + `await proc.wait()` 回收进程 → stamp `last_attempt_reason = "subprocess_timeout: <N>s"`（`<N>` 取配置原值）→ `continue` 进入下一次 retry，**绝不允许让挂死的 agent 占满该 source 的 retry 预算且无任何 GapDetail 可见信号**。超时是 ops 信号（LLM 后端挂了 / 网络 stall / agent 死循环），与 `agent_error`（agent 起来了但失败）、`subprocess_crash`（spawn 本身失败）三档在 UI 上彻底分流。
+
 ### Agent 内循环
 
 Agent 的工作流程（CLAUDE.md 中描述）：
