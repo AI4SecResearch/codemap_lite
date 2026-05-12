@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import cytoscape, { Core, ElementDefinition, NodeSingular } from 'cytoscape';
 import { api, Subgraph, FunctionNode, UnresolvedCall } from '../api/client';
 
@@ -215,15 +215,22 @@ function Legend({
 function NodeInspector({
   selected,
   onExpand,
+  gapCountByCaller,
 }: {
   selected: { kind: string; data: unknown } | null;
   onExpand: (fnId: string) => void;
+  gapCountByCaller: Map<string, number>;
 }) {
   if (!selected) {
     return <p className="text-sm text-gray-500">Click a node to inspect.</p>;
   }
   if (selected.kind === 'function') {
     const fn = selected.data as FunctionNode;
+    // architecture.md §5 跨页面 drill-down 契约：function-node 分支挂
+    // "Review GAPs" 链接跳 /review?caller=<id>。count 由父级按当前
+    // 子图的 unresolved 聚合（只算本图可见的 GAP），0 时不渲染链接
+    // 避免空跳转（北极星 #1 GAP 审阅耗时 + #5 状态透明度）。
+    const gapCount = gapCountByCaller.get(fn.id) ?? 0;
     return (
       <div className="space-y-2 text-xs">
         <div>
@@ -246,6 +253,27 @@ function NodeInspector({
         >
           Center here
         </button>
+        {gapCount > 0 ? (
+          <Link
+            to={`/review?caller=${encodeURIComponent(fn.id)}`}
+            className={`mt-1 w-full px-2 py-1 rounded text-xs no-underline flex items-center justify-center gap-1.5 ${
+              gapCount >= 3
+                ? 'bg-red-100 text-red-800 hover:bg-red-200'
+                : 'bg-amber-100 text-amber-800 hover:bg-amber-200'
+            }`}
+            title={`${gapCount} unresolved GAP${gapCount === 1 ? '' : 's'} in this subgraph — open pre-filtered review list`}
+          >
+            <span>Review GAPs</span>
+            <span className="inline-flex items-center justify-center min-w-[1.25rem] px-1.5 rounded-full bg-white/70 text-[11px] font-semibold leading-[1.125rem]">
+              {gapCount}
+            </span>
+            <span aria-hidden>›</span>
+          </Link>
+        ) : (
+          <div className="mt-1 text-[11px] text-gray-400 text-center">
+            No unresolved GAPs in this subgraph
+          </div>
+        )}
       </div>
     );
   }
@@ -287,6 +315,18 @@ function NodeInspector({
             </ul>
           </div>
         ) : null}
+        {/* architecture.md §5 跨页面 drill-down 契约：unresolved 分支挂
+         * "Review this caller" 跳 /review?caller=<caller_id>，审阅者
+         * 从图里点到可疑 GAP 时一键回到预筛选 GAP 列表，免绕 ReviewQueue
+         * 手动搜 caller_id（北极星 #1 GAP 审阅耗时 + #2 调用链可信度）。 */}
+        <Link
+          to={`/review?caller=${encodeURIComponent(gap.caller_id)}`}
+          className="mt-1 w-full px-2 py-1 rounded bg-amber-100 text-amber-800 text-xs hover:bg-amber-200 no-underline flex items-center justify-center gap-1.5"
+          title={`Open review list filtered to caller ${gap.caller_id}`}
+        >
+          <span>Review this caller</span>
+          <span aria-hidden>›</span>
+        </Link>
       </div>
     );
   }
@@ -379,6 +419,20 @@ export default function CallGraphView() {
     }
     acc.unresolved = graph.unresolved.length;
     return acc;
+  }, [graph]);
+
+  // Per-caller GAP count within the current subgraph — used by the
+  // inspector's function-node branch to render a "Review GAPs" link
+  // with an in-context count. Deriving from `graph.unresolved` (not
+  // a fresh api.listUnresolved call) keeps the count consistent with
+  // what the user is looking at and avoids an extra round trip.
+  const gapCountByCaller = useMemo(() => {
+    const m = new Map<string, number>();
+    if (!graph) return m;
+    for (const g of graph.unresolved) {
+      m.set(g.caller_id, (m.get(g.caller_id) ?? 0) + 1);
+    }
+    return m;
   }, [graph]);
 
   const toggleKey = useCallback((key: FilterKey) => {
@@ -702,7 +756,11 @@ export default function CallGraphView() {
         </div>
         <div className="w-80 border rounded p-3 bg-white overflow-auto">
           <h2 className="font-semibold mb-2 text-sm">Node Inspector</h2>
-          <NodeInspector selected={selected} onExpand={onExpand} />
+          <NodeInspector
+            selected={selected}
+            onExpand={onExpand}
+            gapCountByCaller={gapCountByCaller}
+          />
         </div>
       </div>
     </div>
