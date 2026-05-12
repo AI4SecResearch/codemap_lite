@@ -107,6 +107,42 @@ function buildElements(
   return elements;
 }
 
+function Legend() {
+  // Colors here must stay in sync with the Cytoscape stylesheet above
+  // and with architecture.md §2 CALLS.resolved_by enum.
+  const items: { label: string; color: string; dashed?: boolean; marker?: string }[] = [
+    { label: 'symbol_table', color: '#0d9488' },
+    { label: 'signature', color: '#16a34a' },
+    { label: 'dataflow', color: '#2563eb' },
+    { label: 'context', color: '#9333ea' },
+    { label: 'llm', color: '#ea580c', dashed: true, marker: '★' },
+    { label: 'unresolved GAP', color: '#dc2626', dashed: true },
+  ];
+  return (
+    <div className="absolute bottom-2 left-2 bg-white/90 border rounded px-2 py-1.5 text-[10px] shadow-sm pointer-events-none">
+      <div className="font-semibold text-gray-700 mb-1">resolved_by</div>
+      <ul className="space-y-0.5">
+        {items.map((it) => (
+          <li key={it.label} className="flex items-center gap-1.5">
+            <span
+              className="inline-block"
+              style={{
+                width: 18,
+                height: 0,
+                borderTop: `2px ${it.dashed ? 'dashed' : 'solid'} ${it.color}`,
+              }}
+            />
+            <span style={{ color: it.color }}>
+              {it.marker ? `${it.marker} ` : ''}
+              {it.label}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function NodeInspector({
   selected,
   onExpand,
@@ -316,34 +352,89 @@ export default function CallGraphView() {
         {
           selector: 'node.unresolved',
           style: {
-            'background-color': '#fde68a',
-            'border-color': '#b45309',
-            'border-width': 1,
+            'background-color': '#fee2e2',
+            'border-color': '#dc2626',
+            'border-width': 2,
             'border-style': 'dashed',
             label: 'data(label)',
             'font-size': 8,
+            color: '#7f1d1d',
             shape: 'diamond',
             width: 'label',
             height: 20,
           },
         },
         {
+          // Default for any resolved edge (fallback if resolved_by is unknown)
           selector: 'edge.resolved',
           style: {
             width: 1.5,
-            'line-color': '#64748b',
-            'target-arrow-color': '#64748b',
+            'line-color': '#94a3b8',
+            'target-arrow-color': '#94a3b8',
             'target-arrow-shape': 'triangle',
             'curve-style': 'bezier',
+          },
+        },
+        // resolved_by 五档视觉语言 (architecture.md §2 CALLS.resolved_by
+        // ∈ {symbol_table, signature, dataflow, context, llm}).
+        // Color goes from high-confidence (teal/green) → low (orange),
+        // so reviewers can gauge trust at a glance.
+        {
+          selector: 'edge.resolved.symbol_table',
+          style: {
+            'line-color': '#0d9488',
+            'target-arrow-color': '#0d9488',
+            width: 1.8,
+          },
+        },
+        {
+          selector: 'edge.resolved.signature',
+          style: {
+            'line-color': '#16a34a',
+            'target-arrow-color': '#16a34a',
+            width: 1.6,
+          },
+        },
+        {
+          selector: 'edge.resolved.dataflow',
+          style: {
+            'line-color': '#2563eb',
+            'target-arrow-color': '#2563eb',
+            width: 1.6,
+          },
+        },
+        {
+          selector: 'edge.resolved.context',
+          style: {
+            'line-color': '#9333ea',
+            'target-arrow-color': '#9333ea',
+            width: 1.5,
+          },
+        },
+        {
+          // LLM-repaired edges: dashed + wider + distinct label marker.
+          // Reviewers should be able to spot these at a glance per
+          // CLAUDE.md 前端北极星指标 #2 (llm 修复的边一眼可辨).
+          selector: 'edge.resolved.llm',
+          style: {
+            'line-color': '#ea580c',
+            'target-arrow-color': '#ea580c',
+            'line-style': 'dashed',
+            width: 2,
+            label: '★',
+            'font-size': 12,
+            color: '#ea580c',
+            'text-rotation': 'autorotate',
+            'text-margin-y': -6,
           },
         },
         {
           selector: 'edge.unresolved',
           style: {
-            width: 1.5,
-            'line-color': '#b45309',
+            width: 2,
+            'line-color': '#dc2626',
             'line-style': 'dashed',
-            'target-arrow-color': '#b45309',
+            'target-arrow-color': '#dc2626',
             'target-arrow-shape': 'triangle',
             'curve-style': 'bezier',
           },
@@ -473,6 +564,7 @@ export default function CallGraphView() {
             className="absolute inset-0"
             aria-label="Call graph visualization"
           />
+          <Legend />
         </div>
         <div className="w-80 border rounded p-3 bg-white overflow-auto">
           <h2 className="font-semibold mb-2 text-sm">Node Inspector</h2>

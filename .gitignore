@@ -29,3 +29,6 @@ frontend/.vite/
 # E2E runtime artifacts
 tests/_e2e_repair_logs/
 .icslpreprocess/
+
+# Claude Code session state
+.claude/

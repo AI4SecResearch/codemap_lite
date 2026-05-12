@@ -213,7 +213,8 @@ codemap-lite serve    [--config PATH] [--port 8000]     # 启 FastAPI
 
 ## Loop Iteration Notes
 
-_(Empty — 每轮完成后追加一条简短事实笔记：本轮解决了什么 gap / 新发现的约定 / 新引入的 ADR 编号。保持 fact-only，无过程叙述。)_
+- 2026-05-12 · initial-landing: codemap_lite 六层 + frontend + tests + docs/ADR 首次落地到 origin/main（11 个分层 commit），对齐 architecture.md §1-§10；pytest 108/108 绿，`npm run build` 绿。
+- 2026-05-12 · frontend: CallGraphView 加 resolved_by 五档视觉语言（teal/green/blue/purple/orange）+ llm 虚线 + ★ 标记 + 左下角图例；对齐 architecture.md §2 CALLS.resolved_by 枚举，兑现北极星指标 #2（调用链可信度可见性）。
 
 ---
 
