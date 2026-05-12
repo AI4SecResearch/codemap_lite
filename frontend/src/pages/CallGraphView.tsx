@@ -107,37 +107,106 @@ function buildElements(
   return elements;
 }
 
-function Legend() {
-  // Colors here must stay in sync with the Cytoscape stylesheet above
-  // and with architecture.md §2 CALLS.resolved_by enum.
-  const items: { label: string; color: string; dashed?: boolean; marker?: string }[] = [
-    { label: 'symbol_table', color: '#0d9488' },
-    { label: 'signature', color: '#16a34a' },
-    { label: 'dataflow', color: '#2563eb' },
-    { label: 'context', color: '#9333ea' },
-    { label: 'llm', color: '#ea580c', dashed: true, marker: '★' },
-    { label: 'unresolved GAP', color: '#dc2626', dashed: true },
-  ];
+// Keys cover the five CALLS.resolved_by buckets (architecture.md §2) plus
+// the synthetic "unresolved" bucket for GAP nodes + dashed red edges.
+type FilterKey =
+  | 'symbol_table'
+  | 'signature'
+  | 'dataflow'
+  | 'context'
+  | 'llm'
+  | 'unresolved';
+
+const LEGEND_ITEMS: {
+  key: FilterKey;
+  label: string;
+  color: string;
+  dashed?: boolean;
+  marker?: string;
+}[] = [
+  { key: 'symbol_table', label: 'symbol_table', color: '#0d9488' },
+  { key: 'signature', label: 'signature', color: '#16a34a' },
+  { key: 'dataflow', label: 'dataflow', color: '#2563eb' },
+  { key: 'context', label: 'context', color: '#9333ea' },
+  { key: 'llm', label: 'llm', color: '#ea580c', dashed: true, marker: '★' },
+  { key: 'unresolved', label: 'unresolved GAP', color: '#dc2626', dashed: true },
+];
+
+/**
+ * Interactive legend for the Cytoscape canvas. Each row is a toggle
+ * that hides/shows its resolved_by bucket so reviewers can isolate one
+ * flavour (e.g. click every other row off to see only `llm`-repaired
+ * edges — tackles CLAUDE.md 前端北极星 #2 调用链可信度可见性 by
+ * making "spot the llm population" a one-click action). Counts are
+ * rendered in place so hidden buckets still telegraph their size.
+ *
+ * Controlled by the parent: `hiddenKeys` is the set of buckets
+ * currently hidden, and `onToggle(key)` flips a single key.
+ */
+function Legend({
+  counts,
+  hiddenKeys,
+  onToggle,
+  onReset,
+}: {
+  counts: Record<FilterKey, number>;
+  hiddenKeys: Set<FilterKey>;
+  onToggle: (key: FilterKey) => void;
+  onReset: () => void;
+}) {
+  const anyHidden = hiddenKeys.size > 0;
   return (
-    <div className="absolute bottom-2 left-2 bg-white/90 border rounded px-2 py-1.5 text-[10px] shadow-sm pointer-events-none">
-      <div className="font-semibold text-gray-700 mb-1">resolved_by</div>
+    <div className="absolute bottom-2 left-2 bg-white/95 border rounded px-2 py-1.5 text-[10px] shadow-sm">
+      <div className="flex items-center justify-between gap-3 mb-1">
+        <span className="font-semibold text-gray-700">resolved_by</span>
+        {anyHidden ? (
+          <button
+            type="button"
+            className="text-[10px] text-blue-600 hover:underline"
+            onClick={onReset}
+          >
+            show all
+          </button>
+        ) : null}
+      </div>
       <ul className="space-y-0.5">
-        {items.map((it) => (
-          <li key={it.label} className="flex items-center gap-1.5">
-            <span
-              className="inline-block"
-              style={{
-                width: 18,
-                height: 0,
-                borderTop: `2px ${it.dashed ? 'dashed' : 'solid'} ${it.color}`,
-              }}
-            />
-            <span style={{ color: it.color }}>
-              {it.marker ? `${it.marker} ` : ''}
-              {it.label}
-            </span>
-          </li>
-        ))}
+        {LEGEND_ITEMS.map((it) => {
+          const hidden = hiddenKeys.has(it.key);
+          const count = counts[it.key] ?? 0;
+          return (
+            <li key={it.key}>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={!hidden}
+                aria-label={`Toggle ${it.label} visibility`}
+                className={`flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-left hover:bg-gray-100 focus:outline-none focus:ring-1 focus:ring-blue-400 ${
+                  hidden ? 'opacity-40' : ''
+                }`}
+                onClick={() => onToggle(it.key)}
+              >
+                <span
+                  className="inline-block shrink-0"
+                  style={{
+                    width: 18,
+                    height: 0,
+                    borderTop: `2px ${it.dashed ? 'dashed' : 'solid'} ${it.color}`,
+                  }}
+                />
+                <span
+                  className={hidden ? 'line-through' : ''}
+                  style={{ color: it.color }}
+                >
+                  {it.marker ? `${it.marker} ` : ''}
+                  {it.label}
+                </span>
+                <span className="ml-auto tabular-nums text-gray-500">
+                  {count}
+                </span>
+              </button>
+            </li>
+          );
+        })}
       </ul>
     </div>
   );
@@ -246,6 +315,12 @@ export default function CallGraphView() {
   const [selected, setSelected] = useState<{ kind: string; data: unknown } | null>(
     null
   );
+  // Interactive legend state. Each key in the set corresponds to a
+  // resolved_by bucket (or the synthetic "unresolved" bucket) that
+  // should currently be hidden from the canvas. Driven by Legend
+  // clicks; applied via a cytoscape style effect below so reloads
+  // preserve the hide mask.
+  const [hiddenKeys, setHiddenKeys] = useState<Set<FilterKey>>(new Set());
 
   const startKind: StartKind = params.get('function')
     ? 'function'
@@ -283,6 +358,60 @@ export default function CallGraphView() {
     () => (graph ? buildElements(graph, startKind === 'function' ? startId : null) : []),
     [graph, startId, startKind]
   );
+
+  // Per-bucket counts for the legend chips. Kept as a memo so hidden
+  // rows still advertise their population size — reviewers can see
+  // "llm: 12 (hidden)" and decide whether to re-enable the flavour
+  // without first un-hiding it (北极星 #2 调用链可信度可见性).
+  const counts = useMemo<Record<FilterKey, number>>(() => {
+    const acc: Record<FilterKey, number> = {
+      symbol_table: 0,
+      signature: 0,
+      dataflow: 0,
+      context: 0,
+      llm: 0,
+      unresolved: 0,
+    };
+    if (!graph) return acc;
+    for (const e of graph.edges) {
+      const key = e.props.resolved_by as FilterKey;
+      if (key in acc) acc[key] += 1;
+    }
+    acc.unresolved = graph.unresolved.length;
+    return acc;
+  }, [graph]);
+
+  const toggleKey = useCallback((key: FilterKey) => {
+    setHiddenKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const resetHidden = useCallback(() => {
+    setHiddenKeys(new Set());
+  }, []);
+
+  // Apply the hide mask to the live Cytoscape instance. Uses the same
+  // class selectors as the stylesheet (`edge.resolved.<key>` and
+  // `edge.unresolved` + `node.unresolved`) so toggling is O(bucket)
+  // rather than re-building the element set. Re-runs on `elements`
+  // too so a fresh load respects the current mask.
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    for (const it of LEGEND_ITEMS) {
+      const hidden = hiddenKeys.has(it.key);
+      const display = hidden ? 'none' : 'element';
+      if (it.key === 'unresolved') {
+        cy.elements('node.unresolved, edge.unresolved').style('display', display);
+      } else {
+        cy.elements(`edge.resolved.${it.key}`).style('display', display);
+      }
+    }
+  }, [hiddenKeys, elements]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -564,7 +693,12 @@ export default function CallGraphView() {
             className="absolute inset-0"
             aria-label="Call graph visualization"
           />
-          <Legend />
+          <Legend
+            counts={counts}
+            hiddenKeys={hiddenKeys}
+            onToggle={toggleKey}
+            onReset={resetHidden}
+          />
         </div>
         <div className="w-80 border rounded p-3 bg-white overflow-auto">
           <h2 className="font-semibold mb-2 text-sm">Node Inspector</h2>
