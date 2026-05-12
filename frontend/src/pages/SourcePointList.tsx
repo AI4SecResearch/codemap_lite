@@ -1,9 +1,55 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api, SourcePoint } from '../api/client';
+import { api, SourceProgress, SourcePoint } from '../api/client';
+
+// architecture.md §3 Repair Agent 进度文件契约 + §8 analyze/status
+// schema：每个 source 点渲染一条 gaps_fixed/gaps_total mini bar + done/
+// current:<gap>/idle 状态，与 Dashboard `SourceProgressCard` 共用视觉
+// 语言。让审阅者在 SourcePointList 就能 triage "哪些已修完、哪些还在
+// 跑、哪些未动"，不必切 Dashboard 找对应卡片（北极星 #5 状态透明度
+// + #1 审阅耗时 + 候选优化方向 #4 进度与可观测性）。
+function SourceProgressCell({ row }: { row: SourceProgress | undefined }) {
+  if (!row || row.gaps_total === 0) {
+    // No progress file yet (repair hasn't visited this source, or the
+    // hook artefact hasn't been written). Render a muted dash so the
+    // column stays readable without implying "0/0 = done".
+    return <span className="text-gray-300 text-xs">—</span>;
+  }
+  const pct = Math.min(100, Math.round((row.gaps_fixed / row.gaps_total) * 100));
+  const done = row.gaps_fixed >= row.gaps_total;
+  const barColor = done ? 'bg-green-500' : 'bg-blue-500';
+  return (
+    <div className="min-w-[10rem] space-y-1">
+      <div className="flex items-center gap-2 text-xs text-gray-600">
+        <span className="shrink-0 tabular-nums">
+          {row.gaps_fixed}/{row.gaps_total}
+        </span>
+        <span className="tabular-nums text-gray-400">{pct}%</span>
+      </div>
+      <div className="h-1.5 w-full rounded bg-gray-100 overflow-hidden">
+        <div className={`h-full ${barColor}`} style={{ width: `${pct}%` }} />
+      </div>
+      <div className="text-[11px] text-gray-500 truncate">
+        {done ? (
+          <span className="text-green-700">done</span>
+        ) : row.current_gap ? (
+          <>
+            current:{' '}
+            <span className="font-mono text-gray-700">{row.current_gap}</span>
+          </>
+        ) : (
+          <span className="text-gray-400">idle</span>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export default function SourcePointList() {
   const [points, setPoints] = useState<SourcePoint[]>([]);
+  const [progress, setProgress] = useState<Map<string, SourceProgress>>(
+    new Map()
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [kindFilter, setKindFilter] = useState('');
@@ -24,6 +70,33 @@ export default function SourcePointList() {
     })();
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  // 5s poll of /api/v1/analyze/status for per-source progress rows.
+  // Mirrors App.tsx nav-chip cadence (browsing page, not operations
+  // page — Dashboard polls at 2s). Non-blocking: a failed poll keeps
+  // the last-known snapshot instead of blanking the column.
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const st = await api.getAnalyzeStatus();
+        if (cancelled) return;
+        const next = new Map<string, SourceProgress>();
+        for (const row of st.sources ?? []) {
+          next.set(row.source_id, row);
+        }
+        setProgress(next);
+      } catch {
+        // silent — progress column is a surface affordance
+      }
+    };
+    refresh();
+    const id = setInterval(refresh, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
     };
   }, []);
 
@@ -92,19 +165,20 @@ export default function SourcePointList() {
               <th className="px-4 py-2 text-left font-medium text-gray-500">Module</th>
               <th className="px-4 py-2 text-left font-medium text-gray-500">File:Line</th>
               <th className="px-4 py-2 text-left font-medium text-gray-500">Reason</th>
+              <th className="px-4 py-2 text-left font-medium text-gray-500">Progress</th>
               <th className="px-4 py-2 text-left font-medium text-gray-500">Action</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
             {loading ? (
               <tr>
-                <td colSpan={6} className="px-4 py-6 text-center text-gray-500">
+                <td colSpan={7} className="px-4 py-6 text-center text-gray-500">
                   Loading…
                 </td>
               </tr>
             ) : filtered.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-4 py-6 text-center text-gray-500">
+                <td colSpan={7} className="px-4 py-6 text-center text-gray-500">
                   No source points match.
                 </td>
               </tr>
@@ -122,6 +196,9 @@ export default function SourcePointList() {
                     {p.file}:{p.line}
                   </td>
                   <td className="px-4 py-2 text-gray-600">{p.reason}</td>
+                  <td className="px-4 py-2">
+                    <SourceProgressCell row={progress.get(p.id)} />
+                  </td>
                   <td className="px-4 py-2">
                     <Link
                       to={`/graph?source=${encodeURIComponent(p.id)}`}
