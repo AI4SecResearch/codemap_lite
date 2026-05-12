@@ -521,8 +521,81 @@ export default function ReviewQueue() {
                   </tr>
                 ) : filteredGaps.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-3 py-6 text-center text-gray-500">
-                      No unresolved GAPs.
+                    <td colSpan={6} className="px-3 py-8 text-center">
+                      {gaps.length === 0 ? (
+                        // Truly empty — distinguish from filter-hidden so
+                        // reviewers landing here via Dashboard/nav drill-down
+                        // (architecture.md §5) don't misread a clean graph
+                        // as a broken filter. North Star #5 state
+                        // transparency.
+                        <div className="space-y-1">
+                          <div className="text-sm font-medium text-green-700">
+                            All GAPs resolved.
+                          </div>
+                          <div className="text-xs text-gray-500">
+                            Trigger the repair agent from the Dashboard when
+                            new unresolved calls appear.
+                          </div>
+                        </div>
+                      ) : (
+                        // Filter-hidden — surface how many rows the current
+                        // filters are swallowing and give a one-click escape
+                        // so a stale deep-link from the nav/StatCard chip
+                        // (e.g. `?status=unresolvable` after the backlog
+                        // cleared between poll + click) doesn't look broken.
+                        // North Star #1 (review time — no guessing why the
+                        // list is empty) + candidate #4 (observability).
+                        <div className="space-y-2">
+                          <div className="text-sm font-medium text-gray-700">
+                            No GAPs match the current filters.
+                          </div>
+                          <div className="text-xs text-gray-500">
+                            {gaps.length} GAP{gaps.length === 1 ? '' : 's'}{' '}
+                            hidden by{' '}
+                            {statusFilter !== 'all' && filter.trim() ? (
+                              <>
+                                status=
+                                <span className="font-mono">{statusFilter}</span>{' '}
+                                and search=
+                                <span className="font-mono">
+                                  &ldquo;{filter.trim()}&rdquo;
+                                </span>
+                              </>
+                            ) : statusFilter !== 'all' ? (
+                              <>
+                                status=
+                                <span className="font-mono">{statusFilter}</span>
+                              </>
+                            ) : (
+                              <>
+                                search=
+                                <span className="font-mono">
+                                  &ldquo;{filter.trim()}&rdquo;
+                                </span>
+                              </>
+                            )}
+                            .
+                          </div>
+                          <div className="flex justify-center gap-2 pt-1">
+                            {statusFilter !== 'all' ? (
+                              <button
+                                className="px-2 py-0.5 rounded border text-xs hover:bg-gray-50"
+                                onClick={() => setStatusFilter('all')}
+                              >
+                                Show all statuses
+                              </button>
+                            ) : null}
+                            {filter.trim() ? (
+                              <button
+                                className="px-2 py-0.5 rounded border text-xs hover:bg-gray-50"
+                                onClick={() => setFilter('')}
+                              >
+                                Clear search
+                              </button>
+                            ) : null}
+                          </div>
+                        </div>
+                      )}
                     </td>
                   </tr>
                 ) : (
