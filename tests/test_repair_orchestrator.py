@@ -2374,3 +2374,60 @@ async def test_cleanup_called_when_subprocess_creation_fails(tmp_path):
     assert not (target_dir / ".icslpreprocess_src_001").exists(), (
         ".icslpreprocess_src_001 not cleaned up after subprocess creation failure"
     )
+
+
+@pytest.mark.asyncio
+async def test_progress_json_includes_edges_written_on_gate_pass(tmp_path):
+    """architecture.md §3: when gate passes, progress.json must include
+    'edges_written' field counting LLM-resolved edges in the reachable
+    subgraph. This lets the frontend show how many edges the agent wrote."""
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    # Mock graph_store that returns pending gaps (so the while loop enters)
+    # and a subgraph with 2 LLM edges (for _count_edges_written)
+    mock_gap = MagicMock()
+    mock_gap.retry_count = 0
+    mock_gap.id = "gap_1"
+
+    mock_store = MagicMock()
+    mock_store.get_pending_gaps_for_source.return_value = [mock_gap]
+    mock_store.get_reachable_subgraph.return_value = {
+        "nodes": [MagicMock(id="f1"), MagicMock(id="f2"), MagicMock(id="f3")],
+        "edges": [
+            MagicMock(caller_id="f1", callee_id="f2",
+                      props=MagicMock(resolved_by="llm")),
+            MagicMock(caller_id="f2", callee_id="f3",
+                      props=MagicMock(resolved_by="symbol_table")),
+            MagicMock(caller_id="f1", callee_id="f3",
+                      props=MagicMock(resolved_by="llm")),
+        ],
+        "unresolved": [],
+    }
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        command="echo",
+        args=["done"],
+        max_concurrency=1,
+        neo4j_uri="bolt://localhost:7687",
+        neo4j_user="neo4j",
+        neo4j_password="test",
+        graph_store=mock_store,
+    )
+    orchestrator = RepairOrchestrator(config=config)
+    orchestrator._check_gate = AsyncMock(return_value=True)
+
+    results = await orchestrator.run_repairs(["src_edges"])
+
+    assert results[0].success is True
+    progress_path = target_dir / "logs" / "repair" / "src_edges" / "progress.json"
+    assert progress_path.exists()
+    data = json.loads(progress_path.read_text(encoding="utf-8"))
+    assert "edges_written" in data, (
+        "architecture.md §3: progress.json must include 'edges_written' "
+        "when gate passes"
+    )
+    # 2 LLM edges in the mock subgraph
+    assert data["edges_written"] == 2
