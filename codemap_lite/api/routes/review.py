@@ -57,6 +57,15 @@ class EdgeCreate(BaseModel):
         return v
 
 
+class EdgeDelete(BaseModel):
+    """Request body for deleting a specific edge (architecture.md §5)."""
+
+    caller_id: str
+    callee_id: str
+    call_file: str
+    call_line: int
+
+
 def create_review_router() -> APIRouter:
     """Create the review router."""
     router = APIRouter(tags=["review"])
@@ -121,8 +130,26 @@ def create_review_router() -> APIRouter:
             "status": "created",
         }
 
+    @router.delete("/edges", status_code=204)
+    def delete_edge(request: Request, body: EdgeDelete) -> Response:
+        """Delete a specific CALLS edge by its identifying tuple.
+
+        architecture.md §5 审阅交互: '标记错误时 → 立即删除该 CALLS 边'.
+        """
+        store = request.app.state.store
+        deleted = store.delete_calls_edge(
+            caller_id=body.caller_id,
+            callee_id=body.callee_id,
+            call_file=body.call_file,
+            call_line=body.call_line,
+        )
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Edge not found")
+        return Response(status_code=204)
+
     @router.delete("/edges/{function_id}", status_code=204)
-    def delete_edges(request: Request, function_id: str) -> Response:
+    def delete_edges_for_function(request: Request, function_id: str) -> Response:
+        """Bulk-delete all edges touching a function (used by incremental invalidation)."""
         store = request.app.state.store
         store.delete_calls_edges_for_function(function_id)
         return Response(status_code=204)

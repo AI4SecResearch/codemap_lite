@@ -68,6 +68,10 @@ class GraphStore(Protocol):
 
     def delete_calls_edges_for_function(self, function_id: str) -> None: ...
 
+    def delete_calls_edge(
+        self, caller_id: str, callee_id: str, call_file: str, call_line: int
+    ) -> bool: ...
+
     def list_files(self) -> list[FileNode]: ...
 
     def list_functions(
@@ -308,6 +312,27 @@ class InMemoryGraphStore:
             for e in self._calls_edges
             if e.caller_id != function_id and e.callee_id != function_id
         ]
+
+    def delete_calls_edge(
+        self, caller_id: str, callee_id: str, call_file: str, call_line: int
+    ) -> bool:
+        """Delete a specific CALLS edge by its identifying tuple.
+
+        Returns True if an edge was found and deleted, False otherwise.
+        architecture.md §5 审阅交互: targeted edge deletion.
+        """
+        before = len(self._calls_edges)
+        self._calls_edges = [
+            e
+            for e in self._calls_edges
+            if not (
+                e.caller_id == caller_id
+                and e.callee_id == callee_id
+                and e.props.call_file == call_file
+                and e.props.call_line == call_line
+            )
+        ]
+        return len(self._calls_edges) < before
 
     def list_files(self) -> list[FileNode]:
         return list(self._files.values())
@@ -754,6 +779,27 @@ class Neo4jGraphStore:
         )
         with self._get_driver().session() as session:
             session.run(cypher, id=function_id).consume()
+
+    def delete_calls_edge(
+        self, caller_id: str, callee_id: str, call_file: str, call_line: int
+    ) -> bool:
+        """Delete a specific CALLS edge by its identifying tuple."""
+        cypher = (
+            "MATCH (a:Function {id: $caller_id})-[r:CALLS]->(b:Function {id: $callee_id}) "
+            "WHERE r.call_file = $call_file AND r.call_line = $call_line "
+            "DELETE r "
+            "RETURN count(r) AS deleted"
+        )
+        with self._get_driver().session() as session:
+            result = session.run(
+                cypher,
+                caller_id=caller_id,
+                callee_id=callee_id,
+                call_file=call_file,
+                call_line=call_line,
+            )
+            record = result.single()
+        return record is not None and record["deleted"] > 0
 
     def list_files(self) -> list[FileNode]:
         cypher = (

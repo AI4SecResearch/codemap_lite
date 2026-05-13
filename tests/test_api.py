@@ -1200,3 +1200,69 @@ class TestRepairLogsEndpoint:
         )
         populated = client.get("/api/v1/stats").json()
         assert populated["total_repair_logs"] == 2
+
+
+class TestEdgeDeletion:
+    """architecture.md §5 审阅交互: '标记错误时 → 立即删除该 CALLS 边 + 对应
+    RepairLog'. DELETE /api/v1/edges must target a specific edge by
+    (caller_id, callee_id, call_file, call_line), not bulk-delete."""
+
+    def test_delete_specific_edge(self) -> None:
+        """Deleting a specific edge by its identifying tuple."""
+        client, store = get_test_client()
+        fn1 = FunctionNode(
+            signature="void a()", name="a", file_path="f.cpp",
+            start_line=1, end_line=5, body_hash="h1", id="a",
+        )
+        fn2 = FunctionNode(
+            signature="void b()", name="b", file_path="f.cpp",
+            start_line=10, end_line=15, body_hash="h2", id="b",
+        )
+        fn3 = FunctionNode(
+            signature="void c()", name="c", file_path="f.cpp",
+            start_line=20, end_line=25, body_hash="h3", id="c",
+        )
+        store.create_function(fn1)
+        store.create_function(fn2)
+        store.create_function(fn3)
+        # Two edges from a
+        store.create_calls_edge("a", "b", CallsEdgeProps(
+            resolved_by="llm", call_type="direct",
+            call_file="f.cpp", call_line=3,
+        ))
+        store.create_calls_edge("a", "c", CallsEdgeProps(
+            resolved_by="symbol_table", call_type="direct",
+            call_file="f.cpp", call_line=4,
+        ))
+        assert len(store.list_calls_edges()) == 2
+
+        # Delete only the a→b edge
+        resp = client.request(
+            "DELETE", "/api/v1/edges",
+            json={
+                "caller_id": "a",
+                "callee_id": "b",
+                "call_file": "f.cpp",
+                "call_line": 3,
+            },
+        )
+        assert resp.status_code == 204
+
+        # Only a→c should remain
+        remaining = store.list_calls_edges()
+        assert len(remaining) == 1
+        assert remaining[0].callee_id == "c"
+
+    def test_delete_edge_not_found_returns_404(self) -> None:
+        """Deleting a non-existent edge returns 404."""
+        client, store = get_test_client()
+        resp = client.request(
+            "DELETE", "/api/v1/edges",
+            json={
+                "caller_id": "x",
+                "callee_id": "y",
+                "call_file": "f.cpp",
+                "call_line": 1,
+            },
+        )
+        assert resp.status_code == 404
