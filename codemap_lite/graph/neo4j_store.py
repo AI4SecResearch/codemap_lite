@@ -283,7 +283,27 @@ class InMemoryGraphStore:
         repair to capture the audit trail (caller_id + callee_id +
         call_location locator per ADR #51, plus repair_method,
         llm_response, timestamp, reasoning_summary).
+
+        Deduplicates on logical key (caller_id, callee_id, call_location).
         """
+        # Deduplicate on logical key
+        for existing_id, existing in list(self._repair_logs.items()):
+            if (
+                existing.caller_id == node.caller_id
+                and existing.callee_id == node.callee_id
+                and existing.call_location == node.call_location
+            ):
+                self._repair_logs[existing_id] = RepairLogNode(
+                    caller_id=node.caller_id,
+                    callee_id=node.callee_id,
+                    call_location=node.call_location,
+                    repair_method=node.repair_method,
+                    llm_response=node.llm_response,
+                    timestamp=node.timestamp,
+                    reasoning_summary=node.reasoning_summary,
+                    id=existing_id,
+                )
+                return existing_id
         self._repair_logs[node.id] = node
         return node.id
 
@@ -820,10 +840,9 @@ class Neo4jGraphStore:
 
     def create_repair_log(self, node: RepairLogNode) -> str:
         cypher = (
-            "MERGE (r:RepairLog {id: $id}) "
-            "SET r.caller_id = $caller_id, r.callee_id = $callee_id, "
-            "    r.call_location = $call_location, "
-            "    r.repair_method = $repair_method, "
+            "MERGE (r:RepairLog {caller_id: $caller_id, callee_id: $callee_id, call_location: $call_location}) "
+            "ON CREATE SET r.id = $id "
+            "SET r.repair_method = $repair_method, "
             "    r.llm_response = $llm_response, "
             "    r.timestamp = $timestamp, "
             "    r.reasoning_summary = $reasoning_summary"

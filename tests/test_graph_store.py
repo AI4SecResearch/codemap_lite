@@ -905,3 +905,43 @@ def test_create_unresolved_call_deduplicates_on_logical_key(store):
     )
     # The second call should have updated retry_count to 0
     assert matching[0].retry_count == 0
+
+
+def test_create_repair_log_deduplicates_on_logical_key(store):
+    """architecture.md §4: RepairLog is unique by (caller_id, callee_id, call_location).
+
+    Calling create_repair_log twice for the same logical key must update
+    the existing node (MERGE semantics), not create a duplicate.
+    """
+    log1 = RepairLogNode(
+        caller_id="func_A",
+        callee_id="func_B",
+        call_location="src/main.cpp:42",
+        repair_method="llm",
+        llm_response="first response",
+        timestamp="2026-05-13T00:00:00Z",
+        reasoning_summary="first reasoning",
+    )
+    log2 = RepairLogNode(
+        caller_id="func_A",
+        callee_id="func_B",
+        call_location="src/main.cpp:42",
+        repair_method="llm",
+        llm_response="second response",
+        timestamp="2026-05-13T01:00:00Z",
+        reasoning_summary="second reasoning",
+    )
+
+    store.create_repair_log(log1)
+    store.create_repair_log(log2)
+
+    # Should have exactly 1 RepairLog for this logical key
+    logs = store.get_repair_logs(
+        caller_id="func_A", callee_id="func_B", call_location="src/main.cpp:42"
+    )
+    assert len(logs) == 1, (
+        f"Expected 1 RepairLog for (func_A, func_B, src/main.cpp:42), got {len(logs)}"
+    )
+    # The second call should have updated the content
+    assert logs[0].llm_response == "second response"
+    assert logs[0].reasoning_summary == "second reasoning"
