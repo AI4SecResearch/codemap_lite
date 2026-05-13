@@ -125,3 +125,22 @@ def test_invalidate_file_removes_unresolved_calls():
 
     # gap2 should survive (caller f2 is in b.cpp)
     assert gap2.id in store._unresolved_calls
+
+
+def test_invalidate_file_reports_removed_edges_count(store_with_data):
+    """architecture.md §7: InvalidationResult.removed_edges must report
+    the number of CALLS edges deleted during cascade invalidation."""
+    updater = IncrementalUpdater(store=store_with_data)
+
+    # Before: 2 edges (f1→f2 and f3→f1)
+    assert len(store_with_data.list_calls_edges()) == 2
+
+    result = updater.invalidate_file("src/a.cpp")
+
+    # f1→f2 (both in a.cpp) and f3→f1 (f1 is in a.cpp) should both be deleted
+    assert result.removed_edges > 0, (
+        "removed_edges must be populated — currently always 0 (bug)"
+    )
+    # After invalidation, only edges not touching a.cpp functions remain
+    remaining = store_with_data.list_calls_edges()
+    assert len(remaining) == 0  # both edges touch f1 or f2

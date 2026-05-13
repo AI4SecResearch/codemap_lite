@@ -1066,3 +1066,191 @@ async def test_check_gate_returns_false_when_icsl_tools_missing(tmp_path):
     # Don't inject files — icsl_tools.py won't exist
     result = await orchestrator._check_gate("src_missing")
     assert result is False
+
+
+@pytest.mark.asyncio
+async def test_retry_stamps_all_pending_gaps_independently(tmp_path):
+    """architecture.md §3 Retry 审计字段: when gate fails, ALL pending
+    GAPs reachable from the source must have retry_count incremented
+    independently. Each GAP tracks its own retry budget."""
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import FunctionNode, UnresolvedCallNode
+
+    store = InMemoryGraphStore()
+    store.create_function(FunctionNode(
+        id="src_multi", name="entry", signature="void entry()",
+        file_path="m.cpp", start_line=1, end_line=20, body_hash="hm",
+    ))
+    # Two distinct GAPs for the same source
+    gap_a = UnresolvedCallNode(
+        caller_id="src_multi",
+        call_expression="fp1()",
+        call_file="m.cpp",
+        call_line=5,
+        call_type="indirect",
+        source_code_snippet="fp1();",
+        var_name="fp1",
+        var_type="void (*)()",
+    )
+    gap_b = UnresolvedCallNode(
+        caller_id="src_multi",
+        call_expression="fp2()",
+        call_file="m.cpp",
+        call_line=10,
+        call_type="indirect",
+        source_code_snippet="fp2();",
+        var_name="fp2",
+        var_type="void (*)()",
+    )
+    store.create_unresolved_call(gap_a)
+    store.create_unresolved_call(gap_b)
+
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        command="echo",
+        args=["done"],
+        max_concurrency=1,
+        neo4j_uri="bolt://localhost:7687",
+        neo4j_user="neo4j",
+        neo4j_password="test",
+        graph_store=store,
+    )
+    orchestrator = RepairOrchestrator(config=config)
+    orchestrator._check_gate = AsyncMock(return_value=False)
+
+    results = await orchestrator.run_repairs(["src_multi"])
+
+    assert results[0].success is False
+    # Both GAPs must have been stamped 3 times (max retries)
+    updated_a = store._unresolved_calls[gap_a.id]
+    updated_b = store._unresolved_calls[gap_b.id]
+    assert updated_a.retry_count == 3
+    assert updated_a.status == "unresolvable"
+    assert updated_b.retry_count == 3
+    assert updated_b.status == "unresolvable"
+    # Both must have timestamps
+    assert updated_a.last_attempt_timestamp is not None
+    assert updated_b.last_attempt_timestamp is not None
+
+
+@pytest.mark.asyncio
+async def test_retry_reason_format_matches_category_prefix(tmp_path):
+    """architecture.md §3 Retry 审计字段: last_attempt_reason must follow
+    format '<category>: <summary>' where category ∈ {gate_failed,
+    agent_error, subprocess_crash, subprocess_timeout}."""
+    import re
+
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import FunctionNode, UnresolvedCallNode
+
+    VALID_CATEGORIES = {
+        "gate_failed", "agent_error", "subprocess_crash", "subprocess_timeout"
+    }
+    reason_pattern = re.compile(
+        r"^(gate_failed|agent_error|subprocess_crash|subprocess_timeout): .+$"
+    )
+
+    store = InMemoryGraphStore()
+    store.create_function(FunctionNode(
+        id="src_fmt", name="entry", signature="void entry()",
+        file_path="f.cpp", start_line=1, end_line=10, body_hash="hf",
+    ))
+    gap = UnresolvedCallNode(
+        caller_id="src_fmt",
+        call_expression="x()",
+        call_file="f.cpp",
+        call_line=3,
+        call_type="indirect",
+        source_code_snippet="x();",
+        var_name="x",
+        var_type="void (*)()",
+    )
+    store.create_unresolved_call(gap)
+
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    # Test gate_failed category
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        command="echo",
+        args=["done"],
+        max_concurrency=1,
+        neo4j_uri="bolt://localhost:7687",
+        neo4j_user="neo4j",
+        neo4j_password="test",
+        graph_store=store,
+    )
+    orchestrator = RepairOrchestrator(config=config)
+    orchestrator._check_gate = AsyncMock(return_value=False)
+
+    await orchestrator.run_repairs(["src_fmt"])
+
+    updated = store._unresolved_calls[gap.id]
+    reason = updated.last_attempt_reason
+    assert reason is not None, "reason must be set after gate failure"
+    assert reason_pattern.match(reason), (
+        f"reason '{reason}' does not match '<category>: <summary>' format"
+    )
+    # Verify category is one of the valid ones
+    category = reason.split(":")[0]
+    assert category in VALID_CATEGORIES, f"unknown category: {category}"
+
+
+@pytest.mark.asyncio
+async def test_retry_audit_timestamp_is_iso8601_utc(tmp_path):
+    """architecture.md §3 line 116: last_attempt_timestamp must be
+    ISO-8601 UTC string."""
+    import re
+
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import FunctionNode, UnresolvedCallNode
+
+    store = InMemoryGraphStore()
+    store.create_function(FunctionNode(
+        id="src_ts", name="entry", signature="void entry()",
+        file_path="ts.cpp", start_line=1, end_line=10, body_hash="hts",
+    ))
+    gap = UnresolvedCallNode(
+        caller_id="src_ts",
+        call_expression="y()",
+        call_file="ts.cpp",
+        call_line=3,
+        call_type="indirect",
+        source_code_snippet="y();",
+        var_name="y",
+        var_type="void (*)()",
+    )
+    store.create_unresolved_call(gap)
+
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        command="echo",
+        args=["done"],
+        max_concurrency=1,
+        neo4j_uri="bolt://localhost:7687",
+        neo4j_user="neo4j",
+        neo4j_password="test",
+        graph_store=store,
+    )
+    orchestrator = RepairOrchestrator(config=config)
+    orchestrator._check_gate = AsyncMock(return_value=False)
+
+    await orchestrator.run_repairs(["src_ts"])
+
+    updated = store._unresolved_calls[gap.id]
+    ts = updated.last_attempt_timestamp
+    assert ts is not None
+    # ISO-8601 with UTC offset
+    iso_pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
+    assert re.match(iso_pattern, ts), f"not ISO-8601: {ts}"
+    assert "+00:00" in ts or ts.endswith("Z"), f"not UTC: {ts}"

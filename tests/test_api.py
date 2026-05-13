@@ -193,6 +193,12 @@ class TestAnalyzeEndpoint:
         resp = client.post("/api/v1/analyze", json={"mode": "invalid"})
         assert resp.status_code == 422
 
+    def test_analyze_trigger_missing_mode(self) -> None:
+        """architecture.md §8: POST /analyze requires 'mode' field."""
+        client, _ = get_test_client()
+        resp = client.post("/api/v1/analyze", json={})
+        assert resp.status_code == 422
+
     def test_analyze_repair(self) -> None:
         client, _ = get_test_client()
         resp = client.post("/api/v1/analyze/repair")
@@ -283,6 +289,58 @@ class TestSourcePointsEndpoint:
         data = resp.json()
         assert "nodes" in data
 
+    def test_get_source_point_reachable_full_schema(self) -> None:
+        """architecture.md §8: GET /source-points/{id}/reachable must return
+        {nodes: [...], edges: [...], unresolved: [...]} with proper field shapes."""
+        client, store = get_test_client()
+        caller = FunctionNode(
+            signature="void caller()", name="caller", file_path="a.cpp",
+            start_line=1, end_line=10, body_hash="hc", id="caller-1",
+        )
+        callee = FunctionNode(
+            signature="void callee()", name="callee", file_path="b.cpp",
+            start_line=1, end_line=5, body_hash="hd", id="callee-1",
+        )
+        store.create_function(caller)
+        store.create_function(callee)
+        store.create_calls_edge(
+            "caller-1", "callee-1",
+            CallsEdgeProps(
+                resolved_by="symbol_table", call_type="direct",
+                call_file="a.cpp", call_line=5,
+            ),
+        )
+        gap = UnresolvedCallNode(
+            caller_id="caller-1", call_expression="fp()",
+            call_file="a.cpp", call_line=8, call_type="indirect",
+            source_code_snippet="fp();", var_name="fp", var_type="void(*)()",
+        )
+        store.create_unresolved_call(gap)
+
+        resp = client.get("/api/v1/source-points/caller-1/reachable")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        # Must have all three top-level keys
+        assert set(data.keys()) >= {"nodes", "edges", "unresolved"}
+
+        # Nodes must have required fields
+        assert len(data["nodes"]) >= 1
+        node = data["nodes"][0]
+        for field in ("id", "name", "signature", "file_path"):
+            assert field in node, f"node missing field: {field}"
+
+        # Edges must have caller/callee/props
+        assert len(data["edges"]) >= 1
+        edge = data["edges"][0]
+        assert "caller_id" in edge or "source" in edge  # accept either naming
+
+        # Unresolved must have caller_id and call_expression
+        assert len(data["unresolved"]) >= 1
+        gap_data = data["unresolved"][0]
+        assert "caller_id" in gap_data
+        assert "call_expression" in gap_data
+
 
 class TestReviewEndpoint:
     def test_post_review(self) -> None:
@@ -335,6 +393,13 @@ class TestReviewEndpoint:
         review_id = create_resp.json()["id"]
         resp = client.delete(f"/api/v1/reviews/{review_id}")
         assert resp.status_code == 204
+
+    def test_delete_review_not_found_returns_404(self) -> None:
+        """architecture.md §8: DELETE /reviews/{id} must return 404 for
+        non-existent review."""
+        client, _ = get_test_client()
+        resp = client.delete("/api/v1/reviews/nonexistent-id-999")
+        assert resp.status_code == 404
 
     def test_post_edge(self) -> None:
         client, store = get_test_client()

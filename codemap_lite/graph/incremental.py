@@ -53,7 +53,11 @@ class IncrementalUpdater:
         # Step 3: Delete functions, their edges, and associated UnresolvedCalls
         # architecture.md §7: "删除旧 Function 节点及关联 CALLS 边 + UnresolvedCall"
         for fid in function_ids:
+            # Count edges before deletion for reporting
+            edges_before = len(self._store.list_calls_edges())
             self._store.delete_calls_edges_for_function(fid)
+            edges_after = len(self._store.list_calls_edges())
+            result.removed_edges += edges_before - edges_after
             # Delete UnresolvedCalls where this function is the caller
             gaps = self._store.get_unresolved_calls(caller_id=fid)
             for gap in gaps:

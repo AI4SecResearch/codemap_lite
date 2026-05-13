@@ -73,12 +73,14 @@ def write_edge(
         return {"skipped": True, "reason": "edge already exists"}
 
     # Create the CALLS edge
-    props = {
-        "resolved_by": "llm",
-        "call_type": call_type,
-        "call_file": call_file,
-        "call_line": call_line,
-    }
+    from codemap_lite.graph.schema import CallsEdgeProps as _CallsEdgeProps
+
+    props = _CallsEdgeProps(
+        resolved_by="llm",
+        call_type=call_type,
+        call_file=call_file,
+        call_line=call_line,
+    )
     store.create_calls_edge(caller_id, callee_id, props)
 
     # Create RepairLog (architecture.md §4 RepairLog schema + ADR #51

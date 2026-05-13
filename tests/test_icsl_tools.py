@@ -150,14 +150,25 @@ class MockGraphStoreForTools:
         return (caller_id, callee_id, call_file, call_line) in self.existing_edges
 
     def create_calls_edge(self, caller_id, callee_id, props):
-        self.edges_created.append({
-            "caller_id": caller_id,
-            "callee_id": callee_id,
-            "call_type": props.get("call_type", ""),
-            "call_file": props.get("call_file", ""),
-            "call_line": props.get("call_line", 0),
-            "resolved_by": props.get("resolved_by", "llm"),
-        })
+        # Accept both CallsEdgeProps dataclass and dict (backwards compat)
+        if hasattr(props, "call_type"):
+            self.edges_created.append({
+                "caller_id": caller_id,
+                "callee_id": callee_id,
+                "call_type": props.call_type,
+                "call_file": props.call_file,
+                "call_line": props.call_line,
+                "resolved_by": props.resolved_by,
+            })
+        else:
+            self.edges_created.append({
+                "caller_id": caller_id,
+                "callee_id": callee_id,
+                "call_type": props.get("call_type", ""),
+                "call_file": props.get("call_file", ""),
+                "call_line": props.get("call_line", 0),
+                "resolved_by": props.get("resolved_by", "llm"),
+            })
 
     def create_repair_log(self, log_data):
         self.repair_logs.append(log_data)
@@ -383,3 +394,158 @@ def test_cli_subprocess_end_to_end(tmp_path):
     assert "query-reachable" in result.stdout
     assert "write-edge" in result.stdout
     assert "check-complete" in result.stdout
+
+
+# --- Integration test with real InMemoryGraphStore ---
+
+
+def test_write_edge_full_lifecycle_with_real_store():
+    """architecture.md §3 修复成功时: write-edge must create CALLS edge,
+    create RepairLog, and delete the UnresolvedCall — all in one atomic
+    operation. Uses real InMemoryGraphStore (not mock)."""
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import (
+        FunctionNode,
+        UnresolvedCallNode,
+        CallsEdgeProps,
+    )
+
+    store = InMemoryGraphStore()
+
+    # Setup: two functions and an unresolved call
+    store.create_function(FunctionNode(
+        id="caller_a", name="caller", signature="void caller()",
+        file_path="src/a.cpp", start_line=1, end_line=10, body_hash="ha",
+    ))
+    store.create_function(FunctionNode(
+        id="callee_b", name="target", signature="void target()",
+        file_path="src/b.cpp", start_line=1, end_line=5, body_hash="hb",
+    ))
+    gap = UnresolvedCallNode(
+        caller_id="caller_a",
+        call_expression="fn_ptr(x)",
+        call_file="src/a.cpp",
+        call_line=5,
+        call_type="indirect",
+        source_code_snippet="fn_ptr(x);",
+        var_name="fn_ptr",
+        var_type="void (*)(int)",
+    )
+    store.create_unresolved_call(gap)
+
+    # Act: write-edge resolves the GAP
+    result = write_edge(
+        caller_id="caller_a",
+        callee_id="callee_b",
+        call_type="indirect",
+        call_file="src/a.cpp",
+        call_line=5,
+        store=store,
+        llm_response="fn_ptr is assigned DerivedHandler::handle at line 3",
+        reasoning_summary="ptr->handle() dispatches to DerivedHandler::handle",
+    )
+
+    assert result["skipped"] is False
+    assert result["edge_created"] is True
+
+    # Verify: CALLS edge exists
+    edges = store.list_calls_edges()
+    llm_edges = [e for e in edges if e.props.resolved_by == "llm"]
+    assert len(llm_edges) == 1
+    assert llm_edges[0].caller_id == "caller_a"
+    assert llm_edges[0].callee_id == "callee_b"
+
+    # Verify: RepairLog created with correct fields
+    logs = store.get_repair_logs()
+    assert len(logs) == 1
+    assert logs[0].caller_id == "caller_a"
+    assert logs[0].callee_id == "callee_b"
+    assert logs[0].call_location == "src/a.cpp:5"
+    assert logs[0].repair_method == "llm"
+    assert "DerivedHandler" in logs[0].llm_response
+    assert "DerivedHandler" in logs[0].reasoning_summary
+
+    # Verify: UnresolvedCall deleted
+    remaining = store.get_unresolved_calls(caller_id="caller_a")
+    assert len(remaining) == 0
+
+    # Verify: check-complete now returns True
+    complete_result = check_complete(source_id="caller_a", store=store)
+    assert complete_result["complete"] is True
+
+
+def test_write_edge_repair_log_timestamp_is_iso8601_utc():
+    """architecture.md §4 RepairLog + §3 line 116: timestamp must be
+    ISO-8601 UTC string. Verify format and timezone offset."""
+    import re
+
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import FunctionNode, UnresolvedCallNode
+
+    store = InMemoryGraphStore()
+    store.create_function(FunctionNode(
+        id="f1", name="a", signature="void a()",
+        file_path="x.cpp", start_line=1, end_line=5, body_hash="h1",
+    ))
+    store.create_function(FunctionNode(
+        id="f2", name="b", signature="void b()",
+        file_path="x.cpp", start_line=6, end_line=10, body_hash="h2",
+    ))
+    store.create_unresolved_call(UnresolvedCallNode(
+        caller_id="f1", call_expression="p()", call_file="x.cpp",
+        call_line=3, call_type="indirect",
+        source_code_snippet="p();", var_name="p", var_type="void(*)()",
+    ))
+
+    write_edge(
+        caller_id="f1", callee_id="f2", call_type="indirect",
+        call_file="x.cpp", call_line=3, store=store,
+    )
+
+    logs = store.get_repair_logs()
+    assert len(logs) == 1
+    ts = logs[0].timestamp
+    # Must be ISO-8601 with UTC offset (+00:00 or Z)
+    iso_pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
+    assert re.match(iso_pattern, ts), f"timestamp not ISO-8601: {ts}"
+    assert "+00:00" in ts or ts.endswith("Z"), f"timestamp not UTC: {ts}"
+
+
+def test_write_edge_repair_log_timestamps_are_monotonic():
+    """architecture.md §4: multiple RepairLogs must have distinct,
+    monotonically increasing timestamps for chronological ordering."""
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import FunctionNode, UnresolvedCallNode
+
+    store = InMemoryGraphStore()
+    for i in range(3):
+        store.create_function(FunctionNode(
+            id=f"caller_{i}", name=f"c{i}", signature=f"void c{i}()",
+            file_path="x.cpp", start_line=i * 10, end_line=i * 10 + 5,
+            body_hash=f"h{i}",
+        ))
+    store.create_function(FunctionNode(
+        id="target", name="t", signature="void t()",
+        file_path="y.cpp", start_line=1, end_line=5, body_hash="ht",
+    ))
+    for i in range(3):
+        store.create_unresolved_call(UnresolvedCallNode(
+            caller_id=f"caller_{i}", call_expression="t()",
+            call_file="x.cpp", call_line=i * 10 + 2, call_type="indirect",
+            source_code_snippet="t();", var_name="t", var_type="void(*)()",
+        ))
+
+    import time
+    for i in range(3):
+        write_edge(
+            caller_id=f"caller_{i}", callee_id="target",
+            call_type="indirect", call_file="x.cpp",
+            call_line=i * 10 + 2, store=store,
+        )
+        time.sleep(0.01)  # ensure distinct timestamps
+
+    logs = store.get_repair_logs()
+    assert len(logs) == 3
+    timestamps = [log.timestamp for log in logs]
+    assert timestamps == sorted(timestamps), "timestamps not monotonic"
+    assert len(set(timestamps)) == 3, "timestamps not distinct"
