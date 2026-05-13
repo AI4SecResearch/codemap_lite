@@ -103,6 +103,68 @@ def test_repair_loads_sources_from_file_and_invokes_orchestrator(tmp_path):
     assert fake_orch.run_repairs.call_args.args[0] == ["src_001", "src_002"]
 
 
+def test_repair_wires_graph_store_into_repair_config(tmp_path):
+    """architecture.md §3 Retry 审计字段: CLI must thread a real
+    graph_store into RepairConfig so last_attempt_{timestamp,reason}
+    land on pending GAPs after each gate failure. Without wiring,
+    ``_record_retry_attempt`` silently noops and ReviewQueue never
+    surfaces the failure context.
+    """
+    cfg = _write_config(tmp_path)
+    sp_path = tmp_path / "sources.json"
+    sp_path.write_text(
+        json.dumps(
+            [{"function_id": "src_001", "entry_point_kind": "api", "reason": "", "module": "m"}]
+        ),
+        encoding="utf-8",
+    )
+
+    fake_orch = MagicMock()
+
+    async def _fake_run(ids):
+        return [SourceRepairResult(source_id=i, success=True, attempts=1) for i in ids]
+
+    fake_orch.run_repairs.side_effect = _fake_run
+
+    fake_graph_store = MagicMock(name="Neo4jGraphStore")
+    with patch(
+        "codemap_lite.cli._build_graph_store", return_value=fake_graph_store
+    ) as build_gs:
+        with patch(
+            "codemap_lite.analysis.repair_orchestrator.RepairOrchestrator",
+            return_value=fake_orch,
+        ) as orch_ctor:
+            result = runner.invoke(
+                app,
+                ["repair", "--config", str(cfg), "--source-points-file", str(sp_path)],
+            )
+
+    assert result.exit_code == 0, result.output
+    build_gs.assert_called_once()
+    orch_ctor.assert_called_once()
+    repair_config = orch_ctor.call_args.args[0]
+    assert repair_config.graph_store is fake_graph_store
+
+
+def test_build_graph_store_returns_neo4j_graph_store(tmp_path):
+    """_build_graph_store must return a Neo4jGraphStore wired to
+    settings.neo4j.{uri,user,password} (architecture.md §9 tech stack).
+    """
+    cfg = _write_config(tmp_path)
+    settings = cli_module._load_settings(str(cfg))
+
+    with patch(
+        "codemap_lite.graph.neo4j_store.Neo4jGraphStore"
+    ) as neo4j_ctor:
+        cli_module._build_graph_store(settings)
+
+    neo4j_ctor.assert_called_once_with(
+        uri="bolt://localhost:7687",
+        user="neo4j",
+        password="pw",
+    )
+
+
 def test_repair_prints_message_when_no_source_points(tmp_path):
     cfg = _write_config(tmp_path)
     sp_path = tmp_path / "sources.json"

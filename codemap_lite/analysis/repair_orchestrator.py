@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import shutil
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -302,9 +303,48 @@ class RepairOrchestrator:
         )
 
     async def _check_gate(self, source_id: str) -> bool:
-        """Check if all reachable GAPs for a source are resolved. Override in tests."""
-        # In production, this calls icsl_tools.check_complete
-        return True
+        """Check if all reachable GAPs for a source are resolved.
+
+        architecture.md §3 门禁机制: orchestrator invokes the agent-side
+        tool CLI ``python .icslpreprocess/icsl_tools.py check-complete
+        --source <id>`` in the target directory and parses its JSON
+        response ``{"complete": bool, "remaining_gaps": int,
+        "pending_gap_ids": [...]}``. Returns True only on
+        ``complete: True``; any spawn error, non-zero exit, malformed
+        JSON, or missing ``complete`` field falls through to False so
+        the retry loop gets another attempt and the gate-failed audit
+        stamp lands.
+
+        Kept async + instance-method so tests can still override via
+        ``orchestrator._check_gate = AsyncMock(return_value=True)``.
+        """
+        target_dir = self._config.target_dir
+        tool_path = target_dir / ".icslpreprocess" / "icsl_tools.py"
+        cmd = [
+            sys.executable,
+            str(tool_path),
+            "check-complete",
+            "--source",
+            source_id,
+        ]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=str(target_dir),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env={**os.environ, **(self._config.env or {})},
+            )
+            stdout_bytes, _stderr_bytes = await proc.communicate()
+        except (OSError, FileNotFoundError):
+            return False
+        if proc.returncode != 0:
+            return False
+        try:
+            payload = json.loads(stdout_bytes.decode("utf-8", errors="replace"))
+        except (ValueError, json.JSONDecodeError):
+            return False
+        return bool(payload.get("complete", False))
 
     def _record_retry_attempt(self, source_id: str, reason: str) -> None:
         """Stamp last_attempt_{timestamp,reason} on every pending GAP for source.

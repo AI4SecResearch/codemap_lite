@@ -617,3 +617,94 @@ async def test_orchestrator_no_timeout_when_not_configured(tmp_path):
 
     assert results[0].success is True
     assert results[0].attempts == 1
+
+
+# ---- _check_gate subprocess wiring (architecture.md §3 门禁机制) -------------
+
+
+@pytest.mark.asyncio
+async def test_check_gate_invokes_icsl_tools_check_complete_subprocess(orchestrator):
+    """architecture.md §3 门禁机制: _check_gate must subprocess-exec
+    ``python .icslpreprocess/icsl_tools.py check-complete --source <id>``
+    in target_dir and parse ``{"complete": bool}`` from stdout.
+    """
+    fake_proc = MagicMock()
+    fake_proc.returncode = 0
+    fake_proc.communicate = AsyncMock(
+        return_value=(
+            b'{"complete": true, "remaining_gaps": 0, "pending_gap_ids": []}\n',
+            b"",
+        )
+    )
+
+    with patch(
+        "asyncio.create_subprocess_exec", AsyncMock(return_value=fake_proc)
+    ) as spawn:
+        passed = await orchestrator._check_gate("src_001")
+
+    assert passed is True
+    cmd_args = spawn.call_args.args
+    assert "check-complete" in cmd_args
+    assert "--source" in cmd_args
+    assert "src_001" in cmd_args
+    # Subprocess must run in target_dir so .icslpreprocess/ resolves.
+    assert spawn.call_args.kwargs["cwd"] == str(orchestrator._config.target_dir)
+
+
+@pytest.mark.asyncio
+async def test_check_gate_returns_false_when_complete_is_false(orchestrator):
+    """architecture.md §3 门禁机制: pending GAPs ⇒ gate fails ⇒ retry."""
+    fake_proc = MagicMock()
+    fake_proc.returncode = 0
+    fake_proc.communicate = AsyncMock(
+        return_value=(
+            b'{"complete": false, "remaining_gaps": 2, "pending_gap_ids": ["g1","g2"]}\n',
+            b"",
+        )
+    )
+    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=fake_proc)):
+        passed = await orchestrator._check_gate("src_001")
+
+    assert passed is False
+
+
+@pytest.mark.asyncio
+async def test_check_gate_returns_false_on_nonzero_exit(orchestrator):
+    """Subprocess crash / config error must not silently pass the gate.
+
+    architecture.md §3 Retry 审计字段 expects gate failures to keep the
+    retry budget moving — a non-zero exit cannot be misread as success.
+    """
+    fake_proc = MagicMock()
+    fake_proc.returncode = 3
+    fake_proc.communicate = AsyncMock(
+        return_value=(b'{"error":"store_not_available"}\n', b"")
+    )
+    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=fake_proc)):
+        passed = await orchestrator._check_gate("src_001")
+
+    assert passed is False
+
+
+@pytest.mark.asyncio
+async def test_check_gate_returns_false_on_malformed_json(orchestrator):
+    """Malformed CLI output ⇒ gate fails (better safe than mis-pass)."""
+    fake_proc = MagicMock()
+    fake_proc.returncode = 0
+    fake_proc.communicate = AsyncMock(return_value=(b"not json at all", b""))
+    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=fake_proc)):
+        passed = await orchestrator._check_gate("src_001")
+
+    assert passed is False
+
+
+@pytest.mark.asyncio
+async def test_check_gate_returns_false_on_spawn_failure(orchestrator):
+    """Missing python interpreter / icsl_tools.py file ⇒ gate fails."""
+    with patch(
+        "asyncio.create_subprocess_exec",
+        AsyncMock(side_effect=FileNotFoundError("no python")),
+    ):
+        passed = await orchestrator._check_gate("src_001")
+
+    assert passed is False

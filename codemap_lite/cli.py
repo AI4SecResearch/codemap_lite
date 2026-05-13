@@ -61,6 +61,27 @@ def _backend_subprocess(settings) -> tuple[str, list[str]]:
     raise typer.BadParameter(f"unknown agent.backend: {backend!r}")
 
 
+def _build_graph_store(settings):
+    """Construct the production GraphStore for retry audit write-back.
+
+    architecture.md §3 Retry 审计字段 requires every gate failure to stamp
+    ``last_attempt_timestamp`` / ``last_attempt_reason`` on each pending
+    UnresolvedCall. RepairOrchestrator silently noops when ``graph_store``
+    is unset, so the CLI must wire one through for the audit fields to
+    actually land in Neo4j in production.
+
+    Lazy-imported so unit tests that mock ``RepairOrchestrator`` don't
+    need the neo4j driver on the import path.
+    """
+    from codemap_lite.graph.neo4j_store import Neo4jGraphStore
+
+    return Neo4jGraphStore(
+        uri=settings.neo4j.uri,
+        user=settings.neo4j.user,
+        password=settings.neo4j.password,
+    )
+
+
 @app.command()
 def repair(
     config: str = typer.Option("config.yaml", "--config", "-c", help="Path to config.yaml"),
@@ -110,6 +131,12 @@ def repair(
         storage_dir=target_dir / ".codemap_lite" / "feedback"
     )
 
+    # architecture.md §3 Retry 审计字段: without a real graph_store the
+    # orchestrator silently noops retry-audit stamping, so ReviewQueue
+    # never sees "last attempt failed at <ts> because <reason>". Wire
+    # the production Neo4jGraphStore here so audit fields land in prod.
+    graph_store = _build_graph_store(settings)
+
     orch = RepairOrchestrator(
         RepairConfig(
             target_dir=target_dir,
@@ -122,6 +149,7 @@ def repair(
             neo4j_password=settings.neo4j.password,
             log_dir=Path(log_dir) if log_dir else None,
             feedback_store=feedback_store,
+            graph_store=graph_store,
         )
     )
 
