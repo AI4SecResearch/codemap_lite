@@ -130,6 +130,9 @@ class InMemoryGraphStore:
     def create_calls_edge(
         self, caller_id: str, callee_id: str, props: CallsEdgeProps
     ) -> None:
+        # Skip if edge already exists (preserve first resolved_by)
+        if self.edge_exists(caller_id, callee_id, props.call_file, props.call_line):
+            return
         self._calls_edges.append(_CallsEdge(caller_id, callee_id, props))
 
     def create_unresolved_call(self, node: UnresolvedCallNode) -> str:
@@ -639,7 +642,7 @@ class Neo4jGraphStore:
         cypher = (
             "MATCH (a:Function {id: $caller_id}), (b:Function {id: $callee_id}) "
             "MERGE (a)-[r:CALLS {call_file: $call_file, call_line: $call_line}]->(b) "
-            "SET r.resolved_by = $resolved_by, r.call_type = $call_type"
+            "ON CREATE SET r.resolved_by = $resolved_by, r.call_type = $call_type"
         )
         with self._get_driver().session() as session:
             session.run(

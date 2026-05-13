@@ -969,3 +969,46 @@ def test_source_point_node_stores_module_field(store):
     updated = store.get_source_point("sp_001")
     assert updated.status == "running"
     assert updated.module == "network"
+
+
+def test_create_calls_edge_preserves_resolved_by_on_duplicate(store):
+    """architecture.md §4: resolved_by reflects the FIRST resolution method.
+
+    If an edge is first resolved by symbol_table and then create_calls_edge
+    is called again with resolved_by=llm, the original resolved_by must be
+    preserved (not overwritten).
+    """
+    store.create_function(FunctionNode(
+        id="f1", name="f1", signature="void f1()",
+        file_path="a.c", start_line=1, end_line=5, body_hash="h1",
+    ))
+    store.create_function(FunctionNode(
+        id="f2", name="f2", signature="void f2()",
+        file_path="a.c", start_line=10, end_line=15, body_hash="h2",
+    ))
+
+    # First resolution: symbol_table
+    props1 = CallsEdgeProps(
+        resolved_by="symbol_table", call_type="direct",
+        call_file="a.c", call_line=3,
+    )
+    store.create_calls_edge("f1", "f2", props1)
+
+    # Second call with different resolved_by (e.g., LLM also resolves it)
+    props2 = CallsEdgeProps(
+        resolved_by="llm", call_type="direct",
+        call_file="a.c", call_line=3,
+    )
+    store.create_calls_edge("f1", "f2", props2)
+
+    # resolved_by must still be "symbol_table" (first wins)
+    edges = store.list_calls_edges()
+    matching = [
+        e for e in edges
+        if e.caller_id == "f1" and e.callee_id == "f2"
+        and e.props.call_file == "a.c" and e.props.call_line == 3
+    ]
+    assert len(matching) == 1, f"Expected 1 edge, got {len(matching)}"
+    assert matching[0].props.resolved_by == "symbol_table", (
+        f"resolved_by should be preserved as 'symbol_table', got '{matching[0].props.resolved_by}'"
+    )
