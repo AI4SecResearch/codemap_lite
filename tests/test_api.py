@@ -447,25 +447,51 @@ class TestSourcePointsEndpoint:
 
 
 class TestReviewEndpoint:
+    def _setup_edge(self, store: InMemoryGraphStore) -> None:
+        fn1 = FunctionNode(
+            signature="void f()", name="f", file_path="a.c",
+            start_line=1, end_line=5, body_hash="h1", id="func-1",
+        )
+        fn2 = FunctionNode(
+            signature="void g()", name="g", file_path="a.c",
+            start_line=10, end_line=15, body_hash="h2", id="func-2",
+        )
+        store.create_function(fn1)
+        store.create_function(fn2)
+        store.create_calls_edge(
+            "func-1", "func-2",
+            CallsEdgeProps(
+                resolved_by="llm", call_type="indirect",
+                call_file="a.c", call_line=3,
+            ),
+        )
+
     def test_post_review(self) -> None:
-        client, _ = get_test_client()
+        client, store = get_test_client()
+        self._setup_edge(store)
         resp = client.post("/api/v1/reviews", json={
-            "function_id": "func-1",
+            "caller_id": "func-1",
+            "callee_id": "func-2",
+            "call_file": "a.c",
+            "call_line": 3,
+            "verdict": "correct",
             "comment": "Looks correct",
-            "status": "approved",
         })
         assert resp.status_code == 201
         data = resp.json()
-        assert data["function_id"] == "func-1"
+        assert data["caller_id"] == "func-1"
+        assert data["verdict"] == "correct"
         assert "id" in data
 
     def test_get_reviews(self) -> None:
-        client, _ = get_test_client()
-        # Create a review first
+        client, store = get_test_client()
+        self._setup_edge(store)
         client.post("/api/v1/reviews", json={
-            "function_id": "func-1",
-            "comment": "OK",
-            "status": "approved",
+            "caller_id": "func-1",
+            "callee_id": "func-2",
+            "call_file": "a.c",
+            "call_line": 3,
+            "verdict": "correct",
         })
         resp = client.get("/api/v1/reviews")
         assert resp.status_code == 200
@@ -473,11 +499,15 @@ class TestReviewEndpoint:
         assert len(reviews) == 1
 
     def test_update_review(self) -> None:
-        client, _ = get_test_client()
+        client, store = get_test_client()
+        self._setup_edge(store)
         create_resp = client.post("/api/v1/reviews", json={
-            "function_id": "func-1",
+            "caller_id": "func-1",
+            "callee_id": "func-2",
+            "call_file": "a.c",
+            "call_line": 3,
+            "verdict": "correct",
             "comment": "Initial",
-            "status": "pending",
         })
         review_id = create_resp.json()["id"]
         resp = client.put(f"/api/v1/reviews/{review_id}", json={
@@ -488,11 +518,15 @@ class TestReviewEndpoint:
         assert resp.json()["comment"] == "Updated"
 
     def test_delete_review(self) -> None:
-        client, _ = get_test_client()
+        client, store = get_test_client()
+        self._setup_edge(store)
         create_resp = client.post("/api/v1/reviews", json={
-            "function_id": "func-1",
+            "caller_id": "func-1",
+            "callee_id": "func-2",
+            "call_file": "a.c",
+            "call_line": 3,
+            "verdict": "correct",
             "comment": "To delete",
-            "status": "pending",
         })
         review_id = create_resp.json()["id"]
         resp = client.delete(f"/api/v1/reviews/{review_id}")
@@ -594,6 +628,121 @@ class TestReviewEndpoint:
             "call_type": "unknown",
             "call_file": "f.py",
             "call_line": 2,
+        })
+        assert resp.status_code == 422
+
+
+class TestEdgeCentricReview:
+    """architecture.md §5 审阅交互 + §8 REST API:
+    POST /api/v1/reviews must be edge-centric — accept caller_id, callee_id,
+    call_file, call_line, and verdict (correct/incorrect). When verdict=correct,
+    record approval. When verdict=incorrect, trigger the 4-step error flow."""
+
+    def _setup_edge(self, store: InMemoryGraphStore) -> None:
+        """Create two functions and an LLM-resolved edge between them."""
+        fn1 = FunctionNode(
+            signature="void dispatch()", name="dispatch", file_path="src/main.c",
+            start_line=10, end_line=20, body_hash="h1", id="fn_dispatch",
+        )
+        fn2 = FunctionNode(
+            signature="void handler()", name="handler", file_path="src/handler.c",
+            start_line=1, end_line=5, body_hash="h2", id="fn_handler",
+        )
+        store.create_function(fn1)
+        store.create_function(fn2)
+        store.create_calls_edge(
+            "fn_dispatch", "fn_handler",
+            CallsEdgeProps(
+                resolved_by="llm", call_type="indirect",
+                call_file="src/main.c", call_line=15,
+            ),
+        )
+
+    def test_review_mark_correct_records_approval(self) -> None:
+        """architecture.md §5: 标记正确 → record approval on the edge."""
+        client, store = get_test_client()
+        self._setup_edge(store)
+
+        resp = client.post("/api/v1/reviews", json={
+            "caller_id": "fn_dispatch",
+            "callee_id": "fn_handler",
+            "call_file": "src/main.c",
+            "call_line": 15,
+            "verdict": "correct",
+        })
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["verdict"] == "correct"
+        assert data["caller_id"] == "fn_dispatch"
+        assert data["callee_id"] == "fn_handler"
+        assert "id" in data
+
+    def test_review_mark_incorrect_triggers_error_flow(self) -> None:
+        """architecture.md §5: 标记错误 → delete edge + RepairLog + regenerate UC."""
+        client, store = get_test_client()
+        self._setup_edge(store)
+
+        # Also create a RepairLog for this edge
+        from codemap_lite.graph.schema import RepairLogNode
+        store.create_repair_log(RepairLogNode(
+            caller_id="fn_dispatch",
+            callee_id="fn_handler",
+            call_location="src/main.c:15",
+            repair_method="llm",
+            llm_response="analysis",
+            timestamp="2026-05-14T00:00:00Z",
+            reasoning_summary="dispatch calls handler",
+        ))
+
+        resp = client.post("/api/v1/reviews", json={
+            "caller_id": "fn_dispatch",
+            "callee_id": "fn_handler",
+            "call_file": "src/main.c",
+            "call_line": 15,
+            "verdict": "incorrect",
+        })
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["verdict"] == "incorrect"
+
+        # Edge should be deleted
+        edges = store.list_calls_edges()
+        assert len(edges) == 0
+
+        # RepairLog should be deleted
+        logs = store.get_repair_logs(
+            caller_id="fn_dispatch", callee_id="fn_handler"
+        )
+        assert len(logs) == 0
+
+        # UnresolvedCall should be regenerated
+        ucs = store.get_unresolved_calls(status="pending")
+        assert len(ucs) == 1
+        assert ucs[0].caller_id == "fn_dispatch"
+        assert ucs[0].call_file == "src/main.c"
+        assert ucs[0].call_line == 15
+
+    def test_review_nonexistent_edge_returns_404(self) -> None:
+        """Cannot review an edge that doesn't exist."""
+        client, _ = get_test_client()
+        resp = client.post("/api/v1/reviews", json={
+            "caller_id": "no_such",
+            "callee_id": "no_such",
+            "call_file": "x.c",
+            "call_line": 1,
+            "verdict": "correct",
+        })
+        assert resp.status_code == 404
+
+    def test_review_invalid_verdict_returns_422(self) -> None:
+        """Verdict must be 'correct' or 'incorrect'."""
+        client, _ = get_test_client()
+        resp = client.post("/api/v1/reviews", json={
+            "caller_id": "fn_dispatch",
+            "callee_id": "fn_handler",
+            "call_file": "src/main.c",
+            "call_line": 15,
+            "verdict": "maybe",
         })
         assert resp.status_code == 422
 

@@ -164,9 +164,12 @@ export interface Subgraph {
 
 export interface Review {
   id: string;
-  function_id: string;
-  comment: string;
-  status: string;
+  caller_id: string;
+  callee_id: string;
+  call_file: string;
+  call_line: number;
+  verdict: 'correct' | 'incorrect';
+  comment?: string | null;
 }
 
 /**
@@ -286,7 +289,15 @@ export const api = {
 
   // Reviews & manual edges
   getReviews: () => fetchJson<Review[]>('/api/v1/reviews'),
-  createReview: (data: { function_id: string; comment: string; status: string }) =>
+  createReview: (data: {
+    caller_id: string;
+    callee_id: string;
+    call_file: string;
+    call_line: number;
+    verdict: 'correct' | 'incorrect';
+    comment?: string;
+    correct_target?: string;
+  }) =>
     fetchJson<Review>('/api/v1/reviews', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

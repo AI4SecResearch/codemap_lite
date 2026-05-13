@@ -17,11 +17,27 @@ logger = logging.getLogger(__name__)
 
 
 class ReviewCreate(BaseModel):
-    """Request body for creating a review."""
+    """Request body for creating an edge review (architecture.md §5 审阅交互).
 
-    function_id: str
-    comment: str
-    status: str
+    Edge-centric: identifies the CALLS edge by (caller_id, callee_id, call_file, call_line)
+    and records a verdict (correct/incorrect).
+    """
+
+    caller_id: str
+    callee_id: str
+    call_file: str
+    call_line: int
+    verdict: str
+    comment: str | None = None
+    correct_target: str | None = None  # §5: "可填写正确目标 → 触发反例生成"
+
+    @field_validator("verdict")
+    @classmethod
+    def validate_verdict(cls, v: str) -> str:
+        allowed = {"correct", "incorrect"}
+        if v not in allowed:
+            raise ValueError(f"verdict must be one of {sorted(allowed)}, got '{v}'")
+        return v
 
 
 class ReviewUpdate(BaseModel):
@@ -123,14 +139,84 @@ def create_review_router() -> APIRouter:
         return list(request.app.state.reviews.values())
 
     @router.post("/reviews", status_code=201)
-    def create_review(request: Request, body: ReviewCreate) -> dict[str, Any]:
+    def create_review(
+        request: Request, body: ReviewCreate, background_tasks: BackgroundTasks
+    ) -> dict[str, Any]:
+        """Mark an edge as correct or incorrect (architecture.md §5 审阅交互).
+
+        - verdict=correct: record approval, edge stays
+        - verdict=incorrect: delete edge + RepairLog, regenerate UC, trigger repair
+        """
+        from codemap_lite.graph.schema import UnresolvedCallNode
+
+        store = request.app.state.store
+
+        # Verify the edge exists
+        edge_found = False
+        call_type = "indirect"
+        if hasattr(store, "list_calls_edges"):
+            for edge in store.list_calls_edges():
+                if (
+                    edge.caller_id == body.caller_id
+                    and edge.callee_id == body.callee_id
+                    and edge.props.call_file == body.call_file
+                    and edge.props.call_line == body.call_line
+                ):
+                    edge_found = True
+                    call_type = edge.props.call_type
+                    break
+
+        if not edge_found:
+            raise HTTPException(status_code=404, detail="Edge not found")
+
         review_id = str(uuid4())
         review = {
             "id": review_id,
-            "function_id": body.function_id,
+            "caller_id": body.caller_id,
+            "callee_id": body.callee_id,
+            "call_file": body.call_file,
+            "call_line": body.call_line,
+            "verdict": body.verdict,
             "comment": body.comment,
-            "status": body.status,
         }
+
+        if body.verdict == "incorrect":
+            # architecture.md §5 标记错误时 4-step flow:
+            # Step 1: Delete the CALLS edge
+            store.delete_calls_edge(
+                caller_id=body.caller_id,
+                callee_id=body.callee_id,
+                call_file=body.call_file,
+                call_line=body.call_line,
+            )
+            # Step 2: Delete corresponding RepairLog
+            call_location = f"{body.call_file}:{body.call_line}"
+            store.delete_repair_logs_for_edge(
+                caller_id=body.caller_id,
+                callee_id=body.callee_id,
+                call_location=call_location,
+            )
+            # Step 3: Regenerate UnresolvedCall (retry_count=0)
+            uc = UnresolvedCallNode(
+                caller_id=body.caller_id,
+                call_expression="",
+                call_file=body.call_file,
+                call_line=body.call_line,
+                call_type=call_type,
+                source_code_snippet="",
+                var_name=None,
+                var_type=None,
+                retry_count=0,
+                status="pending",
+            )
+            store.create_unresolved_call(uc)
+            # Step 4: Trigger async repair
+            settings = getattr(request.app.state, "settings", None)
+            if settings is not None:
+                background_tasks.add_task(
+                    _trigger_repair_for_source, settings, body.caller_id
+                )
+
         request.app.state.reviews[review_id] = review
         return review
 

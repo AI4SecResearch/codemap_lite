@@ -348,10 +348,16 @@ export default function ReviewQueue() {
     const key = g.id ?? `${g.caller_id}:${g.call_line}`;
     setBusyId(key);
     try {
+      // Note: "marking correct" on a GAP means the reviewer acknowledges
+      // the agent was right to leave it unresolved. We record this as a
+      // review with verdict=correct and callee_id="" (no resolved edge).
       await api.createReview({
-        function_id: g.caller_id,
+        caller_id: g.caller_id,
+        callee_id: '',
+        call_file: g.call_file,
+        call_line: g.call_line,
+        verdict: 'correct',
         comment: `marked correct: ${g.call_expression}`,
-        status: 'approved',
       });
       await refresh();
     } catch (e) {
@@ -395,9 +401,13 @@ export default function ReviewQueue() {
       // Also record the reviewer's decision as a Review — preserves the
       // existing audit trail surfaced in the Reviews tab.
       await api.createReview({
-        function_id: g.caller_id,
+        caller_id: g.caller_id,
+        callee_id: correctTarget,
+        call_file: g.call_file,
+        call_line: g.call_line,
+        verdict: 'incorrect',
         comment: `marked wrong: ${g.call_expression} → ${correctTarget}`,
-        status: 'rejected',
+        correct_target: correctTarget,
       });
       setWrongFor(null);
       await refresh();
@@ -938,8 +948,8 @@ export default function ReviewQueue() {
           <table className="min-w-full divide-y divide-gray-200 text-sm">
             <thead className="bg-gray-50">
               <tr>
-                <th className="px-3 py-2 text-left font-medium text-gray-500">Status</th>
-                <th className="px-3 py-2 text-left font-medium text-gray-500">Function</th>
+                <th className="px-3 py-2 text-left font-medium text-gray-500">Verdict</th>
+                <th className="px-3 py-2 text-left font-medium text-gray-500">Edge</th>
                 <th className="px-3 py-2 text-left font-medium text-gray-500">Comment</th>
                 <th className="px-3 py-2 text-left font-medium text-gray-500">Action</th>
               </tr>
@@ -957,21 +967,19 @@ export default function ReviewQueue() {
                     <td className="px-3 py-2">
                       <span
                         className={`inline-block px-2 py-0.5 rounded text-xs ${
-                          r.status === 'approved'
+                          r.verdict === 'correct'
                             ? 'bg-green-100 text-green-700'
-                            : r.status === 'rejected'
-                            ? 'bg-red-100 text-red-700'
-                            : 'bg-gray-100 text-gray-700'
+                            : 'bg-red-100 text-red-700'
                         }`}
                       >
-                        {r.status}
+                        {r.verdict}
                       </span>
                     </td>
                     <td
                       className="px-3 py-2 font-mono text-xs text-gray-600"
-                      title={r.function_id}
+                      title={`${r.caller_id} → ${r.callee_id}`}
                     >
-                      {shorten(r.function_id)}
+                      {shorten(r.caller_id)} → {shorten(r.callee_id)}
                     </td>
                     <td className="px-3 py-2 text-xs text-gray-700">
                       {r.comment}
