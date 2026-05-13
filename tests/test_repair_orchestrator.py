@@ -2094,3 +2094,62 @@ async def test_source_with_no_pending_gaps_is_complete(tmp_path):
     assert sp.status == "complete", (
         "architecture.md §3: no pending gaps → SourcePoint.status = 'complete'"
     )
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_seeds_gaps_total_in_progress_json(tmp_path):
+    """architecture.md §3 progress.json schema: gaps_total must be seeded
+    by the orchestrator before agent launch so the frontend can display
+    progress even if the agent never emits a notification with gaps_total.
+
+    The orchestrator knows the count via get_pending_gaps_for_source and
+    must write it at attempt start."""
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import FunctionNode, UnresolvedCallNode
+
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    store = InMemoryGraphStore()
+    # Create source function
+    store.create_function(FunctionNode(
+        id="src_001", name="main", signature="void main()",
+        file_path="src/main.c", start_line=1, end_line=10, body_hash="h1",
+    ))
+    # Create 3 pending UnresolvedCalls for this source
+    for i in range(3):
+        store.create_unresolved_call(UnresolvedCallNode(
+            caller_id="src_001",
+            call_expression=f"fn_{i}()",
+            call_file="src/main.c",
+            call_line=i + 2,
+            call_type="indirect",
+            source_code_snippet=f"fn_{i}();",
+            var_name=f"fn_{i}",
+            var_type="void (*)()",
+        ))
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        command="echo",
+        args=["done"],
+        max_concurrency=1,
+        graph_store=store,
+    )
+    orchestrator = RepairOrchestrator(config=config)
+
+    # Mock _check_gate to pass on first attempt
+    orchestrator._check_gate = AsyncMock(return_value=True)
+
+    results = await orchestrator.run_repairs(["src_001"])
+
+    # Check progress.json was written with gaps_total
+    progress_path = target_dir / "logs" / "repair" / "src_001" / "progress.json"
+    assert progress_path.exists(), "progress.json must be written"
+    data = json.loads(progress_path.read_text(encoding="utf-8"))
+    assert "gaps_total" in data, (
+        "architecture.md §3: progress.json must contain gaps_total"
+    )
+    assert data["gaps_total"] == 3, (
+        "gaps_total must reflect the number of pending gaps at attempt start"
+    )

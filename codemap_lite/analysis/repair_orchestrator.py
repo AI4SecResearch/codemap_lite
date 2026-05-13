@@ -281,6 +281,14 @@ class RepairOrchestrator:
         while self._has_retryable_gaps(source_id):
             attempts += 1
 
+            # Seed gaps_total so the frontend can display progress even if
+            # the agent never emits a notification with gaps_total.
+            # architecture.md §3 progress.json schema: gaps_total required.
+            gaps_total = 0
+            store = self._config.graph_store
+            if store is not None:
+                gaps_total = len(store.get_pending_gaps_for_source(source_id))
+
             # Write progress: attempt starting
             self._write_progress(
                 source_id,
@@ -288,6 +296,7 @@ class RepairOrchestrator:
                 attempt=attempts,
                 max_attempts=self.MAX_RETRIES_PER_GAP,
                 gate_result="pending",
+                gaps_total=gaps_total,
             )
 
             # Inject files — re-render counter examples each attempt so

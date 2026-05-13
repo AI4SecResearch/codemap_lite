@@ -25,6 +25,10 @@ class SourcePointClient:
 
     def _parse_response(self, data: list[dict[str, Any]]) -> list[SourcePointInfo]:
         """Parse raw API response into SourcePointInfo objects."""
+        if not isinstance(data, list):
+            raise TypeError(
+                f"Expected list of source points, got {type(data).__name__}"
+            )
         results = []
         for item in data:
             results.append(SourcePointInfo(

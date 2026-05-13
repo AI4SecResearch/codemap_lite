@@ -165,3 +165,49 @@ def test_log_notification_merges_with_existing_progress():
         assert data.get("attempt") == 2, (
             "orchestrator 'attempt' field was wiped by hook overwrite"
         )
+
+
+def test_write_edge_detection_handles_non_string_command():
+    """_is_write_edge_call must not crash when params['command'] is not a
+    string (e.g. None, int, or list). It should return False gracefully."""
+    from codemap_lite.agent.hooks.log_tool_use import _is_write_edge_call
+
+    # command is None
+    assert _is_write_edge_call({"params": {"command": None}}) is False
+    # command is a list (some agent runtimes may split argv)
+    assert _is_write_edge_call({"params": {"command": ["python", "icsl_tools.py", "write-edge"]}}) is False
+    # command is an int
+    assert _is_write_edge_call({"params": {"command": 42}}) is False
+    # params is not a dict
+    assert _is_write_edge_call({"params": "write-edge icsl_tools"}) is False
+    # params missing entirely
+    assert _is_write_edge_call({}) is False
+
+
+def test_write_edge_hook_preserves_gaps_total():
+    """architecture.md §3: Hook must not lose gaps_total when incrementing
+    gaps_fixed. The orchestrator pre-seeds gaps_total; the hook must merge,
+    not overwrite."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        progress_dir = Path(tmpdir) / "repair" / "src_001"
+        progress_dir.mkdir(parents=True)
+        progress_path = progress_dir / "progress.json"
+        # Orchestrator pre-writes gaps_total
+        progress_path.write_text(json.dumps({
+            "gaps_fixed": 0,
+            "gaps_total": 10,
+            "state": "running",
+        }))
+
+        # Hook detects write-edge
+        event = {
+            "tool_name": "Bash",
+            "params": {"command": "python .icslpreprocess_src_001/icsl_tools.py write-edge --caller fn_a --callee fn_b --call-type indirect --call-file src/a.c --call-line 5"},
+            "result": "ok",
+        }
+        process_tool_use_event(event, source_id="src_001", gap_id="gap_001", log_dir=Path(tmpdir))
+
+        data = json.loads(progress_path.read_text())
+        assert data["gaps_total"] == 10, "gaps_total was lost by hook"
+        assert data["gaps_fixed"] == 1
+        assert data["state"] == "running", "orchestrator state was lost"

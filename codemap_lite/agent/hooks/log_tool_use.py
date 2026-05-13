@@ -10,10 +10,12 @@ from typing import Any
 def _is_write_edge_call(event: dict[str, Any]) -> bool:
     """Detect if this tool use event is a successful write-edge invocation."""
     # The agent calls write-edge via Bash tool with icsl_tools.py
-    command = ""
     params = event.get("params", {})
-    if isinstance(params, dict):
-        command = params.get("command", "")
+    if not isinstance(params, dict):
+        return False
+    command = params.get("command", "")
+    if not isinstance(command, str):
+        return False
     return "write-edge" in command and "icsl_tools" in command
 
 
