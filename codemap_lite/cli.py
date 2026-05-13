@@ -150,6 +150,7 @@ def repair(
             log_dir=Path(log_dir) if log_dir else None,
             feedback_store=feedback_store,
             graph_store=graph_store,
+            retry_failed_gaps=settings.agent.retry_failed_gaps,
         )
     )
 

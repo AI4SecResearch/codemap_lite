@@ -179,6 +179,7 @@ def create_analyze_router() -> APIRouter:
                         neo4j_password=settings.neo4j.password,
                         feedback_store=feedback_store,
                         graph_store=graph_store,
+                        retry_failed_gaps=settings.agent.retry_failed_gaps,
                     )
                 )
 
