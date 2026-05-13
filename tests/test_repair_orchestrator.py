@@ -104,7 +104,58 @@ def test_orchestrator_backs_up_existing_claude_md(orchestrator, tmp_path):
     assert not backup.exists()
 
 
-def test_build_subprocess_command(orchestrator):
+def test_cleanup_preserves_preexisting_claude_dir(orchestrator, tmp_path):
+    """architecture.md §3 line 179: cleanup must only remove files the
+    orchestrator created. Pre-existing .claude/ directory (e.g. user's
+    own settings.json) must be preserved after cleanup."""
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    # Pre-existing .claude/ with user's own settings
+    claude_dir = target_dir / ".claude"
+    claude_dir.mkdir()
+    user_settings = claude_dir / "settings.json"
+    user_settings.write_text('{"user_key": "user_value"}', encoding="utf-8")
+
+    orchestrator._inject_files(
+        target_dir=target_dir,
+        source_id="src_001",
+        counter_examples="",
+    )
+
+    # After injection, .claude/settings.json is overwritten with hooks config
+    injected_settings = json.loads(user_settings.read_text())
+    assert "hooks" in injected_settings
+
+    # After cleanup, pre-existing .claude/ should be preserved
+    orchestrator._cleanup_injection(target_dir)
+    assert claude_dir.exists(), (
+        ".claude/ was deleted but it pre-existed — must be preserved"
+    )
+    # User's original settings should be restored
+    assert user_settings.exists()
+    restored = json.loads(user_settings.read_text())
+    assert restored == {"user_key": "user_value"}
+
+
+def test_cleanup_removes_claude_dir_when_not_preexisting(orchestrator, tmp_path):
+    """architecture.md §3: if .claude/ did NOT exist before injection,
+    cleanup should remove it entirely."""
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    # No pre-existing .claude/
+    assert not (target_dir / ".claude").exists()
+
+    orchestrator._inject_files(
+        target_dir=target_dir,
+        source_id="src_001",
+        counter_examples="",
+    )
+    assert (target_dir / ".claude").exists()
+
+    orchestrator._cleanup_injection(target_dir)
+    assert not (target_dir / ".claude").exists()
     cmd = orchestrator._build_command(source_id="src_001")
     assert "echo" in cmd[0]
     assert "done" in cmd
@@ -783,6 +834,47 @@ async def test_orchestrator_progress_shows_succeeded_on_gate_pass(tmp_path):
     assert data["state"] == "succeeded"
     assert data["gate_result"] == "passed"
     assert data["attempt"] == 1
+
+
+@pytest.mark.asyncio
+async def test_write_progress_merges_with_hook_written_fields(tmp_path):
+    """architecture.md §3 进度通信机制: _write_progress must merge with
+    existing content so Hook-written fields (gaps_fixed/gaps_total/
+    current_gap) are preserved when orchestrator writes state/attempt."""
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        command="echo",
+        args=["done"],
+        max_concurrency=1,
+        neo4j_uri="bolt://localhost:7687",
+        neo4j_user="neo4j",
+        neo4j_password="test",
+    )
+    orchestrator = RepairOrchestrator(config=config)
+
+    # Simulate hook writing progress first
+    progress_dir = target_dir / "logs" / "repair" / "src_merge"
+    progress_dir.mkdir(parents=True)
+    progress_path = progress_dir / "progress.json"
+    progress_path.write_text(
+        json.dumps({"gaps_fixed": 2, "gaps_total": 5, "current_gap": "gap_003"}),
+        encoding="utf-8",
+    )
+
+    # Orchestrator writes its own fields
+    orchestrator._write_progress("src_merge", state="running", attempt=2)
+
+    # Verify merge: both hook fields and orchestrator fields present
+    data = json.loads(progress_path.read_text(encoding="utf-8"))
+    assert data["gaps_fixed"] == 2, "hook field lost during merge"
+    assert data["gaps_total"] == 5, "hook field lost during merge"
+    assert data["current_gap"] == "gap_003", "hook field lost during merge"
+    assert data["state"] == "running"
+    assert data["attempt"] == 2
 
 
 def test_inject_files_copies_hooks_and_source_id(orchestrator, tmp_path):

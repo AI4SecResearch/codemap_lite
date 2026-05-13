@@ -49,3 +49,35 @@ def test_build_repair_prompt_contains_workflow_steps():
     prompt = build_repair_prompt(source_id="src_001")
     assert "query-reachable" in prompt
     assert "write-edge" in prompt
+
+
+def test_build_repair_prompt_includes_reasoning_flags():
+    """architecture.md §3 + §4 RepairLog: the prompt must instruct the
+    agent to pass --llm-response and --reasoning-summary on every
+    write-edge call, so RepairLogNode fields are populated for the
+    frontend EdgeLlmInspector (§5)."""
+    prompt = build_repair_prompt(source_id="src_001")
+    assert "--llm-response" in prompt, (
+        "prompt must mention --llm-response flag for audit trail"
+    )
+    assert "--reasoning-summary" in prompt, (
+        "prompt must mention --reasoning-summary flag for audit trail"
+    )
+
+
+def test_build_repair_prompt_references_counter_examples():
+    """architecture.md §3 反馈机制: prompt must reference counter_examples.md
+    so the agent checks it before making repair decisions."""
+    prompt = build_repair_prompt(source_id="src_001")
+    assert "counter_examples" in prompt.lower(), (
+        "prompt must reference counter_examples.md"
+    )
+
+
+def test_generate_claude_md_includes_reasoning_capture_section():
+    """architecture.md §3 + §5: CLAUDE.md must have a 'Reasoning capture'
+    section that mandates --llm-response and --reasoning-summary."""
+    result = generate_claude_md(source_id="src_001")
+    assert "Reasoning capture" in result
+    assert "--llm-response" in result
+    assert "--reasoning-summary" in result

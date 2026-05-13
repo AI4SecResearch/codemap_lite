@@ -15,7 +15,7 @@ Follow these steps:
    - Read the source file at the call location
    - Analyze variable types, assignments, and context
    - Identify the correct call target(s)
-   - Run: python .icslpreprocess/icsl_tools.py write-edge --caller <caller_id> --callee <callee_id> --call-type <indirect|virtual> --call-file <file> --call-line <line>
+   - Run: python .icslpreprocess/icsl_tools.py write-edge --caller <caller_id> --callee <callee_id> --call-type <indirect|virtual> --call-file <file> --call-line <line> --llm-response "<your analysis excerpt>" --reasoning-summary "<one-sentence justification>"
 
 3. After processing all current UnresolvedCalls, run query-reachable again.
    New UnresolvedCalls may appear as newly reachable nodes are discovered.
@@ -26,6 +26,7 @@ Follow these steps:
 Remember:
 - Check counter_examples.md before deciding targets
 - Skip edges that already exist
+- Always pass --llm-response and --reasoning-summary on every write-edge call
 - Stop when you reach system/standard library functions (no source available)
 - Stop when you cannot find the implementation in the codebase
 - Detect and break cycles in the call chain

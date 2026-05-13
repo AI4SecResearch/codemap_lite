@@ -95,6 +95,15 @@ class RepairOrchestrator:
             backup_path = target_dir / "CLAUDE.md.bak"
             shutil.copy2(claude_md_path, backup_path)
 
+        # Backup existing .claude/ if present (architecture.md §3: preserve
+        # pre-existing user config after cleanup)
+        claude_dir = target_dir / ".claude"
+        claude_dir_backup = target_dir / ".claude.bak"
+        if claude_dir.exists():
+            if claude_dir_backup.exists():
+                shutil.rmtree(claude_dir_backup)
+            shutil.copytree(claude_dir, claude_dir_backup)
+
         # Write CLAUDE.md
         from codemap_lite.agent.claude_md_template import generate_claude_md
 
@@ -167,10 +176,14 @@ class RepairOrchestrator:
         if icsl_dir.exists():
             shutil.rmtree(icsl_dir)
 
-        # Remove .claude/ (only if we created it)
+        # Restore .claude/ backup or remove generated one
+        # (architecture.md §3: preserve pre-existing user config)
         claude_dir = target_dir / ".claude"
+        claude_dir_backup = target_dir / ".claude.bak"
         if claude_dir.exists():
             shutil.rmtree(claude_dir)
+        if claude_dir_backup.exists():
+            shutil.move(str(claude_dir_backup), str(claude_dir))
 
         # Restore CLAUDE.md backup or remove generated one
         claude_md_path = target_dir / "CLAUDE.md"
