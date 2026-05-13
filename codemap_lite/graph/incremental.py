@@ -85,6 +85,7 @@ class IncrementalUpdater:
         # Step 3b: Delete RepairLogs and regenerate UnresolvedCalls for
         # affected LLM callers.
         # architecture.md §7 step 3: "删除该 CALLS 边 + 对应 RepairLog，重新生成 UnresolvedCall"
+        affected_source_ids: set[str] = set()
         for caller_id, callee_id, props in invalidated_llm_edges:
             # Delete the RepairLog that documented this LLM repair
             call_location = f"{props.call_file}:{props.call_line}"
@@ -108,5 +109,17 @@ class IncrementalUpdater:
             )
             self._store.create_unresolved_call(gap)
             result.regenerated_unresolved_calls.append(gap.id)
+            affected_source_ids.add(caller_id)
+
+        # Step 4: Reset SourcePoint status to "pending" for affected sources
+        # so the repair orchestrator will re-process them.
+        # architecture.md §7 + §3: invalidation regenerates pending GAPs,
+        # so the source must transition back to allow re-repair.
+        if hasattr(self._store, "update_source_point_status"):
+            for source_id in affected_source_ids:
+                if hasattr(self._store, "get_source_point"):
+                    sp = self._store.get_source_point(source_id)
+                    if sp is not None and getattr(sp, "status", "") != "pending":
+                        self._store.update_source_point_status(source_id, "pending")
 
         return result

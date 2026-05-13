@@ -363,3 +363,55 @@ def test_cascade_invalidation_deletes_repair_log_for_llm_edges():
     assert len(result.regenerated_unresolved_calls) == 1
     # foo must be in affected_callers
     assert "foo" in result.affected_callers
+
+
+def test_invalidate_file_resets_source_point_status_to_pending():
+    """architecture.md §7 + §3: when cascade invalidation regenerates
+    UnresolvedCalls for a source, the SourcePoint status must be reset
+    to 'pending' so the repair orchestrator will re-process it."""
+    from codemap_lite.graph.schema import SourcePointNode
+
+    store = InMemoryGraphStore()
+
+    # Source function in file_a.c (the caller)
+    store.create_function(FunctionNode(
+        id="src_caller", name="src_caller", signature="void src_caller()",
+        file_path="file_a.c", start_line=1, end_line=10, body_hash="ha",
+    ))
+    # Target function in file_b.c (the callee, will be invalidated)
+    store.create_function(FunctionNode(
+        id="target_fn", name="target_fn", signature="void target_fn()",
+        file_path="file_b.c", start_line=1, end_line=10, body_hash="hb",
+    ))
+    # LLM edge from src_caller → target_fn
+    store.create_calls_edge("src_caller", "target_fn", CallsEdgeProps(
+        resolved_by="llm", call_type="indirect",
+        call_file="file_a.c", call_line=5,
+    ))
+    # SourcePoint for src_caller marked as "complete"
+    store.create_source_point(SourcePointNode(
+        id="src_caller",
+        function_id="src_caller",
+        entry_point_kind="callback_registration",
+        reason="test",
+        status="complete",
+    ))
+
+    # Verify initial state
+    sp_before = store.get_source_point("src_caller")
+    assert sp_before.status == "complete"
+
+    # Invalidate file_b.c → target_fn deleted → LLM edge invalidated
+    updater = IncrementalUpdater(store)
+    result = updater.invalidate_file("file_b.c")
+
+    # SourcePoint must be reset to "pending"
+    sp_after = store.get_source_point("src_caller")
+    assert sp_after is not None
+    assert sp_after.status == "pending", (
+        "architecture.md §7: SourcePoint status must reset to 'pending' "
+        "when its reachable GAPs are invalidated"
+    )
+    # UnresolvedCall must be regenerated
+    assert len(result.regenerated_unresolved_calls) == 1
+    assert "src_caller" in result.affected_callers
