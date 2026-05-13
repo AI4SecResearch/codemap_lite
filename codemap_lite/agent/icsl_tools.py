@@ -68,6 +68,13 @@ def write_edge(
     reasoning_summary: str = "",
 ) -> dict[str, Any]:
     """Write a CALLS edge, create RepairLog, and delete the UnresolvedCall."""
+    # architecture.md §4: call_type ∈ {direct, indirect, virtual}
+    _VALID_CALL_TYPES = {"direct", "indirect", "virtual"}
+    if call_type not in _VALID_CALL_TYPES:
+        raise ValueError(
+            f"call_type must be one of {sorted(_VALID_CALL_TYPES)}, got {call_type!r}"
+        )
+
     # Check if edge already exists (skip if so)
     if store.edge_exists(caller_id, callee_id, call_file, call_line):
         return {"skipped": True, "reason": "edge already exists"}
@@ -226,7 +233,8 @@ def _build_parser() -> argparse.ArgumentParser:
     we.add_argument(
         "--call-type",
         required=True,
-        help="Call type (direct / indirect / virtual / ...).",
+        choices=["direct", "indirect", "virtual"],
+        help="Call type (direct / indirect / virtual).",
     )
     we.add_argument("--call-file", required=True, help="File of the call site.")
     we.add_argument(

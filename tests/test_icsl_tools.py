@@ -549,3 +549,35 @@ def test_write_edge_repair_log_timestamps_are_monotonic():
     timestamps = [log.timestamp for log in logs]
     assert timestamps == sorted(timestamps), "timestamps not monotonic"
     assert len(set(timestamps)) == 3, "timestamps not distinct"
+
+
+def test_write_edge_rejects_invalid_call_type(mock_graph_store):
+    """architecture.md §4: call_type ∈ {direct, indirect, virtual}.
+
+    write_edge must reject values outside this enum.
+    """
+    import pytest
+
+    with pytest.raises(ValueError, match="call_type"):
+        write_edge(
+            caller_id="f1",
+            callee_id="f2",
+            call_type="unknown",
+            call_file="a.cpp",
+            call_line=10,
+            store=mock_graph_store,
+        )
+
+
+def test_write_edge_accepts_valid_call_types(mock_graph_store):
+    """architecture.md §4: all three valid call_type values must be accepted."""
+    for ct in ("direct", "indirect", "virtual"):
+        result = write_edge(
+            caller_id="f1",
+            callee_id="f2",
+            call_type=ct,
+            call_file="a.cpp",
+            call_line=10 + hash(ct) % 100,
+            store=mock_graph_store,
+        )
+        assert result["skipped"] is False or result.get("edge_created") is True
