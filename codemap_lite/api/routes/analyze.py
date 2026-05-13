@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +26,16 @@ class AnalyzeRequest(BaseModel):
     """Request body for triggering analysis."""
 
     mode: AnalyzeMode
+
+
+class RepairRequest(BaseModel):
+    """Optional request body for POST /analyze/repair.
+
+    architecture.md §3: repair can target specific source points.
+    If source_ids is omitted or empty, all source points are repaired.
+    """
+
+    source_ids: list[str] = Field(default_factory=list)
 
 
 def _read_source_progress(target_dir: Path | None) -> list[dict[str, Any]]:
@@ -151,13 +161,18 @@ def create_analyze_router() -> APIRouter:
         return {"status": "accepted", "mode": body.mode.value}
 
     @router.post("/analyze/repair", status_code=202)
-    async def trigger_repair(request: Request) -> dict[str, Any]:
+    async def trigger_repair(
+        request: Request, body: RepairRequest | None = None
+    ) -> dict[str, Any]:
         """Trigger repair agents in a background task.
 
         architecture.md §8: POST /api/v1/analyze/repair spawns the
         RepairOrchestrator asynchronously. Returns 202 immediately;
         progress is polled via GET /api/v1/analyze/status.
+
+        Optional body.source_ids filters which source points to repair.
         """
+        requested_source_ids = body.source_ids if body else []
         settings = getattr(request.app.state, "settings", None)
 
         # Prevent double-spawn (architecture.md §8: 409 Conflict)
@@ -244,10 +259,16 @@ def create_analyze_router() -> APIRouter:
                         feedback_store=feedback_store,
                         graph_store=graph_store,
                         retry_failed_gaps=settings.agent.retry_failed_gaps,
+                        subprocess_timeout_seconds=settings.agent.subprocess_timeout_seconds,
                     )
                 )
 
                 source_ids = [sp.function_id for sp in source_points]
+                # Filter to requested source_ids if provided
+                if requested_source_ids:
+                    source_ids = [
+                        sid for sid in source_ids if sid in set(requested_source_ids)
+                    ]
                 await orch.run_repairs(source_ids)
             except Exception as exc:
                 logger.exception("Repair background task failed: %s", exc)

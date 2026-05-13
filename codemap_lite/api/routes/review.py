@@ -226,10 +226,9 @@ def create_review_router() -> APIRouter:
             # Reset SourcePoint status to "pending" so the frontend reflects
             # that this source needs re-processing (architecture.md §5 step 4:
             # "触发 Agent 重新修复该 source 点" implies status must revert).
-            if hasattr(store, "update_source_point_status"):
-                sp = store.get_source_point(body.caller_id)
-                if sp is not None and sp.status != "pending":
-                    store.update_source_point_status(body.caller_id, "pending")
+            sp = store.get_source_point(body.caller_id)
+            if sp is not None and sp.status != "pending":
+                store.update_source_point_status(body.caller_id, "pending")
 
         request.app.state.reviews[review_id] = review
         return review
@@ -266,9 +265,7 @@ def create_review_router() -> APIRouter:
         if store.get_function_by_id(body.callee_id) is None:
             raise HTTPException(status_code=404, detail="Callee function not found")
         # architecture.md §4: CALLS edges unique by (caller_id, callee_id, call_file, call_line)
-        if hasattr(store, "edge_exists") and store.edge_exists(
-            body.caller_id, body.callee_id, body.call_file, body.call_line
-        ):
+        if store.edge_exists(body.caller_id, body.callee_id, body.call_file, body.call_line):
             raise HTTPException(status_code=409, detail="Edge already exists")
         props = CallsEdgeProps(
             resolved_by=body.resolved_by,
@@ -345,10 +342,9 @@ def create_review_router() -> APIRouter:
             )
 
         # Reset SourcePoint status to "pending" (same as review verdict=incorrect)
-        if hasattr(store, "update_source_point_status"):
-            sp = store.get_source_point(body.caller_id)
-            if sp is not None and sp.status != "pending":
-                store.update_source_point_status(body.caller_id, "pending")
+        sp = store.get_source_point(body.caller_id)
+        if sp is not None and sp.status != "pending":
+            store.update_source_point_status(body.caller_id, "pending")
 
         return Response(status_code=204)
 

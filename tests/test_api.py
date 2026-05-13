@@ -266,6 +266,17 @@ class TestAnalyzeEndpoint:
         assert resp2.status_code == 409
         assert "already running" in resp2.json()["detail"]
 
+    def test_analyze_repair_accepts_source_ids_filter(self) -> None:
+        """architecture.md §3: repair can target specific source points."""
+        client, _ = get_test_client()
+        resp = client.post(
+            "/api/v1/analyze/repair",
+            json={"source_ids": ["src1", "src2"]},
+        )
+        assert resp.status_code == 202
+        data = resp.json()
+        assert data["status"] == "accepted"
+
     def test_analyze_status(self) -> None:
         client, _ = get_test_client()
         resp = client.get("/api/v1/analyze/status")
