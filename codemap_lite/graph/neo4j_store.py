@@ -618,11 +618,16 @@ class Neo4jGraphStore:
         self._indexes_ensured = True
 
     def create_function(self, node: FunctionNode) -> str:
+        # architecture.md §4: DEFINES relationship from File to Function.
+        # MERGE the Function node, then link to its parent File if it exists.
         cypher = (
             "MERGE (f:Function {id: $id}) "
             "SET f.signature = $signature, f.name = $name, "
             "    f.file_path = $file_path, f.start_line = $start_line, "
             "    f.end_line = $end_line, f.body_hash = $body_hash "
+            "WITH f "
+            "MATCH (file:File {file_path: $file_path}) "
+            "MERGE (file)-[:DEFINES]->(f) "
             "RETURN f.id AS id"
         )
         with self._get_driver().session() as session:
@@ -1210,14 +1215,21 @@ class Neo4jGraphStore:
         return {"nodes": nodes, "edges": edges, "unresolved": unresolved}
 
     def create_source_point(self, node: SourcePointNode) -> str:
-        """MERGE a SourcePoint node into Neo4j."""
+        """MERGE a SourcePoint node into Neo4j.
+
+        architecture.md §4: creates IS_SOURCE relationship from Function
+        to SourcePoint when the referenced function exists.
+        """
         cypher = (
             "MERGE (s:SourcePoint {id: $id}) "
             "SET s.entry_point_kind = $entry_point_kind, "
             "    s.reason = $reason, "
             "    s.function_id = $function_id, "
             "    s.module = $module, "
-            "    s.status = $status"
+            "    s.status = $status "
+            "WITH s "
+            "MATCH (f:Function {id: $function_id}) "
+            "MERGE (f)-[:IS_SOURCE]->(s)"
         )
         with self._get_driver().session() as session:
             session.run(
