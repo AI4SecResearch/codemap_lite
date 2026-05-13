@@ -74,3 +74,17 @@ def test_settings_defaults():
     assert settings.neo4j.uri == "bolt://localhost:7687"
     assert settings.agent.backend == "claudecode"
     assert settings.agent.max_concurrency == 5
+    # architecture.md §3 超时护栏: default None = no timeout
+    assert settings.agent.subprocess_timeout_seconds is None
+
+
+def test_subprocess_timeout_seconds_from_yaml(tmp_path):
+    """architecture.md §3 超时护栏 + §10: subprocess_timeout_seconds must be
+    configurable via agent section in config.yaml."""
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        "agent:\n"
+        "  subprocess_timeout_seconds: 120.5\n"
+    )
+    settings = Settings.from_yaml(config_file)
+    assert settings.agent.subprocess_timeout_seconds == 120.5

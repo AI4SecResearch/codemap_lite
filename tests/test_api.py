@@ -1266,3 +1266,86 @@ class TestEdgeDeletion:
             },
         )
         assert resp.status_code == 404
+
+    def test_delete_edge_also_deletes_repair_log(self) -> None:
+        """architecture.md §5 line 326: '立即删除该 CALLS 边 + 对应 RepairLog'.
+        When an edge is deleted, the corresponding RepairLog must also be removed."""
+        client, store = get_test_client()
+        fn1 = FunctionNode(
+            signature="void a()", name="a", file_path="f.cpp",
+            start_line=1, end_line=5, body_hash="h1", id="a",
+        )
+        fn2 = FunctionNode(
+            signature="void b()", name="b", file_path="f.cpp",
+            start_line=10, end_line=15, body_hash="h2", id="b",
+        )
+        store.create_function(fn1)
+        store.create_function(fn2)
+        store.create_calls_edge("a", "b", CallsEdgeProps(
+            resolved_by="llm", call_type="indirect",
+            call_file="f.cpp", call_line=3,
+        ))
+        store.create_repair_log(RepairLogNode(
+            id="rl1", caller_id="a", callee_id="b",
+            call_location="f.cpp:3",
+            repair_method="llm", llm_response="resolved",
+            timestamp="2026-05-14T00:00:00Z", reasoning_summary="test",
+        ))
+
+        resp = client.request(
+            "DELETE", "/api/v1/edges",
+            json={
+                "caller_id": "a",
+                "callee_id": "b",
+                "call_file": "f.cpp",
+                "call_line": 3,
+            },
+        )
+        assert resp.status_code == 204
+
+        logs = store.get_repair_logs(caller_id="a", callee_id="b")
+        assert len(logs) == 0, (
+            "architecture.md §5: deleting edge must also delete RepairLog"
+        )
+
+    def test_delete_edge_regenerates_unresolved_call(self) -> None:
+        """architecture.md §5 line 327: '重新生成 UnresolvedCall 节点（retry_count=0）'.
+        After deleting an edge, a new UnresolvedCall must be created for the caller."""
+        client, store = get_test_client()
+        fn1 = FunctionNode(
+            signature="void a()", name="a", file_path="f.cpp",
+            start_line=1, end_line=5, body_hash="h1", id="a",
+        )
+        fn2 = FunctionNode(
+            signature="void b()", name="b", file_path="f.cpp",
+            start_line=10, end_line=15, body_hash="h2", id="b",
+        )
+        store.create_function(fn1)
+        store.create_function(fn2)
+        store.create_calls_edge("a", "b", CallsEdgeProps(
+            resolved_by="llm", call_type="indirect",
+            call_file="f.cpp", call_line=3,
+        ))
+
+        resp = client.request(
+            "DELETE", "/api/v1/edges",
+            json={
+                "caller_id": "a",
+                "callee_id": "b",
+                "call_file": "f.cpp",
+                "call_line": 3,
+            },
+        )
+        assert resp.status_code == 204
+
+        gaps = store.get_unresolved_calls(caller_id="a")
+        assert len(gaps) == 1, (
+            "architecture.md §5: deleting edge must regenerate UnresolvedCall"
+        )
+        gap = gaps[0]
+        assert gap.caller_id == "a"
+        assert gap.call_file == "f.cpp"
+        assert gap.call_line == 3
+        assert gap.call_type == "indirect"
+        assert gap.retry_count == 0
+        assert gap.status == "pending"

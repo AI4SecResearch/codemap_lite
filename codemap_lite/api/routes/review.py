@@ -132,11 +132,30 @@ def create_review_router() -> APIRouter:
 
     @router.delete("/edges", status_code=204)
     def delete_edge(request: Request, body: EdgeDelete) -> Response:
-        """Delete a specific CALLS edge by its identifying tuple.
+        """Delete a specific CALLS edge + corresponding RepairLog + regenerate UC.
 
-        architecture.md §5 审阅交互: '标记错误时 → 立即删除该 CALLS 边'.
+        architecture.md §5 审阅交互 lines 326-327:
+        '标记错误时 → 立即删除该 CALLS 边 + 对应 RepairLog →
+        重新生成 UnresolvedCall 节点（retry_count=0）'.
         """
+        from codemap_lite.graph.schema import UnresolvedCallNode
+
         store = request.app.state.store
+
+        # Capture edge call_type before deletion (needed for UC regeneration)
+        call_type = "indirect"  # default fallback
+        if hasattr(store, "list_calls_edges"):
+            for edge in store.list_calls_edges():
+                if (
+                    edge.caller_id == body.caller_id
+                    and edge.callee_id == body.callee_id
+                    and edge.props.call_file == body.call_file
+                    and edge.props.call_line == body.call_line
+                ):
+                    call_type = edge.props.call_type
+                    break
+
+        # Step 1: Delete the CALLS edge
         deleted = store.delete_calls_edge(
             caller_id=body.caller_id,
             callee_id=body.callee_id,
@@ -145,6 +164,30 @@ def create_review_router() -> APIRouter:
         )
         if not deleted:
             raise HTTPException(status_code=404, detail="Edge not found")
+
+        # Step 2: Delete corresponding RepairLog (architecture.md §5 line 326)
+        call_location = f"{body.call_file}:{body.call_line}"
+        store.delete_repair_logs_for_edge(
+            caller_id=body.caller_id,
+            callee_id=body.callee_id,
+            call_location=call_location,
+        )
+
+        # Step 3: Regenerate UnresolvedCall (architecture.md §5 line 327)
+        uc = UnresolvedCallNode(
+            caller_id=body.caller_id,
+            call_expression="",
+            call_file=body.call_file,
+            call_line=body.call_line,
+            call_type=call_type,
+            source_code_snippet="",
+            var_name=None,
+            var_type=None,
+            retry_count=0,
+            status="pending",
+        )
+        store.create_unresolved_call(uc)
+
         return Response(status_code=204)
 
     @router.delete("/edges/{function_id}", status_code=204)

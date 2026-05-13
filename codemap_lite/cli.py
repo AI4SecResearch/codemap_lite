@@ -151,6 +151,7 @@ def repair(
             feedback_store=feedback_store,
             graph_store=graph_store,
             retry_failed_gaps=settings.agent.retry_failed_gaps,
+            subprocess_timeout_seconds=settings.agent.subprocess_timeout_seconds,
         )
     )
 

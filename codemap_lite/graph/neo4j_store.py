@@ -64,6 +64,10 @@ class GraphStore(Protocol):
         call_location: str | None = None,
     ) -> list[RepairLogNode]: ...
 
+    def delete_repair_logs_for_edge(
+        self, caller_id: str, callee_id: str, call_location: str
+    ) -> None: ...
+
     def delete_function(self, id: str) -> None: ...
 
     def delete_calls_edges_for_function(self, function_id: str) -> None: ...
@@ -277,6 +281,23 @@ class InMemoryGraphStore:
         if call_location is not None:
             results = [r for r in results if r.call_location == call_location]
         return results
+
+    def delete_repair_logs_for_edge(
+        self, caller_id: str, callee_id: str, call_location: str
+    ) -> None:
+        """Delete RepairLog entries matching the edge's identifying triple.
+
+        architecture.md §5 line 326: '立即删除该 CALLS 边 + 对应 RepairLog'.
+        """
+        self._repair_logs = {
+            k: v
+            for k, v in self._repair_logs.items()
+            if not (
+                v.caller_id == caller_id
+                and v.callee_id == callee_id
+                and v.call_location == call_location
+            )
+        }
 
     def delete_function(self, id: str) -> None:
         self._functions.pop(id, None)
@@ -764,6 +785,25 @@ class Neo4jGraphStore:
         with self._get_driver().session() as session:
             records = list(session.run(cypher, **params))
         return [_record_to_repair_log(r) for r in records]
+
+    def delete_repair_logs_for_edge(
+        self, caller_id: str, callee_id: str, call_location: str
+    ) -> None:
+        """Delete RepairLog nodes matching the edge's identifying triple."""
+        cypher = (
+            "MATCH (r:RepairLog) "
+            "WHERE r.caller_id = $caller_id "
+            "AND r.callee_id = $callee_id "
+            "AND r.call_location = $call_location "
+            "DELETE r"
+        )
+        with self._get_driver().session() as session:
+            session.run(
+                cypher,
+                caller_id=caller_id,
+                callee_id=callee_id,
+                call_location=call_location,
+            ).consume()
 
     def delete_function(self, id: str) -> None:
         cypher = "MATCH (f:Function {id: $id}) DETACH DELETE f"
