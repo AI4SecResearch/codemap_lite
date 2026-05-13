@@ -2431,3 +2431,156 @@ async def test_progress_json_includes_edges_written_on_gate_pass(tmp_path):
     )
     # 2 LLM edges in the mock subgraph
     assert data["edges_written"] == 2
+
+
+@pytest.mark.asyncio
+async def test_gaps_marked_unresolvable_after_max_retries(tmp_path):
+    """architecture.md §3 line 118-123: retry_count >= 3 → status = 'unresolvable'.
+
+    When a GAP exhausts its retry budget (3 attempts), the orchestrator must
+    mark it as 'unresolvable' via update_unresolved_call_retry_state. This test
+    verifies the InMemoryGraphStore correctly transitions the status.
+    """
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import (
+        FunctionNode, UnresolvedCallNode, SourcePointNode,
+    )
+
+    store = InMemoryGraphStore()
+    # Create source function + GAP
+    store.create_function(FunctionNode(
+        id="src_retry", signature="void src()", name="src",
+        file_path="a.cpp", start_line=1, end_line=10, body_hash="h1",
+    ))
+    store.create_source_point(SourcePointNode(
+        id="src_retry", function_id="src_retry",
+        entry_point_kind="rpc", reason="test", status="pending",
+    ))
+    store.create_unresolved_call(UnresolvedCallNode(
+        id="gap_retry_test",
+        caller_id="src_retry",
+        call_expression="ptr->call()",
+        call_file="a.cpp",
+        call_line=5,
+        call_type="indirect",
+        source_code_snippet="ptr->call();",
+        var_name="ptr",
+        var_type="Base*",
+        candidates=["Derived::call"],
+        retry_count=0,
+        status="pending",
+    ))
+
+    target_dir = tmp_path / "target_retry"
+    target_dir.mkdir()
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        command="echo",
+        args=["done"],
+        max_concurrency=1,
+        graph_store=store,
+    )
+    orchestrator = RepairOrchestrator(config=config)
+    # Gate always fails → forces retry loop to exhaust budget
+    orchestrator._check_gate = AsyncMock(return_value=False)
+
+    results = await orchestrator.run_repairs(["src_retry"])
+
+    # After 3 failed gate checks, the GAP must be "unresolvable"
+    gap = store._unresolved_calls.get("gap_retry_test")
+    assert gap is not None
+    assert gap.retry_count == 3, f"Expected retry_count=3, got {gap.retry_count}"
+    assert gap.status == "unresolvable", (
+        f"architecture.md §3: GAP must be 'unresolvable' after 3 retries, "
+        f"got status={gap.status!r}"
+    )
+    # Source should be partial_complete
+    sp = store.get_source_point("src_retry")
+    assert sp.status == "partial_complete"
+    # Result should indicate failure
+    assert results[0].success is False
+
+
+@pytest.mark.asyncio
+async def test_progress_json_tracks_gaps_fixed(tmp_path):
+    """architecture.md §3 line 203-211: progress.json schema requires gaps_fixed.
+
+    When the gate passes (all gaps resolved), gaps_fixed should equal gaps_total
+    in the final progress.json. The orchestrator writes gaps_total at attempt start;
+    after gate pass, gaps_fixed = gaps_total (since all are resolved).
+    """
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import (
+        FunctionNode, UnresolvedCallNode, SourcePointNode,
+        CallsEdgeProps,
+    )
+
+    store = InMemoryGraphStore()
+    store.create_function(FunctionNode(
+        id="src_gf", signature="void src()", name="src",
+        file_path="b.cpp", start_line=1, end_line=10, body_hash="h2",
+    ))
+    store.create_function(FunctionNode(
+        id="callee_gf", signature="void callee()", name="callee",
+        file_path="b.cpp", start_line=20, end_line=30, body_hash="h3",
+    ))
+    store.create_source_point(SourcePointNode(
+        id="src_gf", function_id="src_gf",
+        entry_point_kind="rpc", reason="test", status="pending",
+    ))
+    # One pending gap
+    store.create_unresolved_call(UnresolvedCallNode(
+        id="gap_gf_001",
+        caller_id="src_gf",
+        call_expression="callee()",
+        call_file="b.cpp",
+        call_line=5,
+        call_type="indirect",
+        source_code_snippet="callee();",
+        var_name=None,
+        var_type=None,
+        candidates=["callee"],
+        retry_count=0,
+        status="pending",
+    ))
+
+    target_dir = tmp_path / "target_gf"
+    target_dir.mkdir()
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        command="echo",
+        args=["done"],
+        max_concurrency=1,
+        graph_store=store,
+    )
+    orchestrator = RepairOrchestrator(config=config)
+
+    # Simulate: agent resolves the gap (deletes UC, creates edge) before gate check
+    async def _fake_gate(source_id):
+        # Simulate what the agent does: resolve the gap
+        store.delete_unresolved_call("src_gf", "b.cpp", 5)
+        store.create_calls_edge("src_gf", "callee_gf", CallsEdgeProps(
+            resolved_by="llm", call_type="indirect",
+            call_file="b.cpp", call_line=5,
+        ))
+        return True
+
+    orchestrator._check_gate = _fake_gate
+
+    results = await orchestrator.run_repairs(["src_gf"])
+
+    assert results[0].success is True
+    progress_path = target_dir / "logs" / "repair" / "src_gf" / "progress.json"
+    assert progress_path.exists()
+    data = json.loads(progress_path.read_text(encoding="utf-8"))
+    # gaps_total was written at attempt start (1 gap)
+    assert data.get("gaps_total") == 1
+    # After gate pass, gaps_fixed should reflect the resolved count
+    assert "gaps_fixed" in data, (
+        "architecture.md §3: progress.json must include 'gaps_fixed'"
+    )
+    assert data["gaps_fixed"] == 1

@@ -581,3 +581,68 @@ def test_write_edge_accepts_valid_call_types(mock_graph_store):
             store=mock_graph_store,
         )
         assert result["skipped"] is False or result.get("edge_created") is True
+
+
+def test_write_edge_rejects_nonexistent_caller(mock_graph_store):
+    """architecture.md §3: write-edge must validate caller_id is a valid Function node.
+
+    If the caller doesn't exist in the graph, the edge should not be created
+    and an error should be returned.
+    """
+    # Add get_function_by_id to mock — caller "nonexistent" not found
+    mock_graph_store.get_function_by_id = lambda fid: (
+        None if fid == "nonexistent" else MagicMock()
+    )
+
+    result = write_edge(
+        caller_id="nonexistent",
+        callee_id="func_002",
+        call_type="indirect",
+        call_file="test.cpp",
+        call_line=42,
+        store=mock_graph_store,
+    )
+    assert result.get("error") is not None
+    assert "caller" in result["error"].lower()
+    assert len(mock_graph_store.edges_created) == 0
+
+
+def test_write_edge_rejects_nonexistent_callee(mock_graph_store):
+    """architecture.md §3: write-edge must validate callee_id is a valid Function node.
+
+    If the callee doesn't exist in the graph, the edge should not be created
+    and an error should be returned.
+    """
+    # Add get_function_by_id to mock — callee "nonexistent" not found
+    mock_graph_store.get_function_by_id = lambda fid: (
+        None if fid == "nonexistent" else MagicMock()
+    )
+
+    result = write_edge(
+        caller_id="func_001",
+        callee_id="nonexistent",
+        call_type="indirect",
+        call_file="test.cpp",
+        call_line=42,
+        store=mock_graph_store,
+    )
+    assert result.get("error") is not None
+    assert "callee" in result["error"].lower()
+    assert len(mock_graph_store.edges_created) == 0
+
+
+def test_write_edge_succeeds_with_valid_caller_and_callee(mock_graph_store):
+    """architecture.md §3: write-edge succeeds when both caller and callee exist."""
+    # Add get_function_by_id to mock — both exist
+    mock_graph_store.get_function_by_id = lambda fid: MagicMock()
+
+    result = write_edge(
+        caller_id="func_001",
+        callee_id="func_002",
+        call_type="indirect",
+        call_file="test.cpp",
+        call_line=99,
+        store=mock_graph_store,
+    )
+    assert result.get("edge_created") is True
+    assert len(mock_graph_store.edges_created) == 1

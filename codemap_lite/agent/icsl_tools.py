@@ -42,6 +42,7 @@ class GraphStoreProtocol(Protocol):
     """Protocol for graph store operations needed by icsl_tools."""
 
     def get_reachable_subgraph(self, source_id: str, max_depth: int = 50) -> dict[str, Any]: ...
+    def get_function_by_id(self, id: str) -> Any: ...
     def edge_exists(self, caller_id: str, callee_id: str, call_file: str, call_line: int) -> bool: ...
     def create_calls_edge(self, caller_id: str, callee_id: str, props: dict[str, Any]) -> None: ...
     def create_repair_log(self, log_data: dict[str, Any]) -> None: ...
@@ -74,6 +75,13 @@ def write_edge(
         raise ValueError(
             f"call_type must be one of {sorted(_VALID_CALL_TYPES)}, got {call_type!r}"
         )
+
+    # architecture.md §3: validate caller and callee are existing Function nodes
+    if hasattr(store, "get_function_by_id"):
+        if store.get_function_by_id(caller_id) is None:
+            return {"error": "Caller function node not found", "caller_id": caller_id}
+        if store.get_function_by_id(callee_id) is None:
+            return {"error": "Callee function node not found", "callee_id": callee_id}
 
     # Check if edge already exists (skip if so)
     if store.edge_exists(caller_id, callee_id, call_file, call_line):

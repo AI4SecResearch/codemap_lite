@@ -421,11 +421,14 @@ class RepairOrchestrator:
                 gate_passed = await self._check_gate(source_id)
                 edges = self._count_edges_written(source_id)
                 if gate_passed:
+                    # architecture.md §3: gaps_fixed = gaps_total when gate passes
+                    # (all pending gaps resolved). Write final progress snapshot.
                     self._write_progress(
                         source_id,
                         state="succeeded",
                         gate_result="passed",
                         edges_written=edges,
+                        gaps_fixed=gaps_total,
                     )
                     # architecture.md §3: 无残留 → SourcePoint.status = "complete"
                     self._update_source_status(source_id, "complete")
@@ -440,10 +443,16 @@ class RepairOrchestrator:
                     source_id=source_id,
                     reason="gate_failed: remaining pending GAPs",
                 )
+                # Compute gaps_fixed = gaps_total - remaining pending
+                remaining = 0
+                if store is not None:
+                    remaining = len(store.get_pending_gaps_for_source(source_id))
+                gaps_fixed = max(0, gaps_total - remaining)
                 self._write_progress(
                     source_id,
                     gate_result="failed",
                     edges_written=edges,
+                    gaps_fixed=gaps_fixed,
                     last_error="gate_failed: remaining pending GAPs",
                 )
             finally:
