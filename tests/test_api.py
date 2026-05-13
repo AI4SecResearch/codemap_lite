@@ -212,9 +212,13 @@ class TestAnalyzeEndpoint:
     def test_analyze_trigger_conflict_returns_409(self) -> None:
         """architecture.md §8: double-spawn of analysis must return 409."""
         client, _ = get_test_client()
-        client.app.state.analyze_state = {"state": "analyzing", "progress": 0.5}
-        resp = client.post("/api/v1/analyze", json={"mode": "full"})
-        assert resp.status_code == 409
+        # First POST sets state to "analyzing"
+        resp1 = client.post("/api/v1/analyze", json={"mode": "full"})
+        assert resp1.status_code == 202
+        # Second POST should detect conflict via real state transition
+        resp2 = client.post("/api/v1/analyze", json={"mode": "full"})
+        assert resp2.status_code == 409
+        assert "already running" in resp2.json()["detail"]
 
     def test_analyze_trigger_spawns_background_task(self) -> None:
         """architecture.md §8: POST /analyze with settings triggers pipeline."""
@@ -1637,8 +1641,49 @@ class TestEdgeDeletion:
             # Background task should have been called with settings + caller_id
             mock_trigger.assert_called_once_with(settings, "a")
 
+    def test_delete_edges_for_function_bulk(self) -> None:
+        """architecture.md §7: DELETE /edges/{function_id} bulk-deletes all
+        edges touching a function (used by incremental invalidation)."""
+        client, store = get_test_client()
+        fn1 = FunctionNode(
+            signature="void a()", name="a", file_path="f.cpp",
+            start_line=1, end_line=5, body_hash="h1", id="a",
+        )
+        fn2 = FunctionNode(
+            signature="void b()", name="b", file_path="f.cpp",
+            start_line=10, end_line=15, body_hash="h2", id="b",
+        )
+        fn3 = FunctionNode(
+            signature="void c()", name="c", file_path="g.cpp",
+            start_line=1, end_line=5, body_hash="h3", id="c",
+        )
+        store.create_function(fn1)
+        store.create_function(fn2)
+        store.create_function(fn3)
+        # a→b, b→c, c→a (cycle)
+        store.create_calls_edge("a", "b", CallsEdgeProps(
+            resolved_by="llm", call_type="indirect",
+            call_file="f.cpp", call_line=3,
+        ))
+        store.create_calls_edge("b", "c", CallsEdgeProps(
+            resolved_by="signature", call_type="direct",
+            call_file="f.cpp", call_line=12,
+        ))
+        store.create_calls_edge("c", "a", CallsEdgeProps(
+            resolved_by="dataflow", call_type="indirect",
+            call_file="g.cpp", call_line=4,
+        ))
+        assert len(store.list_calls_edges()) == 3
 
-class TestStatsEndpoint:
+        # Delete all edges touching function "b" (a→b and b→c)
+        resp = client.delete("/api/v1/edges/b")
+        assert resp.status_code == 204
+
+        # Only c→a should remain
+        remaining = store.list_calls_edges()
+        assert len(remaining) == 1
+        assert remaining[0].caller_id == "c"
+        assert remaining[0].callee_id == "a"
     """architecture.md §8: /api/v1/stats must return unresolved_by_category
     with all 5 keys always present, and calls_by_resolved_by with all 5
     resolved_by values."""
