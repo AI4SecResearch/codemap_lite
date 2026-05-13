@@ -428,7 +428,30 @@ class RepairOrchestrator:
                 self._cleanup_injection(target_dir, source_id)
 
         self._write_progress(source_id, state="failed")
+        # Distinguish between "no gaps existed" (complete) and "all gaps
+        # exhausted their retry budget" (partial_complete).
         # architecture.md §3: retry_count ≥ 3 → SourcePoint.status = "partial_complete"
+        # But if there were never any pending gaps, the source is already done.
+        store = self._config.graph_store
+        if store is not None:
+            pending = store.get_pending_gaps_for_source(source_id)
+            has_unresolvable = any(
+                getattr(g, "status", "") == "unresolvable"
+                for g in store.get_unresolved_calls(caller_id=None, status=None)
+                if getattr(g, "caller_id", "") == source_id
+                or g.id in {p.id for p in pending}
+            )
+        else:
+            has_unresolvable = attempts > 0
+
+        if attempts == 0 and not has_unresolvable:
+            # No gaps existed at all — source is already complete
+            self._write_progress(source_id, state="succeeded", gate_result="passed")
+            self._update_source_status(source_id, "complete")
+            return SourceRepairResult(
+                source_id=source_id, success=True, attempts=0,
+            )
+
         self._update_source_status(source_id, "partial_complete")
         return SourceRepairResult(
             source_id=source_id,

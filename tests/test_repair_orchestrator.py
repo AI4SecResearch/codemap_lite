@@ -1932,3 +1932,45 @@ async def test_retry_failed_gaps_true_resets_unresolvable(tmp_path):
     assert gap_after.status != "unresolvable", (
         "retry_failed_gaps=True must reset unresolvable GAPs to pending"
     )
+
+
+@pytest.mark.asyncio
+async def test_source_with_no_pending_gaps_is_complete(tmp_path):
+    """architecture.md §3: if a source has no pending gaps (all already
+    resolved or none exist), it should be marked 'complete' — not
+    'partial_complete'. The while loop exits immediately but that means
+    the source is done, not failed."""
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import FunctionNode
+
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    store = InMemoryGraphStore()
+    # Function exists but has NO pending gaps
+    fn = FunctionNode(
+        id="src_001", signature="void main()", name="main",
+        file_path="src/main.c", start_line=1, end_line=10, body_hash="abc",
+    )
+    store.create_function(fn)
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        command="echo",
+        args=["done"],
+        max_concurrency=1,
+        graph_store=store,
+    )
+    orchestrator = RepairOrchestrator(config=config)
+
+    results = await orchestrator.run_repairs(["src_001"])
+
+    # No gaps → source is complete, not partial_complete
+    assert results[0].success is True, (
+        "Source with no pending gaps should succeed (nothing to repair)"
+    )
+    sp = store.get_source_point("src_001")
+    assert sp is not None
+    assert sp.status == "complete", (
+        "architecture.md §3: no pending gaps → SourcePoint.status = 'complete'"
+    )
