@@ -82,9 +82,18 @@ class IncrementalUpdater:
                 result.removed_unresolved_calls.append(gap.id)
             self._store.delete_function(fid)
 
-        # Step 3b: Regenerate UnresolvedCalls for affected LLM callers
-        # architecture.md §7 step 3: "重新生成 UnresolvedCall"
-        for caller_id, _callee_id, props in invalidated_llm_edges:
+        # Step 3b: Delete RepairLogs and regenerate UnresolvedCalls for
+        # affected LLM callers.
+        # architecture.md §7 step 3: "删除该 CALLS 边 + 对应 RepairLog，重新生成 UnresolvedCall"
+        for caller_id, callee_id, props in invalidated_llm_edges:
+            # Delete the RepairLog that documented this LLM repair
+            call_location = f"{props.call_file}:{props.call_line}"
+            self._store.delete_repair_logs_for_edge(
+                caller_id=caller_id,
+                callee_id=callee_id,
+                call_location=call_location,
+            )
+            # Regenerate UnresolvedCall so the repair agent can re-attempt
             gap = UnresolvedCallNode(
                 caller_id=caller_id,
                 call_expression="",  # Original expression not stored on edge

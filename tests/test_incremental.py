@@ -3,7 +3,9 @@ import pytest
 from pathlib import Path
 
 from codemap_lite.graph.neo4j_store import InMemoryGraphStore
-from codemap_lite.graph.schema import FunctionNode, CallsEdgeProps, UnresolvedCallNode
+from codemap_lite.graph.schema import (
+    FunctionNode, CallsEdgeProps, RepairLogNode, UnresolvedCallNode,
+)
 from codemap_lite.graph.incremental import IncrementalUpdater
 
 
@@ -302,3 +304,62 @@ def test_invalidate_file_marks_non_llm_callers_as_affected():
     assert len(store.list_calls_edges()) == 0
     # bar should be removed
     assert store.get_function_by_id("bar") is None
+
+
+def test_cascade_invalidation_deletes_repair_log_for_llm_edges():
+    """architecture.md §7 step 3: cascade invalidation must delete RepairLog
+    entries for LLM-resolved edges pointing to changed functions.
+
+    Without this, stale RepairLog entries remain in Neo4j and the frontend
+    shows ghost audit trails for edges that no longer exist."""
+    store = InMemoryGraphStore()
+
+    # Setup: caller 'foo' in file_a.c, callee 'bar' in file_b.c
+    foo = FunctionNode(
+        id="foo", signature="void foo()", name="foo",
+        file_path="file_a.c", start_line=1, end_line=10, body_hash="h1",
+    )
+    bar = FunctionNode(
+        id="bar", signature="void bar()", name="bar",
+        file_path="file_b.c", start_line=1, end_line=10, body_hash="h2",
+    )
+    store.create_function(foo)
+    store.create_function(bar)
+
+    # LLM-resolved edge from foo → bar
+    store.create_calls_edge("foo", "bar", CallsEdgeProps(
+        resolved_by="llm", call_type="indirect",
+        call_file="file_a.c", call_line=5,
+    ))
+
+    # RepairLog documenting the LLM repair
+    repair_log = RepairLogNode(
+        id="rl_001",
+        caller_id="foo",
+        callee_id="bar",
+        call_location="file_a.c:5",
+        repair_method="llm",
+        llm_response="bar is called via function pointer",
+        timestamp="2026-05-14T00:00:00Z",
+        reasoning_summary="function pointer analysis",
+    )
+    store.create_repair_log(repair_log)
+
+    # Verify RepairLog exists before invalidation
+    logs_before = store.get_repair_logs(caller_id="foo", callee_id="bar")
+    assert len(logs_before) == 1
+
+    # Invalidate file_b.c (bar's file changed)
+    updater = IncrementalUpdater(store)
+    result = updater.invalidate_file("file_b.c")
+
+    # RepairLog must be deleted (architecture.md §7: "删除该 CALLS 边 + 对应 RepairLog")
+    logs_after = store.get_repair_logs(caller_id="foo", callee_id="bar")
+    assert len(logs_after) == 0, (
+        "architecture.md §7: RepairLog for invalidated LLM edge must be deleted"
+    )
+
+    # UnresolvedCall must be regenerated
+    assert len(result.regenerated_unresolved_calls) == 1
+    # foo must be in affected_callers
+    assert "foo" in result.affected_callers
