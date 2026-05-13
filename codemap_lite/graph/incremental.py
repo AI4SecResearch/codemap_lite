@@ -14,6 +14,7 @@ class InvalidationResult:
 
     removed_functions: list[str] = field(default_factory=list)
     removed_edges: int = 0
+    removed_unresolved_calls: list[str] = field(default_factory=list)
     affected_callers: list[str] = field(default_factory=list)
 
 
@@ -54,9 +55,19 @@ class IncrementalUpdater:
                     if edge.props.resolved_by == "llm":
                         result.affected_callers.append(edge.caller_id)
 
-        # Step 3: Delete functions and their edges
+        # Step 3: Delete functions, their edges, and associated UnresolvedCalls
+        # architecture.md §7: "删除旧 Function 节点及关联 CALLS 边 + UnresolvedCall"
         for fid in function_ids:
             self._store.delete_calls_edges_for_function(fid)
+            # Delete UnresolvedCalls where this function is the caller
+            if hasattr(self._store, '_unresolved_calls'):
+                victims = [
+                    cid for cid, node in self._store._unresolved_calls.items()
+                    if node.caller_id == fid
+                ]
+                for cid in victims:
+                    self._store._unresolved_calls.pop(cid, None)
+                result.removed_unresolved_calls.extend(victims)
             self._store.delete_function(fid)
 
         # Step 4: Remove LLM edges from affected callers that pointed to deleted functions
