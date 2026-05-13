@@ -133,6 +133,31 @@ class InMemoryGraphStore:
         self._calls_edges.append(_CallsEdge(caller_id, callee_id, props))
 
     def create_unresolved_call(self, node: UnresolvedCallNode) -> str:
+        # Deduplicate on logical key (caller_id, call_file, call_line)
+        for existing_id, existing in list(self._unresolved_calls.items()):
+            if (
+                existing.caller_id == node.caller_id
+                and existing.call_file == node.call_file
+                and existing.call_line == node.call_line
+            ):
+                # Update existing node in-place with new values
+                self._unresolved_calls[existing_id] = UnresolvedCallNode(
+                    caller_id=node.caller_id,
+                    call_expression=node.call_expression,
+                    call_file=node.call_file,
+                    call_line=node.call_line,
+                    call_type=node.call_type,
+                    source_code_snippet=node.source_code_snippet,
+                    var_name=node.var_name,
+                    var_type=node.var_type,
+                    candidates=node.candidates,
+                    retry_count=node.retry_count,
+                    status=node.status,
+                    last_attempt_timestamp=node.last_attempt_timestamp,
+                    last_attempt_reason=node.last_attempt_reason,
+                    id=existing_id,
+                )
+                return existing_id
         self._unresolved_calls[node.id] = node
         return node.id
 
@@ -608,9 +633,9 @@ class Neo4jGraphStore:
 
     def create_unresolved_call(self, node: UnresolvedCallNode) -> str:
         cypher = (
-            "MERGE (u:UnresolvedCall {id: $id}) "
-            "SET u.caller_id = $caller_id, u.call_expression = $call_expression, "
-            "    u.call_file = $call_file, u.call_line = $call_line, "
+            "MERGE (u:UnresolvedCall {caller_id: $caller_id, call_file: $call_file, call_line: $call_line}) "
+            "ON CREATE SET u.id = $id "
+            "SET u.call_expression = $call_expression, "
             "    u.call_type = $call_type, u.source_code_snippet = $source_code_snippet, "
             "    u.var_name = $var_name, u.var_type = $var_type, "
             "    u.candidates = $candidates, u.retry_count = $retry_count, "

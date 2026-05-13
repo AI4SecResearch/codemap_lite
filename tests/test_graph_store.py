@@ -858,3 +858,50 @@ def test_neo4j_ensure_indexes_is_idempotent(neo4j_store):
     neo4j_store.ensure_indexes()
     # No additional calls on second invocation
     assert len(session.calls) == first_count
+
+
+def test_create_unresolved_call_deduplicates_on_logical_key(store):
+    """architecture.md §4: UnresolvedCall is unique by (caller_id, call_file, call_line).
+
+    Calling create_unresolved_call twice for the same logical key must NOT
+    produce duplicate nodes — it should update the existing one (MERGE semantics).
+    """
+    uc1 = UnresolvedCallNode(
+        caller_id="func_A",
+        call_expression="foo()",
+        call_file="src/main.cpp",
+        call_line=42,
+        call_type="indirect",
+        source_code_snippet="foo();",
+        var_name=None,
+        var_type=None,
+        retry_count=2,
+        status="pending",
+    )
+    uc2 = UnresolvedCallNode(
+        caller_id="func_A",
+        call_expression="foo()",
+        call_file="src/main.cpp",
+        call_line=42,
+        call_type="indirect",
+        source_code_snippet="foo();",
+        var_name=None,
+        var_type=None,
+        retry_count=0,  # reset
+        status="pending",
+    )
+
+    store.create_unresolved_call(uc1)
+    store.create_unresolved_call(uc2)
+
+    # Should have exactly 1 UnresolvedCall for this logical key
+    gaps = store.get_pending_gaps_for_source("func_A")
+    matching = [
+        g for g in gaps
+        if g.call_file == "src/main.cpp" and g.call_line == 42
+    ]
+    assert len(matching) == 1, (
+        f"Expected 1 UnresolvedCall for (func_A, src/main.cpp, 42), got {len(matching)}"
+    )
+    # The second call should have updated retry_count to 0
+    assert matching[0].retry_count == 0

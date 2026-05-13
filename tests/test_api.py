@@ -1114,16 +1114,16 @@ class TestFeedbackEndpoint:
         # One of each of the 4 §3 categories + one without any audit
         # stamp (never retried yet) → should bucket to "none".
         categorized = [
-            ("g1", "gate_failed: remaining pending GAPs"),
-            ("g2", "agent_error: exit 1"),
-            ("g3", "subprocess_crash: FileNotFoundError: no such binary"),
-            ("g4", "subprocess_timeout: 0.2s"),
+            ("g1", 10, "gate_failed: remaining pending GAPs"),
+            ("g2", 20, "agent_error: exit 1"),
+            ("g3", 30, "subprocess_crash: FileNotFoundError: no such binary"),
+            ("g4", 40, "subprocess_timeout: 0.2s"),
         ]
-        for gid, reason in categorized:
+        for gid, line, reason in categorized:
             store.create_unresolved_call(
                 UnresolvedCallNode(
                     caller_id="caller", call_expression="fp()", call_file="f.py",
-                    call_line=2, call_type="indirect", source_code_snippet="fp()",
+                    call_line=line, call_type="indirect", source_code_snippet="fp()",
                     var_name=None, var_type=None, id=gid, status="pending",
                     retry_count=1, last_attempt_reason=reason,
                     last_attempt_timestamp="2026-05-13T00:00:00+00:00",
@@ -1134,7 +1134,7 @@ class TestFeedbackEndpoint:
         store.create_unresolved_call(
             UnresolvedCallNode(
                 caller_id="caller", call_expression="fp()", call_file="f.py",
-                call_line=2, call_type="indirect", source_code_snippet="fp()",
+                call_line=50, call_type="indirect", source_code_snippet="fp()",
                 var_name=None, var_type=None, id="g5", status="pending",
                 retry_count=2,
                 last_attempt_reason="subprocess_timeout: 5.0s",
@@ -1145,7 +1145,7 @@ class TestFeedbackEndpoint:
         store.create_unresolved_call(
             UnresolvedCallNode(
                 caller_id="caller", call_expression="hp()", call_file="f.py",
-                call_line=4, call_type="indirect", source_code_snippet="hp()",
+                call_line=60, call_type="indirect", source_code_snippet="hp()",
                 var_name=None, var_type=None, id="g6", status="pending",
                 retry_count=0,
             )
@@ -1755,16 +1755,16 @@ class TestEdgeDeletion:
         )
         store.create_function(fn)
         reasons = [
-            ("gap_1", "gate_failed: remaining pending GAPs"),
-            ("gap_2", "agent_error: exit 1"),
-            ("gap_3", "subprocess_timeout: 30s"),
-            ("gap_4", "subprocess_crash: OSError: No such file"),
-            ("gap_5", None),  # no reason → "none" bucket
+            ("gap_1", 10, "gate_failed: remaining pending GAPs"),
+            ("gap_2", 20, "agent_error: exit 1"),
+            ("gap_3", 30, "subprocess_timeout: 30s"),
+            ("gap_4", 40, "subprocess_crash: OSError: No such file"),
+            ("gap_5", 50, None),  # no reason → "none" bucket
         ]
-        for gap_id, reason in reasons:
+        for gap_id, line, reason in reasons:
             gap = UnresolvedCallNode(
                 id=gap_id, caller_id="f1", call_expression="x()",
-                call_file="a.c", call_line=1, call_type="indirect",
+                call_file="a.c", call_line=line, call_type="indirect",
                 source_code_snippet="x();", var_name=None, var_type=None,
                 last_attempt_reason=reason,
             )
