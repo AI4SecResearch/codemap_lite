@@ -25,6 +25,8 @@ def create_repair_logs_router() -> APIRouter:
         caller: str | None = Query(default=None),
         callee: str | None = Query(default=None),
         location: str | None = Query(default=None),
+        limit: int = Query(default=100, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
     ) -> list[dict[str, Any]]:
         store = request.app.state.store
         logs = store.get_repair_logs(
@@ -32,6 +34,6 @@ def create_repair_logs_router() -> APIRouter:
             callee_id=callee,
             call_location=location,
         )
-        return [asdict(log) for log in logs]
+        return [asdict(log) for log in logs[offset:offset + limit]]
 
     return router

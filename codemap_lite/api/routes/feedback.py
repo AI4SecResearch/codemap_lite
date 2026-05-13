@@ -16,7 +16,7 @@ from dataclasses import asdict
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from codemap_lite.analysis.feedback_store import CounterExample
 
@@ -33,6 +33,12 @@ class CounterExampleCreate(BaseModel):
     wrong_target: str
     correct_target: str
     pattern: str
+
+    @model_validator(mode="after")
+    def targets_must_differ(self) -> "CounterExampleCreate":
+        if self.wrong_target == self.correct_target:
+            raise ValueError("wrong_target must differ from correct_target")
+        return self
 
 
 def create_feedback_router() -> APIRouter:

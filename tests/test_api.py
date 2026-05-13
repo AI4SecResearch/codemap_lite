@@ -950,6 +950,29 @@ class TestFeedbackEndpoint:
         )
         assert resp.status_code == 503
 
+    def test_post_feedback_rejects_same_wrong_and_correct_target(self, tmp_path) -> None:
+        """A counter-example where wrong_target == correct_target is nonsensical.
+
+        architecture.md §3 反馈机制: counter-examples encode (错误目标, 正确目标)
+        as a correction pair. If both are the same, it's not a correction.
+        """
+        feedback_store = FeedbackStore(
+            storage_dir=tmp_path / ".codemap_lite" / "feedback"
+        )
+        app = create_app(store=InMemoryGraphStore(), feedback_store=feedback_store)
+        client = TestClient(app)
+
+        resp = client.post(
+            "/api/v1/feedback",
+            json={
+                "call_context": "foo()",
+                "wrong_target": "same_target",
+                "correct_target": "same_target",
+                "pattern": "p",
+            },
+        )
+        assert resp.status_code == 422
+
     def test_get_stats(self) -> None:
         client, store = get_test_client()
         fn = FunctionNode(
@@ -1445,6 +1468,37 @@ class TestRepairLogsEndpoint:
         body = resp.json()
         assert len(body) == 1
         assert body[0]["id"] == "r1"
+
+    def test_pagination_limit_and_offset(self) -> None:
+        """architecture.md §8: GET /repair-logs supports limit/offset pagination."""
+        client, store = get_test_client()
+        for i in range(5):
+            store.create_repair_log(
+                _make_repair_log(log_id=f"r{i}", call_location=f"f.cpp:{i}")
+            )
+        # Default returns all (limit=100)
+        resp = client.get("/api/v1/repair-logs")
+        assert len(resp.json()) == 5
+
+        # limit=2 returns first 2
+        resp = client.get("/api/v1/repair-logs", params={"limit": 2})
+        assert len(resp.json()) == 2
+
+        # offset=3 skips first 3
+        resp = client.get("/api/v1/repair-logs", params={"offset": 3})
+        assert len(resp.json()) == 2
+
+        # limit + offset
+        resp = client.get("/api/v1/repair-logs", params={"limit": 2, "offset": 1})
+        assert len(resp.json()) == 2
+
+        # Invalid: negative offset → 422
+        resp = client.get("/api/v1/repair-logs", params={"offset": -1})
+        assert resp.status_code == 422
+
+        # Invalid: limit=0 → 422
+        resp = client.get("/api/v1/repair-logs", params={"limit": 0})
+        assert resp.status_code == 422
 
     def test_total_repair_logs_in_stats(self) -> None:
         """/stats reports `total_repair_logs` so the Dashboard can show
