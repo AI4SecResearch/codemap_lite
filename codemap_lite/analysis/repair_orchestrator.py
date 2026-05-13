@@ -462,7 +462,15 @@ class RepairOrchestrator:
                 stderr=asyncio.subprocess.PIPE,
                 env={**os.environ, **(self._config.env or {})},
             )
-            stdout_bytes, _stderr_bytes = await proc.communicate()
+            # architecture.md §3 超时护栏: gate check must not block
+            # indefinitely if Neo4j or the subprocess hangs.
+            stdout_bytes, _stderr_bytes = await asyncio.wait_for(
+                proc.communicate(), timeout=30.0
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return False
         except (OSError, FileNotFoundError):
             return False
         if proc.returncode != 0:

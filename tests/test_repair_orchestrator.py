@@ -888,6 +888,29 @@ async def test_check_gate_returns_false_on_spawn_failure(orchestrator):
     assert passed is False
 
 
+@pytest.mark.asyncio
+async def test_check_gate_returns_false_on_timeout(orchestrator):
+    """architecture.md §3 超时护栏: gate check must not block indefinitely.
+
+    If the check-complete subprocess hangs (e.g., Neo4j connection stall),
+    the gate check must time out and return False.
+    """
+    fake_proc = MagicMock()
+    fake_proc.kill = MagicMock()
+    fake_proc.wait = AsyncMock()
+
+    async def hang_forever():
+        await asyncio.sleep(9999)
+
+    fake_proc.communicate = hang_forever
+
+    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=fake_proc)):
+        with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError()):
+            passed = await orchestrator._check_gate("src_001")
+
+    assert passed is False
+
+
 # ---- progress.json writing (architecture.md §3 + ADR #52) --------------------
 
 

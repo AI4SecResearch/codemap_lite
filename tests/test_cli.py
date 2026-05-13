@@ -268,3 +268,33 @@ def test_serve_launches_uvicorn_with_create_app(tmp_path):
     from codemap_lite.graph.neo4j_store import Neo4jGraphStore
     assert isinstance(kwargs["store"], Neo4jGraphStore)
     fake_uvicorn.run.assert_called_once_with(fake_app, host="127.0.0.1", port=9123)
+
+
+def test_repair_handles_malformed_source_points_file(tmp_path):
+    """CLI must exit gracefully when source-points-file is malformed."""
+    cfg = _write_config(tmp_path)
+    sp_path = tmp_path / "sources.json"
+    sp_path.write_text("not valid json {{{", encoding="utf-8")
+
+    result = runner.invoke(
+        app, ["repair", "--config", str(cfg), "--source-points-file", str(sp_path)]
+    )
+    assert result.exit_code == 2
+    assert "error" in result.output.lower() or "error" in (result.stderr or "").lower()
+
+
+def test_repair_handles_fetch_failure_gracefully(tmp_path):
+    """CLI must exit gracefully when codewiki_lite is unreachable."""
+    from unittest.mock import patch, AsyncMock
+
+    cfg = _write_config(tmp_path)
+
+    with patch(
+        "codemap_lite.analysis.source_point_client.SourcePointClient.fetch",
+        new_callable=AsyncMock,
+        side_effect=Exception("Connection refused"),
+    ):
+        result = runner.invoke(app, ["repair", "--config", str(cfg)])
+
+    assert result.exit_code == 2
+    assert "Connection refused" in result.output or "Connection refused" in (result.stderr or "")

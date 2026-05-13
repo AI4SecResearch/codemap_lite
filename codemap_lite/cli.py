@@ -115,9 +115,21 @@ def repair(
 
     client = SourcePointClient(base_url=settings.codewiki_lite.base_url)
     if source_points_file:
-        source_points = client.load_from_file(Path(source_points_file))
+        try:
+            source_points = client.load_from_file(Path(source_points_file))
+        except (OSError, json.JSONDecodeError, KeyError, ValueError) as exc:
+            typer.echo(f"error: failed to load source points file: {exc}", err=True)
+            raise typer.Exit(code=2)
     else:
-        source_points = asyncio.run(client.fetch())
+        try:
+            source_points = asyncio.run(client.fetch())
+        except Exception as exc:
+            typer.echo(
+                f"error: failed to fetch source points from "
+                f"{settings.codewiki_lite.base_url}: {exc}",
+                err=True,
+            )
+            raise typer.Exit(code=2)
 
     if not source_points:
         typer.echo("No source points to repair.")
