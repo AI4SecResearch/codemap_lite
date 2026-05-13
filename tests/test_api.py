@@ -1778,3 +1778,61 @@ class TestEdgeDeletion:
         assert cats["subprocess_timeout"] == 1
         assert cats["subprocess_crash"] == 1
         assert cats["none"] == 1
+
+
+class TestReviewResetsSourcePointStatus:
+    """architecture.md §5: marking an edge incorrect triggers re-repair.
+    The SourcePoint status must be reset to 'pending' so the frontend
+    reflects that the source needs re-processing."""
+
+    def test_review_incorrect_resets_source_point_to_pending(self) -> None:
+        from codemap_lite.graph.schema import SourcePointNode
+
+        client, store = get_test_client()
+
+        # Setup: source function + callee + LLM edge + SourcePoint=complete
+        store.create_function(FunctionNode(
+            id="caller_fn", name="caller", signature="void caller()",
+            file_path="src/a.c", start_line=1, end_line=10, body_hash="h1",
+        ))
+        store.create_function(FunctionNode(
+            id="callee_fn", name="callee", signature="void callee()",
+            file_path="src/b.c", start_line=1, end_line=10, body_hash="h2",
+        ))
+        store.create_calls_edge("caller_fn", "callee_fn", CallsEdgeProps(
+            resolved_by="llm", call_type="indirect",
+            call_file="src/a.c", call_line=5,
+        ))
+        store.create_repair_log(RepairLogNode(
+            caller_id="caller_fn", callee_id="callee_fn",
+            call_location="src/a.c:5", repair_method="llm",
+            llm_response="analysis", timestamp="2026-05-14T00:00:00Z",
+            reasoning_summary="test",
+        ))
+        store.create_source_point(SourcePointNode(
+            id="caller_fn", function_id="caller_fn",
+            entry_point_kind="callback_registration",
+            reason="test", status="complete",
+        ))
+
+        # Verify initial state
+        sp = store.get_source_point("caller_fn")
+        assert sp.status == "complete"
+
+        # Mark edge as incorrect
+        resp = client.post("/api/v1/reviews", json={
+            "caller_id": "caller_fn",
+            "callee_id": "callee_fn",
+            "call_file": "src/a.c",
+            "call_line": 5,
+            "verdict": "incorrect",
+        })
+        assert resp.status_code == 201
+
+        # SourcePoint must be reset to "pending"
+        sp_after = store.get_source_point("caller_fn")
+        assert sp_after is not None
+        assert sp_after.status == "pending", (
+            "architecture.md §5: SourcePoint must reset to 'pending' when "
+            "a review marks an edge incorrect and triggers re-repair"
+        )

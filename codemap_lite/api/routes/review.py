@@ -233,6 +233,14 @@ def create_review_router() -> APIRouter:
                     _trigger_repair_for_source, settings, body.caller_id
                 )
 
+            # Reset SourcePoint status to "pending" so the frontend reflects
+            # that this source needs re-processing (architecture.md §5 step 4:
+            # "触发 Agent 重新修复该 source 点" implies status must revert).
+            if hasattr(store, "update_source_point_status"):
+                sp = store.get_source_point(body.caller_id)
+                if sp is not None and sp.status != "pending":
+                    store.update_source_point_status(body.caller_id, "pending")
+
         request.app.state.reviews[review_id] = review
         return review
 
@@ -347,6 +355,12 @@ def create_review_router() -> APIRouter:
             background_tasks.add_task(
                 _trigger_repair_for_source, settings, body.caller_id
             )
+
+        # Reset SourcePoint status to "pending" (same as review verdict=incorrect)
+        if hasattr(store, "update_source_point_status"):
+            sp = store.get_source_point(body.caller_id)
+            if sp is not None and sp.status != "pending":
+                store.update_source_point_status(body.caller_id, "pending")
 
         return Response(status_code=204)
 
