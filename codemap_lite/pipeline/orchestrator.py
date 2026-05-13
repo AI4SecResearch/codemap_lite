@@ -292,7 +292,7 @@ class PipelineOrchestrator:
                         continue
 
                     props = CallsEdgeProps(
-                        resolved_by="symbol_table",
+                        resolved_by=call.resolved_by,
                         call_type=call.call_type.value,
                         call_file=str(call.call_file),
                         call_line=call.call_line,

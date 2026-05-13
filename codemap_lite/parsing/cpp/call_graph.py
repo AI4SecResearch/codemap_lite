@@ -241,7 +241,7 @@ def _process_call(
                     call_file=file_path,
                     call_line=call_line,
                     call_type=CallType.VIRTUAL,
-                    resolved_by="virtual_dispatch",
+                    resolved_by="symbol_table",
                 )
             )
         else:
@@ -310,7 +310,7 @@ def _process_call(
                 call_file=file_path,
                 call_line=call_line,
                 call_type=CallType.DIRECT,
-                resolved_by="signature_match",
+                resolved_by="symbol_table",
             )
         )
         return
@@ -360,7 +360,7 @@ def _process_call(
             call_file=file_path,
             call_line=call_line,
             call_type=CallType.DIRECT,
-            resolved_by="external",
+            resolved_by="symbol_table",
         )
     )
 

@@ -123,3 +123,22 @@ def test_pipeline_result_dataclass():
     )
     assert result.success is True
     assert result.files_scanned == 10
+
+
+def test_pipeline_resolved_by_uses_canonical_values(sample_cpp_dir, fake_registry):
+    """architecture.md §4: resolved_by ∈ {symbol_table, signature, dataflow, context, llm}.
+
+    All edges created by the static analysis pipeline must use canonical
+    resolved_by values from the architecture spec.
+    """
+    orch = PipelineOrchestrator(target_dir=sample_cpp_dir, registry=fake_registry)
+    orch.run_full_analysis()
+
+    canonical = {"symbol_table", "signature", "dataflow", "context", "llm"}
+    edges = orch._store.list_calls_edges()
+    for edge in edges:
+        assert edge.props.resolved_by in canonical, (
+            f"Edge {edge.caller_id}→{edge.callee_id} has non-canonical "
+            f"resolved_by={edge.props.resolved_by!r}; "
+            f"must be one of {sorted(canonical)}"
+        )
