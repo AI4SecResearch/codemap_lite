@@ -735,3 +735,42 @@ def test_neo4j_lazy_driver_construction(neo4j_store):
             )
         )
     ctor.assert_called_once_with("bolt://x:7687", auth=("u", "p"))
+
+
+def test_count_stats_unknown_category_bucketed_as_none(store):
+    """architecture.md §8: unresolved_by_category keys must be one of
+    {gate_failed, agent_error, subprocess_crash, subprocess_timeout, none}.
+    Unknown prefixes in last_attempt_reason must be bucketed as 'none'."""
+    gap = UnresolvedCallNode(
+        caller_id="f1", call_expression="x()", call_file="a.cpp",
+        call_line=1, call_type="indirect", source_code_snippet="x();",
+        var_name="x", var_type="void(*)()",
+        last_attempt_reason="unknown_category: some reason",
+    )
+    store.create_unresolved_call(gap)
+
+    stats = store.count_stats()
+    by_cat = stats["unresolved_by_category"]
+    # Unknown category must NOT appear as its own key
+    assert "unknown_category" not in by_cat
+    # Must be bucketed as "none"
+    assert by_cat.get("none", 0) == 1
+
+
+def test_count_stats_valid_categories_bucketed_correctly(store):
+    """architecture.md §8: valid categories are correctly bucketed."""
+    for i, cat in enumerate(["gate_failed", "agent_error", "subprocess_crash", "subprocess_timeout"]):
+        gap = UnresolvedCallNode(
+            caller_id=f"f{i}", call_expression="x()", call_file="a.cpp",
+            call_line=i + 1, call_type="indirect", source_code_snippet="x();",
+            var_name="x", var_type="void(*)()",
+            last_attempt_reason=f"{cat}: some detail",
+        )
+        store.create_unresolved_call(gap)
+
+    stats = store.count_stats()
+    by_cat = stats["unresolved_by_category"]
+    assert by_cat["gate_failed"] == 1
+    assert by_cat["agent_error"] == 1
+    assert by_cat["subprocess_crash"] == 1
+    assert by_cat["subprocess_timeout"] == 1

@@ -49,11 +49,18 @@ def _read_source_progress(target_dir: Path | None) -> list[dict[str, Any]]:
             data = json.loads(pf.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
+        try:
+            gaps_fixed = int(data.get("gaps_fixed", 0) or 0)
+            gaps_total = int(data.get("gaps_total", 0) or 0)
+        except (ValueError, TypeError):
+            # Malformed numeric fields — skip this file gracefully
+            # (architecture.md §3: "Unreadable or missing files are skipped")
+            continue
         rows.append(
             {
                 "source_id": pf.parent.name,
-                "gaps_fixed": int(data.get("gaps_fixed", 0) or 0),
-                "gaps_total": int(data.get("gaps_total", 0) or 0),
+                "gaps_fixed": gaps_fixed,
+                "gaps_total": gaps_total,
                 "current_gap": data.get("current_gap"),
                 "attempt": data.get("attempt"),
                 "max_attempts": data.get("max_attempts"),

@@ -267,6 +267,33 @@ class TestAnalyzeEndpoint:
         assert resp.status_code == 200
         sources = {s["source_id"]: s for s in resp.json()["sources"]}
         assert "src_bad" not in sources
+
+    def test_analyze_status_skips_malformed_numeric_fields(self, tmp_path) -> None:
+        """architecture.md §3: progress.json with non-numeric gaps_fixed/
+        gaps_total must be skipped gracefully, not crash the endpoint."""
+        store = InMemoryGraphStore()
+        app = create_app(store=store, target_dir=tmp_path)
+        client = TestClient(app)
+
+        repair_root = tmp_path / "logs" / "repair"
+        (repair_root / "src_bad").mkdir(parents=True)
+        (repair_root / "src_bad" / "progress.json").write_text(
+            json.dumps({"gaps_fixed": "not_a_number", "gaps_total": 5}),
+            encoding="utf-8",
+        )
+        (repair_root / "src_ok").mkdir(parents=True)
+        (repair_root / "src_ok" / "progress.json").write_text(
+            json.dumps({"gaps_fixed": 1, "gaps_total": 2}),
+            encoding="utf-8",
+        )
+
+        resp = client.get("/api/v1/analyze/status")
+        assert resp.status_code == 200
+        sources = {s["source_id"]: s for s in resp.json()["sources"]}
+        # Malformed entry skipped, valid entry preserved
+        assert "src_bad" not in sources
+        assert "src_ok" in sources
+        assert sources["src_ok"]["gaps_fixed"] == 1
         assert sources["src_ok"]["gaps_total"] == 2
 
 

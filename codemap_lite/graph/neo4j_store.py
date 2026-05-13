@@ -303,11 +303,14 @@ class InMemoryGraphStore:
             key = getattr(u, "status", None) or "pending"
             by_status[key] = by_status.get(key, 0) + 1
         by_category: dict[str, int] = {}
+        _VALID_CATEGORIES = {
+            "gate_failed", "agent_error", "subprocess_crash", "subprocess_timeout"
+        }
         for u in self._unresolved_calls.values():
             reason = getattr(u, "last_attempt_reason", None)
             if reason and ":" in reason:
                 prefix = reason.split(":", 1)[0].strip()
-                cat_key = prefix if prefix else "none"
+                cat_key = prefix if prefix in _VALID_CATEGORIES else "none"
             else:
                 cat_key = "none"
             by_category[cat_key] = by_category.get(cat_key, 0) + 1
@@ -814,6 +817,11 @@ class Neo4jGraphStore:
             }
             # last_attempt_reason may be absent; bucket missing/malformed
             # to "none" so the Dashboard chip row never silently drops UCs.
+            # architecture.md §3: valid categories are {gate_failed,
+            # agent_error, subprocess_crash, subprocess_timeout}.
+            _VALID_CATEGORIES = {
+                "gate_failed", "agent_error", "subprocess_crash", "subprocess_timeout"
+            }
             cat_rows = list(session.run(
                 "MATCH (u:UnresolvedCall) "
                 "RETURN u.last_attempt_reason AS reason, count(u) AS n"
@@ -823,7 +831,7 @@ class Neo4jGraphStore:
                 reason = row["reason"]
                 if reason and ":" in reason:
                     prefix = reason.split(":", 1)[0].strip()
-                    cat_key = prefix if prefix else "none"
+                    cat_key = prefix if prefix in _VALID_CATEGORIES else "none"
                 else:
                     cat_key = "none"
                 by_category[cat_key] = by_category.get(cat_key, 0) + row["n"]
