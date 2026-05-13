@@ -814,3 +814,46 @@ def test_reset_unresolvable_gaps(store):
     unchanged = store._unresolved_calls["gap_p"]
     assert unchanged.status == "pending"
     assert unchanged.retry_count == 1
+
+
+def test_neo4j_ensure_indexes_runs_on_first_connection(neo4j_store):
+    """architecture.md §4 索引: Neo4jGraphStore must create required indexes
+    on first connection. Indexes are idempotent (IF NOT EXISTS)."""
+    session = _FakeSession([])
+    _patch_driver(neo4j_store, session)
+
+    # ensure_indexes hasn't run yet
+    assert neo4j_store._indexes_ensured is False
+
+    neo4j_store.ensure_indexes()
+
+    assert neo4j_store._indexes_ensured is True
+    # Should have run 6 CREATE INDEX statements
+    index_calls = [
+        c for c in session.calls if "CREATE INDEX" in c[0]
+    ]
+    assert len(index_calls) == 6, (
+        f"architecture.md §4: expected 6 index creation statements, got {len(index_calls)}"
+    )
+
+    # Verify specific indexes
+    all_cypher = " ".join(c[0] for c in index_calls)
+    assert "idx_file_hash" in all_cypher
+    assert "idx_function_file" in all_cypher
+    assert "idx_function_sig" in all_cypher
+    assert "idx_source_kind" in all_cypher
+    assert "idx_gap_status" in all_cypher
+    assert "idx_gap_caller" in all_cypher
+
+
+def test_neo4j_ensure_indexes_is_idempotent(neo4j_store):
+    """ensure_indexes() must be safe to call multiple times."""
+    session = _FakeSession([])
+    _patch_driver(neo4j_store, session)
+
+    neo4j_store.ensure_indexes()
+    first_count = len(session.calls)
+
+    neo4j_store.ensure_indexes()
+    # No additional calls on second invocation
+    assert len(session.calls) == first_count

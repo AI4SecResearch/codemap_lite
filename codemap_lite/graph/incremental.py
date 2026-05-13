@@ -33,9 +33,10 @@ class IncrementalUpdater:
 
         5-step cascade (architecture.md §7):
         1. Find all functions in the file
-        2. Find LLM edges pointing TO these functions (from other files)
-        3. Delete functions + their edges + UnresolvedCalls;
-           regenerate UnresolvedCalls for affected callers
+        2. Find edges pointing TO these functions (from other files);
+           LLM edges → regenerate UnresolvedCall; non-LLM edges →
+           mark caller's file for re-parse
+        3. Delete functions + their edges + UnresolvedCalls
         4. Mark affected callers for re-repair
         5. Return affected callers for orchestrator to handle
         """
@@ -46,7 +47,7 @@ class IncrementalUpdater:
         function_ids = {f.id for f in functions}
         result.removed_functions = list(function_ids)
 
-        # Step 2: Find LLM edges from OTHER functions pointing to functions
+        # Step 2: Find edges from OTHER functions pointing to functions
         # in this file. Capture edge details before deletion so we can
         # regenerate UnresolvedCalls (architecture.md §7 step 3).
         invalidated_llm_edges: list[tuple[str, str, Any]] = []
@@ -57,6 +58,10 @@ class IncrementalUpdater:
                     invalidated_llm_edges.append(
                         (edge.caller_id, edge.callee_id, edge.props)
                     )
+                else:
+                    # Non-LLM edges: the caller's file needs re-parsing
+                    # to re-discover the edge via static analysis.
+                    result.affected_callers.append(edge.caller_id)
 
         # Step 3: Delete functions, their edges, and associated UnresolvedCalls
         # architecture.md §7: "删除旧 Function 节点及关联 CALLS 边 + UnresolvedCall"
@@ -77,7 +82,7 @@ class IncrementalUpdater:
                 result.removed_unresolved_calls.append(gap.id)
             self._store.delete_function(fid)
 
-        # Step 3b: Regenerate UnresolvedCalls for affected callers
+        # Step 3b: Regenerate UnresolvedCalls for affected LLM callers
         # architecture.md §7 step 3: "重新生成 UnresolvedCall"
         for caller_id, _callee_id, props in invalidated_llm_edges:
             gap = UnresolvedCallNode(

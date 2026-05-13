@@ -268,3 +268,37 @@ def test_pipeline_incremental_invalidates_deleted_files():
         assert store.get_function_by_id("f1") is None, (
             "architecture.md §7: deleted file's functions must be invalidated"
         )
+
+
+def test_invalidate_file_marks_non_llm_callers_as_affected():
+    """architecture.md §7 step 3: when a function is modified, callers with
+    non-LLM edges (symbol_table) pointing to it must be marked as affected
+    so their files get re-parsed and the edges are re-discovered."""
+    store = InMemoryGraphStore()
+
+    # foo (in a.cpp) calls bar (in b.cpp) via symbol_table
+    store.create_function(FunctionNode(
+        id="foo", name="foo", signature="void foo()",
+        file_path="src/a.cpp", start_line=1, end_line=5, body_hash="h1",
+    ))
+    store.create_function(FunctionNode(
+        id="bar", name="bar", signature="void bar()",
+        file_path="src/b.cpp", start_line=1, end_line=5, body_hash="h2",
+    ))
+    store.create_calls_edge("foo", "bar", CallsEdgeProps(
+        resolved_by="symbol_table", call_type="direct",
+        call_file="src/a.cpp", call_line=3,
+    ))
+
+    updater = IncrementalUpdater(store=store)
+    result = updater.invalidate_file("src/b.cpp")
+
+    # foo should be in affected_callers (its file needs re-parsing)
+    assert "foo" in result.affected_callers, (
+        "architecture.md §7: non-LLM callers of modified functions must be "
+        "marked as affected so their files get re-parsed"
+    )
+    # The edge should be deleted
+    assert len(store.list_calls_edges()) == 0
+    # bar should be removed
+    assert store.get_function_by_id("bar") is None

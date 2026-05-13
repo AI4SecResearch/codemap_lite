@@ -499,6 +499,7 @@ class Neo4jGraphStore:
         self._user = user
         self._password = password
         self._driver = None
+        self._indexes_ensured = False
 
     def _get_driver(self):
         """Lazy-construct the Neo4j driver on first use."""
@@ -508,6 +509,7 @@ class Neo4jGraphStore:
             self._driver = GraphDatabase.driver(
                 self._uri, auth=(self._user, self._password)
             )
+            self.ensure_indexes()
         return self._driver
 
     def close(self) -> None:
@@ -515,6 +517,27 @@ class Neo4jGraphStore:
         if self._driver is not None:
             self._driver.close()
             self._driver = None
+
+    def ensure_indexes(self) -> None:
+        """Create required indexes if they don't exist.
+
+        architecture.md §4 索引: 7 indexes for query performance.
+        Idempotent — safe to call multiple times.
+        """
+        if self._indexes_ensured:
+            return
+        index_statements = [
+            "CREATE INDEX idx_file_hash IF NOT EXISTS FOR (n:File) ON (n.hash)",
+            "CREATE INDEX idx_function_file IF NOT EXISTS FOR (n:Function) ON (n.file_path)",
+            "CREATE INDEX idx_function_sig IF NOT EXISTS FOR (n:Function) ON (n.signature)",
+            "CREATE INDEX idx_source_kind IF NOT EXISTS FOR (n:SourcePoint) ON (n.entry_point_kind)",
+            "CREATE INDEX idx_gap_status IF NOT EXISTS FOR (n:UnresolvedCall) ON (n.status)",
+            "CREATE INDEX idx_gap_caller IF NOT EXISTS FOR (n:UnresolvedCall) ON (n.caller_id)",
+        ]
+        with self._driver.session() as session:
+            for stmt in index_statements:
+                session.run(stmt)
+        self._indexes_ensured = True
 
     def create_function(self, node: FunctionNode) -> str:
         cypher = (

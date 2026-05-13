@@ -98,10 +98,26 @@ class PipelineOrchestrator:
         # Invalidate deleted and modified files (architecture.md §7 step 2):
         # Remove stale functions/edges before re-parsing modified files.
         updater = IncrementalUpdater(store=self._store)
+        affected_caller_files: set[str] = set()
         for deleted_file in changes.deleted:
-            updater.invalidate_file(deleted_file)
+            inv_result = updater.invalidate_file(deleted_file)
+            # Collect files of affected callers for re-parsing
+            for caller_id in inv_result.affected_callers:
+                fn = self._store.get_function_by_id(caller_id)
+                if fn is not None:
+                    affected_caller_files.add(fn.file_path)
         for modified_file in changes.modified:
-            updater.invalidate_file(modified_file)
+            inv_result = updater.invalidate_file(modified_file)
+            for caller_id in inv_result.affected_callers:
+                fn = self._store.get_function_by_id(caller_id)
+                if fn is not None:
+                    affected_caller_files.add(fn.file_path)
+
+        # Also re-parse files containing affected callers so non-LLM edges
+        # (symbol_table) are re-discovered (architecture.md §7 step 2).
+        for af in affected_caller_files:
+            if af not in changed_files:
+                changed_files.append(af)
 
         # Re-scan to update state
         scanned = self._scanner.scan(self._target_dir)
