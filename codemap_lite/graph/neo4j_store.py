@@ -96,6 +96,8 @@ class GraphStore(Protocol):
 
     def update_source_point_status(self, source_id: str, status: str) -> None: ...
 
+    def reset_unresolvable_gaps(self) -> None: ...
+
 
 @dataclass
 class _CallsEdge:
@@ -326,6 +328,30 @@ class InMemoryGraphStore:
             function_id=existing.function_id,
             status=status,
         )
+
+    def reset_unresolvable_gaps(self) -> None:
+        """Reset all 'unresolvable' GAPs to pending with retry_count=0.
+
+        architecture.md §10: retry_failed_gaps: true → 跨运行重试.
+        """
+        for gap_id, gap in list(self._unresolved_calls.items()):
+            if gap.status == "unresolvable":
+                self._unresolved_calls[gap_id] = UnresolvedCallNode(
+                    id=gap.id,
+                    caller_id=gap.caller_id,
+                    call_expression=gap.call_expression,
+                    call_file=gap.call_file,
+                    call_line=gap.call_line,
+                    call_type=gap.call_type,
+                    source_code_snippet=gap.source_code_snippet,
+                    var_name=gap.var_name,
+                    var_type=gap.var_type,
+                    candidates=gap.candidates,
+                    retry_count=0,
+                    status="pending",
+                    last_attempt_timestamp=None,
+                    last_attempt_reason=None,
+                )
 
     def delete_calls_edges_for_function(self, function_id: str) -> None:
         self._calls_edges = [
@@ -1101,6 +1127,19 @@ class Neo4jGraphStore:
         )
         with self._get_driver().session() as session:
             session.run(cypher, id=source_id, status=status)
+
+    def reset_unresolvable_gaps(self) -> None:
+        """Reset all 'unresolvable' GAPs to pending with retry_count=0.
+
+        architecture.md §10: retry_failed_gaps: true → 跨运行重试.
+        """
+        cypher = (
+            "MATCH (uc:UnresolvedCall {status: 'unresolvable'}) "
+            "SET uc.status = 'pending', uc.retry_count = 0, "
+            "uc.last_attempt_timestamp = null, uc.last_attempt_reason = null"
+        )
+        with self._get_driver().session() as session:
+            session.run(cypher)
 
 
 # --- Record → dataclass helpers ---------------------------------------------

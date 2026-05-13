@@ -557,27 +557,7 @@ class RepairOrchestrator:
         store = self._config.graph_store
         if store is None:
             return
-        for gap in store.get_unresolved_calls(status="unresolvable"):
-            # Direct reset via InMemoryGraphStore internals or Neo4j Cypher.
-            # InMemoryGraphStore exposes _unresolved_calls dict.
-            if hasattr(store, "_unresolved_calls"):
-                from codemap_lite.graph.schema import UnresolvedCallNode
-                store._unresolved_calls[gap.id] = UnresolvedCallNode(
-                    caller_id=gap.caller_id,
-                    call_expression=gap.call_expression,
-                    call_file=gap.call_file,
-                    call_line=gap.call_line,
-                    call_type=gap.call_type,
-                    source_code_snippet=gap.source_code_snippet,
-                    var_name=gap.var_name,
-                    var_type=gap.var_type,
-                    candidates=list(gap.candidates),
-                    retry_count=0,
-                    status="pending",
-                    last_attempt_timestamp=None,
-                    last_attempt_reason=None,
-                    id=gap.id,
-                )
+        store.reset_unresolvable_gaps()
 
     async def run_repairs(self, source_ids: list[str]) -> list[SourceRepairResult]:
         """Run repairs for multiple source points with concurrency control."""

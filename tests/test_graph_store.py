@@ -774,3 +774,43 @@ def test_count_stats_valid_categories_bucketed_correctly(store):
     assert by_cat["agent_error"] == 1
     assert by_cat["subprocess_crash"] == 1
     assert by_cat["subprocess_timeout"] == 1
+
+
+def test_reset_unresolvable_gaps(store):
+    """architecture.md §10 line 523: 'retry_failed_gaps: true → 跨运行重试：
+    下次运行时重置 unresolvable GAP 的 retry_count，重新尝试'.
+    The store must provide a method to reset all unresolvable GAPs."""
+    from codemap_lite.graph.schema import UnresolvedCallNode
+
+    # Create a mix of pending and unresolvable GAPs
+    gap_pending = UnresolvedCallNode(
+        id="gap_p", caller_id="f1", call_expression="foo()",
+        call_file="a.cpp", call_line=1, call_type="indirect",
+        source_code_snippet="foo();", var_name="foo", var_type="void(*)()",
+        retry_count=1, status="pending",
+    )
+    gap_unresolvable = UnresolvedCallNode(
+        id="gap_u", caller_id="f1", call_expression="bar()",
+        call_file="a.cpp", call_line=2, call_type="indirect",
+        source_code_snippet="bar();", var_name="bar", var_type="void(*)()",
+        retry_count=3, status="unresolvable",
+        last_attempt_timestamp="2026-05-14T00:00:00Z",
+        last_attempt_reason="gate_failed: remaining pending GAPs",
+    )
+    store.create_unresolved_call(gap_pending)
+    store.create_unresolved_call(gap_unresolvable)
+
+    # Reset unresolvable gaps
+    store.reset_unresolvable_gaps()
+
+    # The unresolvable gap should now be pending with retry_count=0
+    updated = store._unresolved_calls["gap_u"]
+    assert updated.status == "pending"
+    assert updated.retry_count == 0
+    assert updated.last_attempt_timestamp is None
+    assert updated.last_attempt_reason is None
+
+    # The pending gap should be unchanged
+    unchanged = store._unresolved_calls["gap_p"]
+    assert unchanged.status == "pending"
+    assert unchanged.retry_count == 1
