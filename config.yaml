@@ -11,7 +11,7 @@ codewiki_lite:
   base_url: "http://localhost:8000"
 
 agent:
-  backend: "claudecode"
+  backend: "opencode"
   max_concurrency: 5
   retry_failed_gaps: true
   claudecode:
@@ -25,6 +25,6 @@ visualization:
   aggregation: "hierarchical"
 
 feedback:
-  model: "qwen-plus"
+  model: "glm5"
   base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
   api_key: "${DASHSCOPE_API_KEY}"

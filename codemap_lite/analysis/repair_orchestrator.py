@@ -174,6 +174,48 @@ class RepairOrchestrator:
         cmd.append(prompt)
         return cmd
 
+    def _write_progress(self, source_id: str, **fields: Any) -> None:
+        """Write/merge progress fields to ``logs/repair/<source_id>/progress.json``.
+
+        architecture.md §3 进度通信机制 + ADR #52: Orchestrator writes
+        progress at key lifecycle events so ``/api/v1/analyze/status``
+        (polled by the frontend every 2s) can surface per-source state,
+        attempt count, gate result, and edges written.
+
+        Merges with existing content so Hook-written fields
+        (gaps_fixed/gaps_total/current_gap) are preserved.
+        """
+        target_dir = self._config.target_dir
+        progress_dir = target_dir / "logs" / "repair" / source_id
+        progress_dir.mkdir(parents=True, exist_ok=True)
+        path = progress_dir / "progress.json"
+        existing: dict[str, Any] = {}
+        if path.exists():
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                pass
+        existing.update(fields)
+        path.write_text(
+            json.dumps(existing, ensure_ascii=False), encoding="utf-8"
+        )
+
+    def _count_edges_written(self, source_id: str) -> int:
+        """Count LLM-resolved edges reachable from source_id."""
+        store = self._config.graph_store
+        if store is None:
+            return 0
+        try:
+            subgraph = store.get_reachable_subgraph(source_id, max_depth=50)
+            node_ids = {fn.id for fn in subgraph["nodes"]}
+            return sum(
+                1
+                for e in subgraph["edges"]
+                if e.props.resolved_by == "llm" and e.caller_id in node_ids
+            )
+        except Exception:
+            return 0
+
     async def _run_single_repair(self, source_id: str) -> SourceRepairResult:
         """Run repair for a single source point with retry logic."""
         target_dir = self._config.target_dir
@@ -182,6 +224,15 @@ class RepairOrchestrator:
 
         while attempts < max_attempts:
             attempts += 1
+
+            # Write progress: attempt starting
+            self._write_progress(
+                source_id,
+                state="running",
+                attempt=attempts,
+                max_attempts=max_attempts,
+                gate_result="pending",
+            )
 
             # Inject files — re-render counter examples each attempt so
             # newly added feedback lands in the next agent launch
@@ -238,11 +289,16 @@ class RepairOrchestrator:
                                     await proc.wait()
                                 except Exception:
                                     pass
+                                reason = _truncate_reason(
+                                    f"subprocess_timeout: {timeout}s"
+                                )
                                 self._record_retry_attempt(
                                     source_id=source_id,
-                                    reason=_truncate_reason(
-                                        f"subprocess_timeout: {timeout}s"
-                                    ),
+                                    reason=reason,
+                                )
+                                self._write_progress(
+                                    source_id,
+                                    last_error=reason,
                                 )
                                 continue
                         else:
@@ -253,12 +309,14 @@ class RepairOrchestrator:
                         # Retry 审计字段, stamp subprocess_crash and keep the
                         # retry loop alive — never let the exception bubble
                         # out and silently kill the source's retry budget.
+                        reason = _truncate_reason(
+                            f"subprocess_crash: {type(exc).__name__}: {exc}"
+                        )
                         self._record_retry_attempt(
                             source_id=source_id,
-                            reason=_truncate_reason(
-                                f"subprocess_crash: {type(exc).__name__}: {exc}"
-                            ),
+                            reason=reason,
                         )
+                        self._write_progress(source_id, last_error=reason)
                         continue
                 finally:
                     if log_fh is not None:
@@ -270,17 +328,27 @@ class RepairOrchestrator:
                 # check (which would mis-attribute the failure as
                 # gate_failed and hide the real signal from reviewers).
                 if proc.returncode is not None and proc.returncode != 0:
+                    reason = _truncate_reason(
+                        f"agent_error: exit {proc.returncode}"
+                    )
                     self._record_retry_attempt(
                         source_id=source_id,
-                        reason=_truncate_reason(
-                            f"agent_error: exit {proc.returncode}"
-                        ),
+                        reason=reason,
                     )
+                    self._write_progress(source_id, last_error=reason)
                     continue
 
                 # Gate check
+                self._write_progress(source_id, state="gate_checking")
                 gate_passed = await self._check_gate(source_id)
+                edges = self._count_edges_written(source_id)
                 if gate_passed:
+                    self._write_progress(
+                        source_id,
+                        state="succeeded",
+                        gate_result="passed",
+                        edges_written=edges,
+                    )
                     return SourceRepairResult(
                         source_id=source_id, success=True, attempts=attempts
                     )
@@ -292,9 +360,16 @@ class RepairOrchestrator:
                     source_id=source_id,
                     reason="gate_failed: remaining pending GAPs",
                 )
+                self._write_progress(
+                    source_id,
+                    gate_result="failed",
+                    edges_written=edges,
+                    last_error="gate_failed: remaining pending GAPs",
+                )
             finally:
                 self._cleanup_injection(target_dir)
 
+        self._write_progress(source_id, state="failed")
         return SourceRepairResult(
             source_id=source_id,
             success=False,

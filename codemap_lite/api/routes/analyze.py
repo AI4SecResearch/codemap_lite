@@ -51,6 +51,12 @@ def _read_source_progress(target_dir: Path | None) -> list[dict[str, Any]]:
                 "gaps_fixed": int(data.get("gaps_fixed", 0) or 0),
                 "gaps_total": int(data.get("gaps_total", 0) or 0),
                 "current_gap": data.get("current_gap"),
+                "attempt": data.get("attempt"),
+                "max_attempts": data.get("max_attempts"),
+                "gate_result": data.get("gate_result"),
+                "edges_written": data.get("edges_written"),
+                "state": data.get("state"),
+                "last_error": data.get("last_error"),
             }
         )
     return rows

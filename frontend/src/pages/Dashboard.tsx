@@ -81,17 +81,48 @@ function SourceProgressCard({ row }: { row: SourceProgress }) {
       : 0;
   const done = row.gaps_total > 0 && row.gaps_fixed >= row.gaps_total;
   const barColor = done ? 'bg-green-500' : 'bg-blue-500';
+
+  // State indicator dot
+  const stateColor =
+    row.state === 'running'
+      ? 'bg-blue-500 animate-pulse'
+      : row.state === 'gate_checking'
+      ? 'bg-amber-500 animate-pulse'
+      : row.state === 'succeeded'
+      ? 'bg-green-500'
+      : row.state === 'failed'
+      ? 'bg-red-500'
+      : 'bg-gray-300';
+
+  // Gate result chip
+  const gateChip =
+    row.gate_result === 'passed'
+      ? { text: 'gate passed', cls: 'bg-green-100 text-green-800' }
+      : row.gate_result === 'failed'
+      ? { text: 'gate failed', cls: 'bg-amber-100 text-amber-800' }
+      : null;
+
   return (
     <div className="bg-white rounded border shadow-sm p-3 space-y-1.5">
       <div className="flex items-center justify-between gap-2">
-        <div
-          className="font-mono text-xs text-gray-700 truncate"
-          title={row.source_id}
-        >
-          {row.source_id}
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className={`w-2 h-2 rounded-full shrink-0 ${stateColor}`} />
+          <div
+            className="font-mono text-xs text-gray-700 truncate"
+            title={row.source_id}
+          >
+            {row.source_id}
+          </div>
         </div>
-        <div className="text-xs text-gray-500 shrink-0">
-          {row.gaps_fixed}/{row.gaps_total}
+        <div className="flex items-center gap-2 shrink-0">
+          {row.attempt != null && row.max_attempts != null ? (
+            <span className="text-[10px] font-mono bg-gray-100 text-gray-600 rounded px-1 py-0.5">
+              {row.attempt}/{row.max_attempts}
+            </span>
+          ) : null}
+          <div className="text-xs text-gray-500">
+            {row.gaps_fixed}/{row.gaps_total}
+          </div>
         </div>
       </div>
       <div className="h-1.5 w-full rounded bg-gray-100 overflow-hidden">
@@ -100,18 +131,41 @@ function SourceProgressCard({ row }: { row: SourceProgress }) {
           style={{ width: `${pct}%` }}
         />
       </div>
-      <div className="text-[11px] text-gray-500 truncate">
-        {done ? (
-          <span className="text-green-700">done</span>
-        ) : row.current_gap ? (
-          <>
-            current:{' '}
-            <span className="font-mono text-gray-700">{row.current_gap}</span>
-          </>
-        ) : (
-          <span className="text-gray-400">idle</span>
-        )}
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-[11px] text-gray-500 truncate">
+          {done ? (
+            <span className="text-green-700">done</span>
+          ) : row.current_gap ? (
+            <>
+              current:{' '}
+              <span className="font-mono text-gray-700">{row.current_gap}</span>
+            </>
+          ) : row.state === 'failed' ? (
+            <span className="text-red-600">failed</span>
+          ) : (
+            <span className="text-gray-400">
+              {row.state === 'running' ? 'agent running…' : row.state === 'gate_checking' ? 'checking gate…' : 'idle'}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          {row.edges_written != null && row.edges_written > 0 ? (
+            <span className="text-[10px] text-orange-700 bg-orange-50 rounded px-1 py-0.5">
+              {row.edges_written} edge{row.edges_written === 1 ? '' : 's'}
+            </span>
+          ) : null}
+          {gateChip ? (
+            <span className={`text-[10px] rounded px-1 py-0.5 ${gateChip.cls}`}>
+              {gateChip.text}
+            </span>
+          ) : null}
+        </div>
       </div>
+      {row.last_error ? (
+        <div className="text-[10px] text-red-600 truncate" title={row.last_error}>
+          {row.last_error}
+        </div>
+      ) : null}
     </div>
   );
 }

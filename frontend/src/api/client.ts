@@ -139,6 +139,12 @@ export interface SourceProgress {
   gaps_fixed: number;
   gaps_total: number;
   current_gap?: string | null;
+  attempt?: number | null;
+  max_attempts?: number | null;
+  gate_result?: 'pending' | 'passed' | 'failed' | null;
+  edges_written?: number | null;
+  state?: 'waiting' | 'running' | 'gate_checking' | 'succeeded' | 'failed' | null;
+  last_error?: string | null;
 }
 
 export interface AnalyzeStatus {

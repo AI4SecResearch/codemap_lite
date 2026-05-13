@@ -708,3 +708,78 @@ async def test_check_gate_returns_false_on_spawn_failure(orchestrator):
         passed = await orchestrator._check_gate("src_001")
 
     assert passed is False
+
+
+# ---- progress.json writing (architecture.md §3 + ADR #52) --------------------
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_writes_progress_json(tmp_path):
+    """Orchestrator must write progress.json at key lifecycle events so
+    the frontend can poll /api/v1/analyze/status and show per-source
+    state, attempt count, gate result, and edges written
+    (architecture.md §3 进度通信机制 + ADR #52).
+    """
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        command="echo",
+        args=["done"],
+        max_concurrency=1,
+        neo4j_uri="bolt://localhost:7687",
+        neo4j_user="neo4j",
+        neo4j_password="test",
+    )
+    orchestrator = RepairOrchestrator(config=config)
+    # Gate always fails → 3 attempts → final state="failed"
+    orchestrator._check_gate = AsyncMock(return_value=False)
+
+    results = await orchestrator.run_repairs(["src_progress"])
+
+    assert results[0].success is False
+    assert results[0].attempts == 3
+
+    # Verify progress.json was written
+    progress_path = target_dir / "logs" / "repair" / "src_progress" / "progress.json"
+    assert progress_path.exists()
+    data = json.loads(progress_path.read_text(encoding="utf-8"))
+    assert data["state"] == "failed"
+    assert data["attempt"] == 3
+    assert data["max_attempts"] == 3
+    assert data["gate_result"] == "failed"
+    assert "last_error" in data
+    assert "gate_failed" in data["last_error"]
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_progress_shows_succeeded_on_gate_pass(tmp_path):
+    """When gate passes on first attempt, progress.json must show
+    state=succeeded and gate_result=passed."""
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        command="echo",
+        args=["done"],
+        max_concurrency=1,
+        neo4j_uri="bolt://localhost:7687",
+        neo4j_user="neo4j",
+        neo4j_password="test",
+    )
+    orchestrator = RepairOrchestrator(config=config)
+    orchestrator._check_gate = AsyncMock(return_value=True)
+
+    results = await orchestrator.run_repairs(["src_pass"])
+
+    assert results[0].success is True
+    progress_path = target_dir / "logs" / "repair" / "src_pass" / "progress.json"
+    assert progress_path.exists()
+    data = json.loads(progress_path.read_text(encoding="utf-8"))
+    assert data["state"] == "succeeded"
+    assert data["gate_result"] == "passed"
+    assert data["attempt"] == 1
