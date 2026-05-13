@@ -4,11 +4,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -103,14 +104,19 @@ def create_analyze_router() -> APIRouter:
             }
             return {"status": "accepted", "action": "repair"}
 
-        # Prevent double-spawn
+        # Prevent double-spawn (architecture.md §8: 409 Conflict)
         current = request.app.state.analyze_state
         if current.get("state") == "repairing":
-            return {"status": "already_running", "action": "repair"}
+            raise HTTPException(
+                status_code=409,
+                detail="Repair is already running",
+            )
 
         request.app.state.analyze_state = {
             "state": "repairing",
             "progress": 0.0,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "completed_at": None,
         }
 
         async def _run_repair() -> None:
@@ -181,7 +187,12 @@ def create_analyze_router() -> APIRouter:
             except Exception as exc:
                 logger.exception("Repair background task failed: %s", exc)
             finally:
-                request.app.state.analyze_state = {"state": "idle", "progress": 0.0}
+                request.app.state.analyze_state = {
+                    "state": "idle",
+                    "progress": 0.0,
+                    "started_at": request.app.state.analyze_state.get("started_at"),
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                }
 
         asyncio.ensure_future(_run_repair())
         return {"status": "accepted", "action": "repair"}

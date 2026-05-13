@@ -227,6 +227,21 @@ class TestAnalyzeEndpoint:
         data = resp.json()
         assert data["status"] == "accepted"
 
+    def test_analyze_repair_conflict_returns_409(self) -> None:
+        """architecture.md §8: double-spawn must return 409 Conflict."""
+        client, store = get_test_client()
+        # First call sets state to "repairing" (no settings → demo mode)
+        resp1 = client.post("/api/v1/analyze/repair")
+        assert resp1.status_code == 202
+        # Second call should detect conflict — but demo mode doesn't
+        # wire settings, so it always accepts. Wire minimal settings to
+        # trigger the conflict path.
+        from codemap_lite.config.settings import Settings
+        client.app.state.settings = Settings()
+        client.app.state.analyze_state = {"state": "repairing", "progress": 0.5}
+        resp2 = client.post("/api/v1/analyze/repair")
+        assert resp2.status_code == 409
+
     def test_analyze_status(self) -> None:
         client, _ = get_test_client()
         resp = client.get("/api/v1/analyze/status")
@@ -237,6 +252,23 @@ class TestAnalyzeEndpoint:
         # sources[] is always present (empty when no target_dir / no
         # progress files yet) — architecture.md §3, ADR #52.
         assert data["sources"] == []
+
+    def test_analyze_status_includes_timestamps_after_repair(self) -> None:
+        """architecture.md §8: status should expose started_at/completed_at."""
+        from codemap_lite.config.settings import Settings
+        client, _ = get_test_client()
+        client.app.state.settings = Settings()
+        # Simulate a completed repair session
+        client.app.state.analyze_state = {
+            "state": "idle",
+            "progress": 0.0,
+            "started_at": "2026-05-13T10:00:00+00:00",
+            "completed_at": "2026-05-13T10:05:00+00:00",
+        }
+        resp = client.get("/api/v1/analyze/status")
+        data = resp.json()
+        assert data["started_at"] == "2026-05-13T10:00:00+00:00"
+        assert data["completed_at"] == "2026-05-13T10:05:00+00:00"
 
     def test_analyze_status_aggregates_progress_files(self, tmp_path) -> None:
         store = InMemoryGraphStore()

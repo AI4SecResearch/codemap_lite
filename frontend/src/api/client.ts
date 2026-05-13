@@ -152,6 +152,8 @@ export interface AnalyzeStatus {
   progress: number;
   mode?: string;
   sources?: SourceProgress[];
+  started_at?: string | null;
+  completed_at?: string | null;
 }
 
 export interface Subgraph {
