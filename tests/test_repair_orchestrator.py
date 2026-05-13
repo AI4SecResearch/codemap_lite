@@ -2153,3 +2153,84 @@ async def test_orchestrator_seeds_gaps_total_in_progress_json(tmp_path):
     assert data["gaps_total"] == 3, (
         "gaps_total must reflect the number of pending gaps at attempt start"
     )
+
+
+@pytest.mark.asyncio
+async def test_concurrent_repairs_do_not_race_on_claude_md(tmp_path):
+    """architecture.md §3: 'source 间并发, source 内串行'. When multiple
+    sources run concurrently, each agent subprocess must read its OWN
+    CLAUDE.md content (containing its source_id), not another source's.
+
+    This test verifies that the inject+subprocess_start sequence is
+    serialized so CLAUDE.md is not overwritten between inject and read."""
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import FunctionNode, UnresolvedCallNode
+
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    store = InMemoryGraphStore()
+    # Create two source functions with one gap each
+    for sid in ("src_A", "src_B"):
+        store.create_function(FunctionNode(
+            id=sid, name=sid, signature=f"void {sid}()",
+            file_path=f"src/{sid}.c", start_line=1, end_line=10, body_hash=f"h_{sid}",
+        ))
+        store.create_unresolved_call(UnresolvedCallNode(
+            caller_id=sid,
+            call_expression="fn()",
+            call_file=f"src/{sid}.c",
+            call_line=5,
+            call_type="indirect",
+            source_code_snippet="fn();",
+            var_name="fn",
+            var_type="void (*)()",
+        ))
+
+    # Track what CLAUDE.md content each subprocess sees
+    observed_claude_md: dict[str, str] = {}
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        command="cat",  # Will be overridden
+        args=[],
+        max_concurrency=2,  # Both run concurrently
+        graph_store=store,
+    )
+    orchestrator = RepairOrchestrator(config=config)
+
+    # Mock _check_gate to always pass
+    orchestrator._check_gate = AsyncMock(return_value=True)
+
+    # Patch create_subprocess_exec to capture CLAUDE.md at subprocess start
+    original_create = asyncio.create_subprocess_exec
+
+    async def capturing_create(*args, **kwargs):
+        # Read CLAUDE.md at the moment the subprocess would start
+        claude_md = (target_dir / "CLAUDE.md").read_text(encoding="utf-8")
+        # Extract source_id from the CLAUDE.md content
+        for sid in ("src_A", "src_B"):
+            if f"Source Point {sid}" in claude_md:
+                observed_claude_md[sid] = claude_md
+                break
+
+        # Return a mock process that exits successfully
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+        mock_proc.kill = MagicMock()
+        mock_proc.wait = AsyncMock()
+        return mock_proc
+
+    with patch("asyncio.create_subprocess_exec", side_effect=capturing_create):
+        results = await orchestrator.run_repairs(["src_A", "src_B"])
+
+    # Each subprocess must have seen its OWN source_id in CLAUDE.md
+    assert "src_A" in observed_claude_md, "src_A subprocess never started"
+    assert "src_B" in observed_claude_md, "src_B subprocess never started"
+    assert f"Source Point src_A" in observed_claude_md["src_A"], (
+        "src_A's subprocess read src_B's CLAUDE.md — race condition!"
+    )
+    assert f"Source Point src_B" in observed_claude_md["src_B"], (
+        "src_B's subprocess read src_A's CLAUDE.md — race condition!"
+    )

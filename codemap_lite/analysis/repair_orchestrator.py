@@ -80,6 +80,9 @@ class RepairOrchestrator:
     def __init__(self, config: RepairConfig) -> None:
         self._config = config
         self._progress: dict[str, dict[str, Any]] = {}
+        # Serialize inject+subprocess_start to prevent CLAUDE.md race when
+        # multiple sources run concurrently (architecture.md §3: source 间并发).
+        self._inject_lock = asyncio.Lock()
         # Per-source BFS cache for retry audit write-back. Populated on
         # first gate failure per source; kept for the lifetime of the run
         # since the reachable set does not shrink across retries.
@@ -307,14 +310,20 @@ class RepairOrchestrator:
                 if self._config.feedback_store is not None
                 else ""
             )
-            self._inject_files(
-                target_dir=target_dir,
-                source_id=source_id,
-                counter_examples=counter_examples,
-            )
 
+            # Serialize inject+subprocess_start to prevent CLAUDE.md race
+            # when multiple sources run concurrently. The lock is released
+            # after create_subprocess_exec returns (the subprocess reads
+            # CLAUDE.md at startup, before the lock is released by the next
+            # source). architecture.md §3: source 间并发, source 内串行.
+            await self._inject_lock.acquire()
             try:
-                # Run subprocess with merged env and optional log capture
+                self._inject_files(
+                    target_dir=target_dir,
+                    source_id=source_id,
+                    counter_examples=counter_examples,
+                )
+
                 cmd = self._build_command(source_id)
                 env = {**os.environ, **(self._config.env or {})}
 
@@ -330,59 +339,61 @@ class RepairOrchestrator:
                     stderr_target = log_fh
 
                 try:
-                    try:
-                        proc = await asyncio.create_subprocess_exec(
-                            *cmd,
-                            cwd=str(target_dir),
-                            stdout=stdout_target,
-                            stderr=stderr_target,
-                            env=env,
-                        )
-                        timeout = self._config.subprocess_timeout_seconds
-                        if timeout is not None:
+                    proc = await asyncio.create_subprocess_exec(
+                        *cmd,
+                        cwd=str(target_dir),
+                        stdout=stdout_target,
+                        stderr=stderr_target,
+                        env=env,
+                    )
+                except (OSError, FileNotFoundError) as exc:
+                    self._inject_lock.release()
+                    if log_fh is not None:
+                        log_fh.close()
+                    reason = _truncate_reason(
+                        f"subprocess_crash: {type(exc).__name__}: {exc}"
+                    )
+                    self._record_retry_attempt(
+                        source_id=source_id,
+                        reason=reason,
+                    )
+                    self._write_progress(source_id, last_error=reason)
+                    continue
+            except BaseException:
+                self._inject_lock.release()
+                raise
+            self._inject_lock.release()
+
+            # Subprocess is running — wait for completion outside the lock
+            # so other sources can inject+start concurrently.
+            try:
+                try:
+                    timeout = self._config.subprocess_timeout_seconds
+                    if timeout is not None:
+                        try:
+                            await asyncio.wait_for(
+                                proc.communicate(), timeout=timeout
+                            )
+                        except asyncio.TimeoutError:
+                            proc.kill()
                             try:
-                                await asyncio.wait_for(
-                                    proc.communicate(), timeout=timeout
-                                )
-                            except asyncio.TimeoutError:
-                                # architecture.md §3 超时护栏: kill the hung
-                                # agent, stamp subprocess_timeout, continue
-                                # the retry loop so the source's budget is
-                                # not silently burned by a wedged process.
-                                proc.kill()
-                                try:
-                                    await proc.wait()
-                                except Exception:
-                                    pass
-                                reason = _truncate_reason(
-                                    f"subprocess_timeout: {timeout}s"
-                                )
-                                self._record_retry_attempt(
-                                    source_id=source_id,
-                                    reason=reason,
-                                )
-                                self._write_progress(
-                                    source_id,
-                                    last_error=reason,
-                                )
-                                continue
-                        else:
-                            await proc.communicate()
-                    except (OSError, FileNotFoundError) as exc:
-                        # Subprocess failed to spawn or crashed mid-flight
-                        # (e.g. missing CLI binary). Per architecture.md §3
-                        # Retry 审计字段, stamp subprocess_crash and keep the
-                        # retry loop alive — never let the exception bubble
-                        # out and silently kill the source's retry budget.
-                        reason = _truncate_reason(
-                            f"subprocess_crash: {type(exc).__name__}: {exc}"
-                        )
-                        self._record_retry_attempt(
-                            source_id=source_id,
-                            reason=reason,
-                        )
-                        self._write_progress(source_id, last_error=reason)
-                        continue
+                                await proc.wait()
+                            except Exception:
+                                pass
+                            reason = _truncate_reason(
+                                f"subprocess_timeout: {timeout}s"
+                            )
+                            self._record_retry_attempt(
+                                source_id=source_id,
+                                reason=reason,
+                            )
+                            self._write_progress(
+                                source_id,
+                                last_error=reason,
+                            )
+                            continue
+                    else:
+                        await proc.communicate()
                 finally:
                     if log_fh is not None:
                         log_fh.close()
