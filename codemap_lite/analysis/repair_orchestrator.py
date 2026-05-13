@@ -586,8 +586,7 @@ class RepairOrchestrator:
         store = self._config.graph_store
         if store is None:
             return
-        if hasattr(store, "update_source_point_status"):
-            store.update_source_point_status(source_id, status)
+        store.update_source_point_status(source_id, status)
 
     def _is_gap_in_source(
         self, store: GraphStore, source_id: str, caller_id: str
