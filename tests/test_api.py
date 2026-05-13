@@ -257,14 +257,10 @@ class TestAnalyzeEndpoint:
         # First call sets state to "repairing" (no settings → demo mode)
         resp1 = client.post("/api/v1/analyze/repair")
         assert resp1.status_code == 202
-        # Second call should detect conflict — but demo mode doesn't
-        # wire settings, so it always accepts. Wire minimal settings to
-        # trigger the conflict path.
-        from codemap_lite.config.settings import Settings
-        client.app.state.settings = Settings()
-        client.app.state.analyze_state = {"state": "repairing", "progress": 0.5}
+        # Second call should detect conflict via real state transition
         resp2 = client.post("/api/v1/analyze/repair")
         assert resp2.status_code == 409
+        assert "already running" in resp2.json()["detail"]
 
     def test_analyze_status(self) -> None:
         client, _ = get_test_client()

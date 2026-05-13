@@ -1336,6 +1336,11 @@ async def test_subprocess_timeout_stamps_correct_category(tmp_path):
     assert updated_gap.retry_count == 3
     assert updated_gap.status == "unresolvable"
     assert "subprocess_timeout" in (updated_gap.last_attempt_reason or "")
+    # architecture.md §3 lines 125-127: exact format "subprocess_timeout: <N>s"
+    import re
+    assert re.match(
+        r"^subprocess_timeout: [\d.]+s$", updated_gap.last_attempt_reason
+    ), f"format mismatch: '{updated_gap.last_attempt_reason}'"
 
 
 @pytest.mark.asyncio
@@ -1528,6 +1533,74 @@ async def test_retry_reason_format_matches_category_prefix(tmp_path):
     # Verify category is one of the valid ones
     category = reason.split(":")[0]
     assert category in VALID_CATEGORIES, f"unknown category: {category}"
+
+
+@pytest.mark.asyncio
+async def test_retry_count_increments_per_gate_failure(tmp_path):
+    """architecture.md §3 lines 115-119: '有残留 → 残留 GAP 的 retry_count++'
+
+    Verifies the incremental progression 0→1→2→3 across gate failures,
+    and that status flips to 'unresolvable' only at retry_count >= 3.
+    """
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import FunctionNode, UnresolvedCallNode
+
+    store = InMemoryGraphStore()
+    store.create_function(FunctionNode(
+        id="src_inc", name="inc_entry", signature="void inc_entry()",
+        file_path="inc.cpp", start_line=1, end_line=20, body_hash="hinc",
+    ))
+    gap = UnresolvedCallNode(
+        caller_id="src_inc",
+        call_expression="cb()",
+        call_file="inc.cpp",
+        call_line=7,
+        call_type="indirect",
+        source_code_snippet="cb();",
+        var_name="cb",
+        var_type="void (*)()",
+    )
+    store.create_unresolved_call(gap)
+    assert store._unresolved_calls[gap.id].retry_count == 0
+
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    # Track retry_count after each gate check via side_effect
+    observed_counts: list[int] = []
+
+    async def gate_side_effect(source_id):
+        # Record the retry_count BEFORE this gate failure triggers increment
+        observed_counts.append(store._unresolved_calls[gap.id].retry_count)
+        return False
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        command="echo",
+        args=["done"],
+        max_concurrency=1,
+        neo4j_uri="bolt://localhost:7687",
+        neo4j_user="neo4j",
+        neo4j_password="test",
+        graph_store=store,
+    )
+    orchestrator = RepairOrchestrator(config=config)
+    orchestrator._check_gate = AsyncMock(side_effect=gate_side_effect)
+
+    await orchestrator.run_repairs(["src_inc"])
+
+    # Gate was called 3 times (max_attempts=3 default)
+    assert orchestrator._check_gate.call_count == 3
+    # Before each gate failure, retry_count was 0, 1, 2 respectively
+    assert observed_counts == [0, 1, 2]
+    # After all 3 failures, retry_count == 3 and status == unresolvable
+    final = store._unresolved_calls[gap.id]
+    assert final.retry_count == 3
+    assert final.status == "unresolvable"
+    # Timestamps must be set
+    assert final.last_attempt_timestamp is not None
+    assert final.last_attempt_reason == "gate_failed: remaining pending GAPs"
 
 
 @pytest.mark.asyncio

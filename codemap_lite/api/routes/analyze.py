@@ -159,13 +159,6 @@ def create_analyze_router() -> APIRouter:
         progress is polled via GET /api/v1/analyze/status.
         """
         settings = getattr(request.app.state, "settings", None)
-        if settings is None:
-            # No settings wired (test / demo mode) — set state but don't spawn.
-            request.app.state.analyze_state = {
-                "state": "repairing",
-                "progress": 0.0,
-            }
-            return {"status": "accepted", "action": "repair"}
 
         # Prevent double-spawn (architecture.md §8: 409 Conflict)
         current = request.app.state.analyze_state
@@ -174,6 +167,14 @@ def create_analyze_router() -> APIRouter:
                 status_code=409,
                 detail="Repair is already running",
             )
+
+        if settings is None:
+            # No settings wired (test / demo mode) — set state but don't spawn.
+            request.app.state.analyze_state = {
+                "state": "repairing",
+                "progress": 0.0,
+            }
+            return {"status": "accepted", "action": "repair"}
 
         request.app.state.analyze_state = {
             "state": "repairing",
