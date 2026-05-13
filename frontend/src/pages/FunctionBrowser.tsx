@@ -53,7 +53,7 @@ export default function FunctionBrowser() {
         // surface affordance, not the page's primary payload).
         const [fns, unresolved] = await Promise.all([
           api.getFunctions(),
-          api.listUnresolved(500, 0).catch(() => ({ total: 0, items: [] })),
+          api.listUnresolved({ limit: 500 }).catch(() => ({ total: 0, items: [] })),
         ]);
         if (cancelled) return;
         setFunctions(fns);

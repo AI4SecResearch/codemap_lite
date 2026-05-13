@@ -191,7 +191,7 @@ export default function Dashboard() {
         api.getAnalyzeStatus(),
         api.getFunctions().catch(() => [] as FunctionNode[]),
         api
-          .listUnresolved(500, 0)
+          .listUnresolved({ limit: 500 })
           .catch(() => ({ total: 0, items: [] })),
       ]);
       setStats(s);

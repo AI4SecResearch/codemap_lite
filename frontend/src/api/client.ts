@@ -251,10 +251,25 @@ export const api = {
     fetchJson<FunctionNode[]>(`/api/v1/functions/${id}/callees`),
   getCallChain: (id: string, depth = 5) =>
     fetchJson<Subgraph>(`/api/v1/functions/${id}/call-chain?depth=${depth}`),
-  listUnresolved: (limit = 200, offset = 0) =>
-    fetchJson<{ total: number; items: UnresolvedCall[] }>(
-      `/api/v1/unresolved-calls?limit=${limit}&offset=${offset}`
-    ),
+  listUnresolved: (params?: {
+    limit?: number;
+    offset?: number;
+    caller?: string;
+    status?: string;
+    category?: string;
+  }) => {
+    const qs = new URLSearchParams();
+    const limit = params?.limit ?? 200;
+    const offset = params?.offset ?? 0;
+    qs.set('limit', String(limit));
+    qs.set('offset', String(offset));
+    if (params?.caller) qs.set('caller', params.caller);
+    if (params?.status) qs.set('status', params.status);
+    if (params?.category) qs.set('category', params.category);
+    return fetchJson<{ total: number; items: UnresolvedCall[] }>(
+      `/api/v1/unresolved-calls?${qs.toString()}`
+    );
+  },
 
   // Source points
   getSourcePoints: (params?: { kind?: string; module?: string }) => {
@@ -282,9 +297,11 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mode }),
     }),
-  triggerRepair: () =>
+  triggerRepair: (sourceIds?: string[]) =>
     fetchJson<{ status: string; action: string }>('/api/v1/analyze/repair', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: sourceIds?.length ? JSON.stringify({ source_ids: sourceIds }) : undefined,
     }),
 
   // Reviews & manual edges

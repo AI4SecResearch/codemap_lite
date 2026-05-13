@@ -231,7 +231,7 @@ export default function ReviewQueue() {
     setLoading(true);
     try {
       const [u, r] = await Promise.all([
-        api.listUnresolved(500, 0),
+        api.listUnresolved({ limit: 500 }),
         api.getReviews(),
       ]);
       setGaps(u.items);
