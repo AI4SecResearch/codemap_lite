@@ -74,3 +74,36 @@ def test_log_notification_accepts_legacy_event_keys():
             "gaps_total": 10,
             "current_gap": "gap_002",
         }
+
+
+def test_log_notification_merges_with_existing_progress():
+    """architecture.md §3 进度通信机制: hook must merge with existing
+    progress.json fields (state, attempt, gate_result written by
+    orchestrator), not overwrite them."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Orchestrator has already written state/attempt fields
+        progress_dir = Path(tmpdir) / "repair" / "src_001"
+        progress_dir.mkdir(parents=True)
+        progress_path = progress_dir / "progress.json"
+        progress_path.write_text(json.dumps({
+            "state": "running",
+            "attempt": 2,
+            "gate_result": "pending",
+        }))
+
+        # Hook writes gaps progress
+        event = {"gaps_fixed": 4, "gaps_total": 8, "current_gap": "gap_005"}
+        process_notification_event(event, source_id="src_001", log_dir=Path(tmpdir))
+
+        data = json.loads(progress_path.read_text())
+        # Hook fields must be present
+        assert data["gaps_fixed"] == 4
+        assert data["gaps_total"] == 8
+        assert data["current_gap"] == "gap_005"
+        # Orchestrator fields must be preserved (not wiped)
+        assert data.get("state") == "running", (
+            "orchestrator 'state' field was wiped by hook overwrite"
+        )
+        assert data.get("attempt") == 2, (
+            "orchestrator 'attempt' field was wiped by hook overwrite"
+        )

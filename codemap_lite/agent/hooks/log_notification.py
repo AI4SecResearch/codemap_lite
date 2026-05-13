@@ -28,7 +28,17 @@ def process_notification_event(
         "current_gap": event.get("current_gap", event.get("current_gap_id", "")),
     }
 
-    progress_path.write_text(json.dumps(progress, ensure_ascii=False), encoding="utf-8")
+    # Merge with existing content so orchestrator-written fields
+    # (state, attempt, gate_result) are preserved (architecture.md §3
+    # 进度通信机制: bidirectional merge between hook and orchestrator).
+    existing: dict[str, Any] = {}
+    if progress_path.exists():
+        try:
+            existing = json.loads(progress_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            pass
+    existing.update(progress)
+    progress_path.write_text(json.dumps(existing, ensure_ascii=False), encoding="utf-8")
 
 
 if __name__ == "__main__":
