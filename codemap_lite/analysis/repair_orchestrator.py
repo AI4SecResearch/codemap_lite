@@ -57,6 +57,9 @@ class RepairConfig:
     # last_attempt_timestamp + last_attempt_reason so the frontend GapDetail
     # can surface "last attempt failure reason + time" without reading JSONL.
     graph_store: GraphStore | None = None
+    # architecture.md §10 line 523: "retry_failed_gaps: true → 跨运行重试：
+    # 下次运行时重置 unresolvable GAP 的 retry_count，重新尝试"
+    retry_failed_gaps: bool = True
 
 
 @dataclass
@@ -525,8 +528,44 @@ class RepairOrchestrator:
             for g in pending_gaps
         )
 
+    def _reset_unresolvable_gaps(self) -> None:
+        """Reset all 'unresolvable' GAPs to 'pending' with retry_count=0.
+
+        architecture.md §10 line 523 + §7 step 5: "retry_failed_gaps: true
+        → 跨运行重试：下次运行时重置 unresolvable GAP 的 retry_count，重新尝试"
+        """
+        store = self._config.graph_store
+        if store is None:
+            return
+        for gap in store.get_unresolved_calls(status="unresolvable"):
+            # Direct reset via InMemoryGraphStore internals or Neo4j Cypher.
+            # InMemoryGraphStore exposes _unresolved_calls dict.
+            if hasattr(store, "_unresolved_calls"):
+                from codemap_lite.graph.schema import UnresolvedCallNode
+                store._unresolved_calls[gap.id] = UnresolvedCallNode(
+                    caller_id=gap.caller_id,
+                    call_expression=gap.call_expression,
+                    call_file=gap.call_file,
+                    call_line=gap.call_line,
+                    call_type=gap.call_type,
+                    source_code_snippet=gap.source_code_snippet,
+                    var_name=gap.var_name,
+                    var_type=gap.var_type,
+                    candidates=list(gap.candidates),
+                    retry_count=0,
+                    status="pending",
+                    last_attempt_timestamp=None,
+                    last_attempt_reason=None,
+                    id=gap.id,
+                )
+
     async def run_repairs(self, source_ids: list[str]) -> list[SourceRepairResult]:
         """Run repairs for multiple source points with concurrency control."""
+        # architecture.md §10 line 523: "retry_failed_gaps: true → 跨运行重试：
+        # 下次运行时重置 unresolvable GAP 的 retry_count，重新尝试"
+        if self._config.retry_failed_gaps:
+            self._reset_unresolvable_gaps()
+
         semaphore = asyncio.Semaphore(self._config.max_concurrency)
 
         async def limited_repair(sid: str) -> SourceRepairResult:

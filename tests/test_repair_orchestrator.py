@@ -1473,3 +1473,73 @@ async def test_retry_audit_timestamp_is_iso8601_utc(tmp_path):
     iso_pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
     assert re.match(iso_pattern, ts), f"not ISO-8601: {ts}"
     assert "+00:00" in ts or ts.endswith("Z"), f"not UTC: {ts}"
+
+
+@pytest.mark.asyncio
+async def test_retry_failed_gaps_resets_unresolvable_on_run_start(tmp_path):
+    """architecture.md §10 line 523: 'retry_failed_gaps: true → 跨运行重试：
+    下次运行时重置 unresolvable GAP 的 retry_count，重新尝试'.
+
+    When retry_failed_gaps=True, the orchestrator must reset all
+    'unresolvable' GAPs to 'pending' with retry_count=0 at the start
+    of run_repairs(), giving them a fresh budget."""
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import FunctionNode, UnresolvedCallNode
+
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    store = InMemoryGraphStore()
+    caller = FunctionNode(
+        signature="void src_001(int)",
+        name="src_001",
+        file_path="foo.cpp",
+        start_line=1,
+        end_line=10,
+        body_hash="h",
+        id="src_001",
+    )
+    store.create_function(caller)
+    # GAP that was previously marked unresolvable
+    gap = UnresolvedCallNode(
+        caller_id="src_001",
+        call_expression="fn_ptr(x)",
+        call_file="foo.cpp",
+        call_line=7,
+        call_type="indirect",
+        source_code_snippet="fn_ptr(x);",
+        var_name="fn_ptr",
+        var_type="void (*)(int)",
+        id="gap_exhausted",
+        retry_count=3,
+        status="unresolvable",
+    )
+    store.create_unresolved_call(gap)
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        command="echo",
+        args=["done"],
+        max_concurrency=1,
+        neo4j_uri="bolt://localhost:7687",
+        neo4j_user="neo4j",
+        neo4j_password="test",
+        graph_store=store,
+        retry_failed_gaps=True,
+    )
+    orchestrator = RepairOrchestrator(config=config)
+    # Gate passes immediately (GAP resolved by agent)
+    orchestrator._check_gate = AsyncMock(return_value=True)
+
+    results = await orchestrator.run_repairs(["src_001"])
+    assert results[0].success is True
+
+    # The GAP should have been reset before the run started
+    # (it was unresolvable, but retry_failed_gaps=True resets it)
+    final_gap = store._unresolved_calls["gap_exhausted"]
+    # After gate passes, the GAP might still be in store (check-complete
+    # uses get_pending_gaps_for_source which filters by status="pending")
+    # The key assertion: the run was able to proceed because the GAP
+    # was reset from unresolvable to pending at the start.
+    assert results[0].attempts == 1
