@@ -86,6 +86,14 @@ class IncrementalUpdater:
         # affected LLM callers.
         # architecture.md §7 step 3: "删除该 CALLS 边 + 对应 RepairLog，重新生成 UnresolvedCall"
         affected_source_ids: set[str] = set()
+
+        # All affected callers (LLM and non-LLM) may be SourcePoints whose
+        # reachable subgraph has changed — collect them for status reset.
+        for caller_id in result.affected_callers:
+            sp = self._store.get_source_point(caller_id)
+            if sp is not None:
+                affected_source_ids.add(caller_id)
+
         for caller_id, callee_id, props in invalidated_llm_edges:
             # Delete the RepairLog that documented this LLM repair
             call_location = f"{props.call_file}:{props.call_line}"
