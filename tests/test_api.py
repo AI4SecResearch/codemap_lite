@@ -733,6 +733,102 @@ class TestFeedbackEndpoint:
         assert resp.json()["unresolved_by_category"] == {}
 
 
+class TestNoPrivateAttrLeak:
+    """Regression: routes must not reach into store._files / ._functions /
+    ._calls_edges / ._unresolved_calls. A Protocol-only fake (no private
+    dicts) must work — this is what Neo4jGraphStore looks like."""
+
+    def _make_protocol_store(self):
+        """Minimal fake that only exposes public Protocol methods."""
+        from dataclasses import dataclass
+        from codemap_lite.graph.neo4j_store import _CallsEdge
+
+        class _ProtocolOnlyStore:
+            def list_files(self):
+                return [FileNode(file_path="a.cpp", hash="h", primary_language="cpp")]
+
+            def list_functions(self, file_path=None):
+                fn = FunctionNode(
+                    signature="void f()", name="f", file_path="a.cpp",
+                    start_line=1, end_line=5, body_hash="bh",
+                )
+                if file_path and file_path != "a.cpp":
+                    return []
+                return [fn]
+
+            def list_calls_edges(self):
+                return [_CallsEdge(
+                    caller_id="f1", callee_id="f2",
+                    props=CallsEdgeProps(
+                        resolved_by="llm", call_type="indirect",
+                        call_file="a.cpp", call_line=10,
+                    ),
+                )]
+
+            def count_stats(self):
+                return {
+                    "total_functions": 1, "total_files": 1,
+                    "total_calls": 1, "total_unresolved": 0,
+                    "total_repair_logs": 0,
+                    "unresolved_by_status": {},
+                    "unresolved_by_category": {},
+                    "calls_by_resolved_by": {"llm": 1},
+                }
+
+            def get_unresolved_calls(self):
+                return []
+
+            def get_callers(self, fid):
+                return []
+
+            def get_callees(self, fid):
+                return []
+
+            def get_function_by_id(self, fid):
+                return None
+
+            def get_reachable_subgraph(self, sid, max_depth=50):
+                return {"nodes": [], "edges": [], "unresolved": []}
+
+            def get_repair_logs(self, limit=100, offset=0):
+                return []
+
+        return _ProtocolOnlyStore()
+
+    def test_stats_no_private_attrs(self) -> None:
+        store = self._make_protocol_store()
+        app = create_app(store=store)
+        client = TestClient(app)
+        resp = client.get("/api/v1/stats")
+        assert resp.status_code == 200
+        assert resp.json()["total_functions"] == 1
+        assert resp.json()["calls_by_resolved_by"] == {"llm": 1}
+
+    def test_list_files_no_private_attrs(self) -> None:
+        store = self._make_protocol_store()
+        app = create_app(store=store)
+        client = TestClient(app)
+        resp = client.get("/api/v1/files")
+        assert resp.status_code == 200
+        assert resp.json()[0]["file_path"] == "a.cpp"
+
+    def test_list_functions_no_private_attrs(self) -> None:
+        store = self._make_protocol_store()
+        app = create_app(store=store)
+        client = TestClient(app)
+        resp = client.get("/api/v1/functions")
+        assert resp.status_code == 200
+        assert resp.json()[0]["name"] == "f"
+
+    def test_unresolved_calls_no_private_attrs(self) -> None:
+        store = self._make_protocol_store()
+        app = create_app(store=store)
+        client = TestClient(app)
+        resp = client.get("/api/v1/unresolved-calls")
+        assert resp.status_code == 200
+        assert resp.json()["total"] == 0
+
+
 def _make_repair_log(
     *,
     caller_id: str = "func_a",

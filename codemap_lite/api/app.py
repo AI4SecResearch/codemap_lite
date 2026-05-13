@@ -89,43 +89,18 @@ def create_app(
     def get_stats(request: Any = None) -> dict[str, Any]:
         s = app.state.store
         stats = getattr(app.state, "analysis_stats", {})
-        # Breakdown by UnresolvedCall.status (architecture.md §3 GAP lifecycle:
-        # pending → agent repair → node deleted, or 3 retries → "unresolvable").
-        # Surface the unresolvable backlog on the Dashboard so reviewers see
-        # GAPs the agent has abandoned without drilling into ReviewQueue
-        # (北极星指标 #5 状态透明度).
-        by_status: dict[str, int] = {}
-        for u in s._unresolved_calls.values():
-            key = getattr(u, "status", None) or "pending"
-            by_status[key] = by_status.get(key, 0) + 1
-        # Breakdown of UnresolvedCall by the `<category>:` prefix of
-        # `last_attempt_reason` (architecture.md §3 Retry 审计字段 4 档:
-        # gate_failed / agent_error / subprocess_crash / subprocess_timeout).
-        # Missing / malformed reasons (no colon, never stamped yet) bucket
-        # to "none" so the Dashboard chip row can show "25 GAPs have no
-        # audit stamp yet" without silently dropping them. Surfaced on
-        # the Dashboard per architecture.md §5 drill-down 契约: chip tones
-        # mirror GapDetail last-attempt 分色 and each chip links to
-        # `/review?category=<cat>` (北极星指标 #5 状态透明度).
-        by_category: dict[str, int] = {}
-        for u in s._unresolved_calls.values():
-            reason = getattr(u, "last_attempt_reason", None)
-            if reason and ":" in reason:
-                prefix = reason.split(":", 1)[0].strip()
-                cat_key = prefix if prefix else "none"
-            else:
-                cat_key = "none"
-            by_category[cat_key] = by_category.get(cat_key, 0) + 1
-        # Breakdown of CALLS edges by resolved_by (architecture.md §4 CALLS
-        # 边属性: symbol_table / signature / dataflow / context / llm).
-        # Surface the llm-repaired edge backlog on the Dashboard — per §5
-        # 审阅对象是"单条 CALLS 边（特别是 resolved_by='llm' 的）", so the
-        # review-critical population should be visible at the top level
-        # without drilling into ReviewQueue (北极星指标 #2 调用链可信度).
-        by_resolved: dict[str, int] = {}
-        for e in s._calls_edges:
-            key = e.props.resolved_by or "unknown"
-            by_resolved[key] = by_resolved.get(key, 0) + 1
+        # architecture.md §8 REST API: delegate aggregation to the
+        # store so /api/v1/stats works uniformly across InMemory and
+        # Neo4j backends. Previously this function reached into
+        # ``_unresolved_calls`` / ``_calls_edges`` private dicts, which
+        # crashed the Neo4j-backed serve path with AttributeError and
+        # forced every stats counter to 0 on the frontend.
+        # North-star metrics this feeds:
+        #   #2 调用链可信度: calls_by_resolved_by → Dashboard chip for
+        #     llm-repaired edge backlog.
+        #   #5 状态透明度: unresolved_by_status / _by_category →
+        #     Dashboard chip row linking into /review?category=<cat>.
+        store_stats = s.count_stats()
         # Counter-example library size (architecture.md §3 反馈机制 + §8).
         # Surfaced here so the frontend can render a live count chip on
         # the left-nav "Feedback" label — reviewers see the library grow
@@ -134,23 +109,10 @@ def create_app(
         # store is not wired (tests / in-memory demos).
         fb = getattr(app.state, "feedback_store", None)
         total_feedback = len(fb.list_all()) if fb is not None else 0
-        # RepairLog count (architecture.md §3 修复成功时 + §4 RepairLog
-        # schema + ADR #51). Surfaces total LLM repair activity so the
-        # frontend can render a Dashboard StatCard linking into the
-        # repair-logs audit endpoint without reviewers manually
-        # spelunking the graph (北极星指标 #2 + #5).
-        total_repair_logs = len(getattr(s, "_repair_logs", {}))
         return {
-            "total_functions": len(s._functions),
-            "total_files": len(s._files),
-            "total_calls": len(s._calls_edges),
-            "total_unresolved": len(s._unresolved_calls),
-            "unresolved_by_status": by_status,
-            "unresolved_by_category": by_category,
-            "calls_by_resolved_by": by_resolved,
+            **store_stats,
             "total_source_points": len(getattr(app.state, "source_points", [])),
             "total_feedback": total_feedback,
-            "total_repair_logs": total_repair_logs,
             **stats,
         }
 

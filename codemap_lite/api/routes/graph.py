@@ -14,17 +14,14 @@ def create_graph_router() -> APIRouter:
     @router.get("/files")
     def list_files(request: Request) -> list[dict[str, Any]]:
         store = request.app.state.store
-        return [asdict(f) for f in store._files.values()]
+        return [asdict(f) for f in store.list_files()]
 
     @router.get("/functions")
     def list_functions(
         request: Request, file: str | None = Query(default=None)
     ) -> list[dict[str, Any]]:
         store = request.app.state.store
-        functions = list(store._functions.values())
-        if file is not None:
-            functions = [f for f in functions if f.file_path == file]
-        return [asdict(f) for f in functions]
+        return [asdict(f) for f in store.list_functions(file_path=file)]
 
     @router.get("/functions/{function_id:path}/callers")
     def get_callers(request: Request, function_id: str) -> list[dict[str, Any]]:
@@ -74,7 +71,7 @@ def create_graph_router() -> APIRouter:
         offset: int = Query(default=0, ge=0),
     ) -> dict[str, Any]:
         store = request.app.state.store
-        all_uc = list(store._unresolved_calls.values())
+        all_uc = store.get_unresolved_calls()
         total = len(all_uc)
         items = all_uc[offset:offset + limit]
         return {

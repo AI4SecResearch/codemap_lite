@@ -67,6 +67,16 @@ class GraphStore(Protocol):
 
     def delete_calls_edges_for_function(self, function_id: str) -> None: ...
 
+    def list_files(self) -> list[FileNode]: ...
+
+    def list_functions(
+        self, file_path: str | None = None
+    ) -> list[FunctionNode]: ...
+
+    def list_calls_edges(self) -> list["_CallsEdge"]: ...
+
+    def count_stats(self) -> dict: ...
+
     def get_reachable_subgraph(
         self, source_id: str, max_depth: int = 50
     ) -> dict: ...
@@ -265,6 +275,56 @@ class InMemoryGraphStore:
             for e in self._calls_edges
             if e.caller_id != function_id and e.callee_id != function_id
         ]
+
+    def list_files(self) -> list[FileNode]:
+        return list(self._files.values())
+
+    def list_functions(
+        self, file_path: str | None = None
+    ) -> list[FunctionNode]:
+        fns = list(self._functions.values())
+        if file_path is None:
+            return fns
+        return [f for f in fns if f.file_path == file_path]
+
+    def list_calls_edges(self) -> list[_CallsEdge]:
+        return list(self._calls_edges)
+
+    def count_stats(self) -> dict:
+        """Summary counts for ``/api/v1/stats`` (architecture.md §8).
+
+        InMemoryStore answers from its private dicts directly. The Neo4j
+        impl translates this into a single session-level aggregation
+        query so the stats page doesn't need to materialize 23k+ UCs to
+        count them.
+        """
+        by_status: dict[str, int] = {}
+        for u in self._unresolved_calls.values():
+            key = getattr(u, "status", None) or "pending"
+            by_status[key] = by_status.get(key, 0) + 1
+        by_category: dict[str, int] = {}
+        for u in self._unresolved_calls.values():
+            reason = getattr(u, "last_attempt_reason", None)
+            if reason and ":" in reason:
+                prefix = reason.split(":", 1)[0].strip()
+                cat_key = prefix if prefix else "none"
+            else:
+                cat_key = "none"
+            by_category[cat_key] = by_category.get(cat_key, 0) + 1
+        by_resolved: dict[str, int] = {}
+        for e in self._calls_edges:
+            key = e.props.resolved_by or "unknown"
+            by_resolved[key] = by_resolved.get(key, 0) + 1
+        return {
+            "total_functions": len(self._functions),
+            "total_files": len(self._files),
+            "total_calls": len(self._calls_edges),
+            "total_unresolved": len(self._unresolved_calls),
+            "total_repair_logs": len(self._repair_logs),
+            "unresolved_by_status": by_status,
+            "unresolved_by_category": by_category,
+            "calls_by_resolved_by": by_resolved,
+        }
 
     def get_reachable_subgraph(
         self, source_id: str, max_depth: int = 50
@@ -653,6 +713,133 @@ class Neo4jGraphStore:
         )
         with self._get_driver().session() as session:
             session.run(cypher, id=function_id).consume()
+
+    def list_files(self) -> list[FileNode]:
+        cypher = (
+            "MATCH (f:File) "
+            "RETURN f.id AS id, f.file_path AS file_path, "
+            "f.hash AS hash, f.primary_language AS primary_language"
+        )
+        with self._get_driver().session() as session:
+            records = list(session.run(cypher))
+        return [
+            FileNode(
+                id=r["id"],
+                file_path=r["file_path"],
+                hash=r["hash"] or "",
+                primary_language=r["primary_language"] or "",
+            )
+            for r in records
+        ]
+
+    def list_functions(
+        self, file_path: str | None = None
+    ) -> list[FunctionNode]:
+        params: dict = {}
+        where = ""
+        if file_path is not None:
+            where = "WHERE f.file_path = $file_path "
+            params["file_path"] = file_path
+        cypher = (
+            f"MATCH (f:Function) {where}"
+            "RETURN f.id AS id, f.signature AS signature, f.name AS name, "
+            "f.file_path AS file_path, f.start_line AS start_line, "
+            "f.end_line AS end_line, f.body_hash AS body_hash"
+        )
+        with self._get_driver().session() as session:
+            records = list(session.run(cypher, **params))
+        return [_record_to_function(r) for r in records]
+
+    def list_calls_edges(self) -> list[_CallsEdge]:
+        cypher = (
+            "MATCH (a:Function)-[r:CALLS]->(b:Function) "
+            "RETURN a.id AS caller_id, b.id AS callee_id, "
+            "r.resolved_by AS resolved_by, r.call_type AS call_type, "
+            "r.call_file AS call_file, r.call_line AS call_line"
+        )
+        with self._get_driver().session() as session:
+            records = list(session.run(cypher))
+        edges: list[_CallsEdge] = []
+        for r in records:
+            props = CallsEdgeProps(
+                resolved_by=r["resolved_by"] or "",
+                call_type=r["call_type"] or "",
+                call_file=r["call_file"] or "",
+                call_line=r["call_line"] or 0,
+            )
+            edges.append(
+                _CallsEdge(
+                    caller_id=r["caller_id"],
+                    callee_id=r["callee_id"],
+                    props=props,
+                )
+            )
+        return edges
+
+    def count_stats(self) -> dict:
+        """Single-session aggregation for ``/api/v1/stats``.
+
+        architecture.md §8: stats must answer from Neo4j without
+        materializing every node. Uses independent ``MATCH … count(*)``
+        queries so each label can be indexed separately. Runs 5 cheap
+        Cypher statements in one session.
+        """
+        with self._get_driver().session() as session:
+            total_functions = session.run(
+                "MATCH (f:Function) RETURN count(f) AS n"
+            ).single()["n"]
+            total_files = session.run(
+                "MATCH (f:File) RETURN count(f) AS n"
+            ).single()["n"]
+            total_calls = session.run(
+                "MATCH ()-[r:CALLS]->() RETURN count(r) AS n"
+            ).single()["n"]
+            total_unresolved = session.run(
+                "MATCH (u:UnresolvedCall) RETURN count(u) AS n"
+            ).single()["n"]
+            total_repair_logs = session.run(
+                "MATCH (r:RepairLog) RETURN count(r) AS n"
+            ).single()["n"]
+            by_status: dict[str, int] = {
+                (row["s"] or "pending"): row["n"]
+                for row in session.run(
+                    "MATCH (u:UnresolvedCall) "
+                    "RETURN coalesce(u.status, 'pending') AS s, count(u) AS n"
+                )
+            }
+            # last_attempt_reason may be absent; bucket missing/malformed
+            # to "none" so the Dashboard chip row never silently drops UCs.
+            cat_rows = list(session.run(
+                "MATCH (u:UnresolvedCall) "
+                "RETURN u.last_attempt_reason AS reason, count(u) AS n"
+            ))
+            by_category: dict[str, int] = {}
+            for row in cat_rows:
+                reason = row["reason"]
+                if reason and ":" in reason:
+                    prefix = reason.split(":", 1)[0].strip()
+                    cat_key = prefix if prefix else "none"
+                else:
+                    cat_key = "none"
+                by_category[cat_key] = by_category.get(cat_key, 0) + row["n"]
+            by_resolved: dict[str, int] = {
+                (row["rb"] or "unknown"): row["n"]
+                for row in session.run(
+                    "MATCH ()-[r:CALLS]->() "
+                    "RETURN coalesce(r.resolved_by, 'unknown') AS rb, "
+                    "count(r) AS n"
+                )
+            }
+        return {
+            "total_functions": total_functions,
+            "total_files": total_files,
+            "total_calls": total_calls,
+            "total_unresolved": total_unresolved,
+            "total_repair_logs": total_repair_logs,
+            "unresolved_by_status": by_status,
+            "unresolved_by_category": by_category,
+            "calls_by_resolved_by": by_resolved,
+        }
 
     def get_reachable_subgraph(
         self, source_id: str, max_depth: int = 50
