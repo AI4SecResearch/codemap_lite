@@ -151,23 +151,13 @@ def create_review_router() -> APIRouter:
 
         store = request.app.state.store
 
-        # Verify the edge exists
-        edge_found = False
-        call_type = "indirect"
-        if hasattr(store, "list_calls_edges"):
-            for edge in store.list_calls_edges():
-                if (
-                    edge.caller_id == body.caller_id
-                    and edge.callee_id == body.callee_id
-                    and edge.props.call_file == body.call_file
-                    and edge.props.call_line == body.call_line
-                ):
-                    edge_found = True
-                    call_type = edge.props.call_type
-                    break
-
-        if not edge_found:
+        # Verify the edge exists (O(1) lookup via get_calls_edge)
+        edge_props = store.get_calls_edge(
+            body.caller_id, body.callee_id, body.call_file, body.call_line
+        )
+        if edge_props is None:
             raise HTTPException(status_code=404, detail="Edge not found")
+        call_type = edge_props.call_type
 
         review_id = str(uuid4())
         review = {
@@ -309,17 +299,10 @@ def create_review_router() -> APIRouter:
         store = request.app.state.store
 
         # Capture edge call_type before deletion (needed for UC regeneration)
-        call_type = "indirect"  # default fallback
-        if hasattr(store, "list_calls_edges"):
-            for edge in store.list_calls_edges():
-                if (
-                    edge.caller_id == body.caller_id
-                    and edge.callee_id == body.callee_id
-                    and edge.props.call_file == body.call_file
-                    and edge.props.call_line == body.call_line
-                ):
-                    call_type = edge.props.call_type
-                    break
+        edge_props = store.get_calls_edge(
+            body.caller_id, body.callee_id, body.call_file, body.call_line
+        )
+        call_type = edge_props.call_type if edge_props else "indirect"
 
         # Step 1: Delete the CALLS edge
         deleted = store.delete_calls_edge(

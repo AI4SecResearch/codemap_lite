@@ -43,6 +43,10 @@ class GraphStore(Protocol):
         self, caller_id: str, callee_id: str, call_file: str, call_line: int
     ) -> bool: ...
 
+    def get_calls_edge(
+        self, caller_id: str, callee_id: str, call_file: str, call_line: int
+    ) -> CallsEdgeProps | None: ...
+
     def delete_unresolved_call(
         self, caller_id: str, call_file: str, call_line: int
     ) -> None: ...
@@ -213,6 +217,20 @@ class InMemoryGraphStore:
             ):
                 return True
         return False
+
+    def get_calls_edge(
+        self, caller_id: str, callee_id: str, call_file: str, call_line: int
+    ) -> CallsEdgeProps | None:
+        """Return the props of a specific CALLS edge, or None if not found."""
+        for edge in self._calls_edges:
+            if (
+                edge.caller_id == caller_id
+                and edge.callee_id == callee_id
+                and edge.props.call_file == call_file
+                and edge.props.call_line == call_line
+            ):
+                return edge.props
+        return None
 
     def delete_unresolved_call(
         self, caller_id: str, call_file: str, call_line: int
@@ -780,6 +798,33 @@ class Neo4jGraphStore:
                 call_line=call_line,
             ).single()
         return bool(record and record["c"] > 0)
+
+    def get_calls_edge(
+        self, caller_id: str, callee_id: str, call_file: str, call_line: int
+    ) -> CallsEdgeProps | None:
+        """Return the props of a specific CALLS edge, or None if not found."""
+        cypher = (
+            "MATCH (a:Function {id: $caller_id})-[r:CALLS]->(b:Function {id: $callee_id}) "
+            "WHERE r.call_file = $call_file AND r.call_line = $call_line "
+            "RETURN r.resolved_by AS resolved_by, r.call_type AS call_type, "
+            "r.call_file AS call_file, r.call_line AS call_line"
+        )
+        with self._get_driver().session() as session:
+            record = session.run(
+                cypher,
+                caller_id=caller_id,
+                callee_id=callee_id,
+                call_file=call_file,
+                call_line=call_line,
+            ).single()
+        if record is None:
+            return None
+        return CallsEdgeProps(
+            resolved_by=record["resolved_by"],
+            call_type=record["call_type"],
+            call_file=record["call_file"],
+            call_line=record["call_line"],
+        )
 
     def delete_unresolved_call(
         self, caller_id: str, call_file: str, call_line: int
