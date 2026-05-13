@@ -41,10 +41,14 @@ class SourcePointClient:
         return self._parse_response(data)
 
     async def fetch(self) -> list[SourcePointInfo]:
-        """Fetch source points from the codewiki_lite REST API."""
+        """Fetch source points from the codewiki_lite REST API.
+
+        architecture.md §3 Source 点获取: timeout prevents indefinite hang
+        when codewiki_lite is unreachable.
+        """
         import httpx
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.get(f"{self._base_url}/api/v1/source-points")
             resp.raise_for_status()
             return self._parse_response(resp.json())

@@ -826,3 +826,185 @@ def test_inject_files_copies_hooks_and_source_id(orchestrator, tmp_path):
         "log_notification.py" in h.get("command", "")
         for h in settings["hooks"].get("Notification", [])
     )
+
+
+# ---------------------------------------------------------------------------
+# Architecture §3 full lifecycle: retry_count → unresolvable transition
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_retry_stamps_audit_fields_on_graph_store(tmp_path):
+    """architecture.md §3 Retry 审计字段: after gate failure, orchestrator
+    stamps last_attempt_timestamp + last_attempt_reason on each pending GAP
+    reachable from the source. retry_count increments each time."""
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import (
+        FunctionNode,
+        CallsEdgeProps,
+        UnresolvedCallNode,
+    )
+
+    store = InMemoryGraphStore()
+    # Create a source function and a GAP
+    store.create_function(FunctionNode(
+        id="src_a", name="entry", signature="void entry()",
+        file_path="a.cpp", start_line=1, end_line=10, body_hash="h1",
+    ))
+    store.create_function(FunctionNode(
+        id="callee_b", name="target", signature="void target()",
+        file_path="b.cpp", start_line=1, end_line=5, body_hash="h2",
+    ))
+    # Edge from src_a → callee_b so BFS reaches callee_b
+    store.create_calls_edge("src_a", "callee_b", CallsEdgeProps(
+        resolved_by="symbol_table", call_type="direct",
+        call_file="a.cpp", call_line=5,
+    ))
+    # GAP on src_a
+    gap = UnresolvedCallNode(
+        caller_id="src_a",
+        call_expression="fn_ptr(x)",
+        call_file="a.cpp",
+        call_line=7,
+        call_type="indirect",
+        source_code_snippet="fn_ptr(x);",
+        var_name="fn_ptr",
+        var_type="void (*)(int)",
+    )
+    store.create_unresolved_call(gap)
+
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        command="echo",
+        args=["done"],
+        max_concurrency=1,
+        neo4j_uri="bolt://localhost:7687",
+        neo4j_user="neo4j",
+        neo4j_password="test",
+        graph_store=store,
+    )
+    orchestrator = RepairOrchestrator(config=config)
+    # Gate always fails → 3 retries → GAP becomes unresolvable
+    orchestrator._check_gate = AsyncMock(return_value=False)
+
+    results = await orchestrator.run_repairs(["src_a"])
+
+    assert results[0].success is False
+    assert results[0].attempts == 3
+
+    # Verify retry_count was incremented to 3 and status is unresolvable
+    updated_gap = store._unresolved_calls[gap.id]
+    assert updated_gap.retry_count == 3
+    assert updated_gap.status == "unresolvable"
+    assert updated_gap.last_attempt_reason == "gate_failed: remaining pending GAPs"
+    assert updated_gap.last_attempt_timestamp is not None
+
+
+@pytest.mark.asyncio
+async def test_gate_pass_does_not_stamp_retry(tmp_path):
+    """architecture.md §3: when gate passes on first attempt, no retry
+    audit fields should be stamped and retry_count stays at 0."""
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import (
+        FunctionNode,
+        CallsEdgeProps,
+        UnresolvedCallNode,
+    )
+
+    store = InMemoryGraphStore()
+    store.create_function(FunctionNode(
+        id="src_x", name="entry", signature="void entry()",
+        file_path="x.cpp", start_line=1, end_line=10, body_hash="hx",
+    ))
+    gap = UnresolvedCallNode(
+        caller_id="src_x",
+        call_expression="cb()",
+        call_file="x.cpp",
+        call_line=5,
+        call_type="indirect",
+        source_code_snippet="cb();",
+        var_name="cb",
+        var_type="void (*)()",
+    )
+    store.create_unresolved_call(gap)
+
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        command="echo",
+        args=["done"],
+        max_concurrency=1,
+        neo4j_uri="bolt://localhost:7687",
+        neo4j_user="neo4j",
+        neo4j_password="test",
+        graph_store=store,
+    )
+    orchestrator = RepairOrchestrator(config=config)
+    orchestrator._check_gate = AsyncMock(return_value=True)
+
+    results = await orchestrator.run_repairs(["src_x"])
+
+    assert results[0].success is True
+    assert results[0].attempts == 1
+
+    # GAP should NOT have been stamped
+    updated_gap = store._unresolved_calls[gap.id]
+    assert updated_gap.retry_count == 0
+    assert updated_gap.last_attempt_timestamp is None
+
+
+@pytest.mark.asyncio
+async def test_subprocess_timeout_stamps_correct_category(tmp_path):
+    """architecture.md §3 超时护栏: subprocess_timeout stamps
+    'subprocess_timeout: <N>s' as the reason category."""
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import FunctionNode, UnresolvedCallNode
+
+    store = InMemoryGraphStore()
+    store.create_function(FunctionNode(
+        id="src_t", name="entry", signature="void entry()",
+        file_path="t.cpp", start_line=1, end_line=10, body_hash="ht",
+    ))
+    gap = UnresolvedCallNode(
+        caller_id="src_t",
+        call_expression="slow()",
+        call_file="t.cpp",
+        call_line=3,
+        call_type="indirect",
+        source_code_snippet="slow();",
+        var_name="slow",
+        var_type="void (*)()",
+    )
+    store.create_unresolved_call(gap)
+
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        command="python",
+        args=["-c", "import time; time.sleep(60)"],  # Will be killed by timeout
+        max_concurrency=1,
+        neo4j_uri="bolt://localhost:7687",
+        neo4j_user="neo4j",
+        neo4j_password="test",
+        subprocess_timeout_seconds=0.2,
+        graph_store=store,
+    )
+    orchestrator = RepairOrchestrator(config=config)
+
+    results = await orchestrator.run_repairs(["src_t"])
+
+    assert results[0].success is False
+    # All 3 attempts should have timed out
+    updated_gap = store._unresolved_calls[gap.id]
+    assert updated_gap.retry_count == 3
+    assert updated_gap.status == "unresolvable"
+    assert "subprocess_timeout" in (updated_gap.last_attempt_reason or "")
