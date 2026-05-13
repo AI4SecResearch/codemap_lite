@@ -1690,6 +1690,42 @@ class TestEdgeCreation:
             "architecture.md §3: creating edge must delete matching UnresolvedCall"
         )
 
+    def test_create_edge_nonexistent_caller_returns_404(self) -> None:
+        """architecture.md §8: edges must reference valid Function nodes."""
+        client, store = get_test_client()
+        store.create_function(FunctionNode(
+            id="fn_b", name="b", signature="void b()",
+            file_path="x.c", start_line=10, end_line=15, body_hash="h2",
+        ))
+        resp = client.post("/api/v1/edges", json={
+            "caller_id": "nonexistent",
+            "callee_id": "fn_b",
+            "resolved_by": "manual",
+            "call_type": "direct",
+            "call_file": "x.c",
+            "call_line": 3,
+        })
+        assert resp.status_code == 404
+        assert "Caller" in resp.json()["detail"]
+
+    def test_create_edge_nonexistent_callee_returns_404(self) -> None:
+        """architecture.md §8: edges must reference valid Function nodes."""
+        client, store = get_test_client()
+        store.create_function(FunctionNode(
+            id="fn_a", name="a", signature="void a()",
+            file_path="x.c", start_line=1, end_line=5, body_hash="h1",
+        ))
+        resp = client.post("/api/v1/edges", json={
+            "caller_id": "fn_a",
+            "callee_id": "nonexistent",
+            "resolved_by": "manual",
+            "call_type": "direct",
+            "call_file": "x.c",
+            "call_line": 3,
+        })
+        assert resp.status_code == 404
+        assert "Callee" in resp.json()["detail"]
+
 
 class TestEdgeDeletion:
     """architecture.md §5 审阅交互: '标记错误时 → 立即删除该 CALLS 边 + 对应
