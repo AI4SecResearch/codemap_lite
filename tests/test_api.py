@@ -174,6 +174,27 @@ class TestCallersCalleesEndpoint:
         # c should NOT be reachable at depth=1
         assert "c" not in node_ids
 
+    def test_get_callers_nonexistent_function_returns_404(self) -> None:
+        """architecture.md §8: callers endpoint must return 404 for
+        non-existent function, not 200 with empty list."""
+        client, _ = get_test_client()
+        resp = client.get("/api/v1/functions/nonexistent/callers")
+        assert resp.status_code == 404
+
+    def test_get_callees_nonexistent_function_returns_404(self) -> None:
+        """architecture.md §8: callees endpoint must return 404 for
+        non-existent function."""
+        client, _ = get_test_client()
+        resp = client.get("/api/v1/functions/nonexistent/callees")
+        assert resp.status_code == 404
+
+    def test_get_call_chain_nonexistent_function_returns_404(self) -> None:
+        """architecture.md §8: call-chain endpoint must return 404 for
+        non-existent function."""
+        client, _ = get_test_client()
+        resp = client.get("/api/v1/functions/nonexistent/call-chain")
+        assert resp.status_code == 404
+
 
 class TestAnalyzeEndpoint:
     def test_analyze_trigger(self) -> None:

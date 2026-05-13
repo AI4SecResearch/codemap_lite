@@ -26,12 +26,16 @@ def create_graph_router() -> APIRouter:
     @router.get("/functions/{function_id:path}/callers")
     def get_callers(request: Request, function_id: str) -> list[dict[str, Any]]:
         store = request.app.state.store
+        if store.get_function_by_id(function_id) is None:
+            raise HTTPException(status_code=404, detail="Function not found")
         callers = store.get_callers(function_id)
         return [asdict(f) for f in callers]
 
     @router.get("/functions/{function_id:path}/callees")
     def get_callees(request: Request, function_id: str) -> list[dict[str, Any]]:
         store = request.app.state.store
+        if store.get_function_by_id(function_id) is None:
+            raise HTTPException(status_code=404, detail="Function not found")
         callees = store.get_callees(function_id)
         return [asdict(f) for f in callees]
 
@@ -42,6 +46,8 @@ def create_graph_router() -> APIRouter:
         depth: int = Query(default=5, ge=1, le=50),
     ) -> dict[str, Any]:
         store = request.app.state.store
+        if store.get_function_by_id(function_id) is None:
+            raise HTTPException(status_code=404, detail="Function not found")
         subgraph = store.get_reachable_subgraph(function_id, max_depth=depth)
         return {
             "nodes": [asdict(n) for n in subgraph["nodes"]],
