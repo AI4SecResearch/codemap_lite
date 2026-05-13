@@ -71,7 +71,7 @@ from codemap_lite.analysis.repair_orchestrator import (
     RepairOrchestrator,
     SourceRepairResult,
 )
-from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+from codemap_lite.graph.neo4j_store import InMemoryGraphStore, Neo4jGraphStore
 from codemap_lite.graph.schema import CallsEdgeProps, FunctionNode, UnresolvedCallNode
 from codemap_lite.parsing.cpp.plugin import CppPlugin
 from codemap_lite.parsing.plugin_registry import PluginRegistry
@@ -94,11 +94,17 @@ LOG_ROOT = Path(__file__).parent / "_e2e_repair_logs"
 #   * UnpackFuA                       — direct entry with downstream virtuals
 #   * CastStreamManager::OnEvent      — virtual listener fan-out
 #   * WfdSessionImpl::ProcessCommand  — member_fn_ptr handler table
+#   * CastSessionImpl::OnEvent        — another virtual listener branch
+#   * Scheduler::Run                  — thread-pool dispatch loop
+#   * MediaChannel::Dispatch          — channel handler-table dispatch
 DEFAULT_ENTRY_NAMES: tuple[str, ...] = (
     "CastSessionImpl::ProcessSetUp",
     "UnpackFuA",
     "CastStreamManager::OnEvent",
     "WfdSessionImpl::ProcessCommand",
+    "CastSessionImpl::OnEvent",
+    "Scheduler::Run",
+    "MediaChannel::Dispatch",
 )
 
 CANONICAL_RESOLVED_BY = {"symbol_table", "signature", "dataflow", "context", "llm"}
@@ -398,6 +404,62 @@ def _compute_reachable_fn_ids(store: InMemoryGraphStore, source_id: str) -> set[
     """Collect FunctionNode ids reachable from ``source_id`` via CALLS edges."""
     subgraph = store.get_reachable_subgraph(source_id, max_depth=50)
     return {fn.id for fn in subgraph["nodes"]}
+
+
+def mirror_store_to_neo4j(
+    in_mem: InMemoryGraphStore,
+    *,
+    uri: str,
+    user: str,
+    password: str,
+) -> Neo4jGraphStore:
+    """Copy the in-memory static-analysis snapshot into a live Neo4j instance.
+
+    architecture.md §4 规定 Neo4j 是 Phase 3 的权威图存储；harness 之前仅
+    写 ``InMemoryGraphStore``，但注入到目标目录的 ``.icslpreprocess/icsl_tools.py``
+    (CLI, architecture.md §3 Repair Agent 工具协议) 只会连 Neo4j。
+    不把 in-memory snapshot 搬过去，agent subprocess 的 ``query-reachable``
+    就会返回空集、``check-complete`` 虚报完成，调用链永远修不到。
+
+    Wipe policy: only our own 4 schema labels (Function/File/UnresolvedCall/
+    RepairLog) are DETACH-deleted so we never touch non-codemap data that
+    might be sharing the Neo4j instance; relationships attached to those
+    nodes go with them via ``DETACH``.
+
+    The bulk MERGE uses ``Neo4jGraphStore.create_*`` helpers directly so
+    Cypher stays centralized (architecture.md §4: all Neo4j writes route
+    through ``graph/neo4j_store.py``).
+    """
+    neo = Neo4jGraphStore(uri=uri, user=user, password=password)
+    driver = neo._get_driver()
+    with driver.session() as session:
+        session.run(
+            "MATCH (n) "
+            "WHERE any(l IN labels(n) "
+            "          WHERE l IN ['Function','File','UnresolvedCall','RepairLog']) "
+            "DETACH DELETE n"
+        ).consume()
+
+    for fn in in_mem._functions.values():
+        neo.create_function(fn)
+    for file_node in in_mem._files.values():
+        neo.create_file(file_node)
+    for edge in in_mem._calls_edges:
+        neo.create_calls_edge(edge.caller_id, edge.callee_id, edge.props)
+    for uc in in_mem._unresolved_calls.values():
+        neo.create_unresolved_call(uc)
+    for repair_log in in_mem._repair_logs.values():
+        neo.create_repair_log(repair_log)
+
+    logger.info(
+        "mirrored to Neo4j: %d functions, %d files, %d calls, %d unresolved, %d repair_logs",
+        len(in_mem._functions),
+        len(in_mem._files),
+        len(in_mem._calls_edges),
+        len(in_mem._unresolved_calls),
+        len(in_mem._repair_logs),
+    )
+    return neo
 
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", re.DOTALL)
@@ -881,6 +943,19 @@ async def _main_async(args: argparse.Namespace) -> RunReport:
         for ep in entry_points
     }
 
+    # Bridge InMemory → Neo4j so the agent subprocess's icsl_tools CLI
+    # (which only talks to Neo4j, see architecture.md §3 + §4) sees the
+    # same graph the harness's in-process gate sees.
+    neo4j_uri = "bolt://localhost:7687"
+    neo4j_user = "neo4j"
+    neo4j_password = os.environ.get("NEO4J_PASSWORD", "password")
+    neo_store = mirror_store_to_neo4j(
+        store,
+        uri=neo4j_uri,
+        user=neo4j_user,
+        password=neo4j_password,
+    )
+
     logger.info("stage D: repair loop")
     llm_env = env_info["llm_env"]
     repair_config = RepairConfig(
@@ -895,8 +970,12 @@ async def _main_async(args: argparse.Namespace) -> RunReport:
             "--dangerously-skip-permissions",
         ],
         max_concurrency=args.concurrency,
+        neo4j_uri=neo4j_uri,
+        neo4j_user=neo4j_user,
+        neo4j_password=neo4j_password,
         env=llm_env,
         log_dir=LOG_ROOT,
+        graph_store=neo_store,
     )
     harness = E2ERepairHarness(
         config=repair_config, store=store, source_reach=source_reach
@@ -943,6 +1022,7 @@ async def _main_async(args: argparse.Namespace) -> RunReport:
     finally:
         backend_server.should_exit = True
         backend_thread.join(timeout=5)
+        neo_store.close()
 
     # Success = no invariant violations AND backend probes all green.
     # Repair success is surfaced per-entry but does NOT gate the run —
