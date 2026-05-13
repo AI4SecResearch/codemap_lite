@@ -186,6 +186,10 @@ def test_cascade_regenerates_unresolved_calls_for_affected_callers():
     assert gaps[0].call_file == "src/b.cpp"
     assert gaps[0].call_line == 5
     assert gaps[0].call_type == "indirect"
+    # architecture.md §7 step 3: regenerated UC must have retry_count=0
+    # so the repair agent treats it as a fresh GAP (not a stale retry).
+    assert gaps[0].retry_count == 0
+    assert gaps[0].status == "pending"
 
 
 def test_pipeline_incremental_invalidates_modified_files():
@@ -363,6 +367,57 @@ def test_cascade_invalidation_deletes_repair_log_for_llm_edges():
     assert len(result.regenerated_unresolved_calls) == 1
     # foo must be in affected_callers
     assert "foo" in result.affected_callers
+
+
+def test_invalidation_result_exposes_affected_source_ids():
+    """architecture.md §7 step 5: the orchestrator needs to know which
+    SourcePoints were affected by cascade invalidation so it can trigger
+    re-repair. InvalidationResult must expose affected_source_ids."""
+    from codemap_lite.graph.schema import SourcePointNode
+
+    store = InMemoryGraphStore()
+
+    # Two callers in different files, both with LLM edges to target in a.cpp
+    store.create_function(FunctionNode(
+        id="caller1", name="caller1", signature="void caller1()",
+        file_path="src/b.cpp", start_line=1, end_line=5, body_hash="h1",
+    ))
+    store.create_function(FunctionNode(
+        id="caller2", name="caller2", signature="void caller2()",
+        file_path="src/c.cpp", start_line=1, end_line=5, body_hash="h2",
+    ))
+    store.create_function(FunctionNode(
+        id="target", name="target", signature="void target()",
+        file_path="src/a.cpp", start_line=1, end_line=5, body_hash="ht",
+    ))
+    store.create_calls_edge("caller1", "target", CallsEdgeProps(
+        resolved_by="llm", call_type="indirect",
+        call_file="src/b.cpp", call_line=3,
+    ))
+    store.create_calls_edge("caller2", "target", CallsEdgeProps(
+        resolved_by="llm", call_type="indirect",
+        call_file="src/c.cpp", call_line=7,
+    ))
+
+    # SourcePoints for both callers
+    store.create_source_point(SourcePointNode(
+        id="caller1", function_id="caller1",
+        entry_point_kind="callback_registration", reason="test", status="complete",
+    ))
+    store.create_source_point(SourcePointNode(
+        id="caller2", function_id="caller2",
+        entry_point_kind="entry_point", reason="test", status="complete",
+    ))
+
+    updater = IncrementalUpdater(store=store)
+    result = updater.invalidate_file("src/a.cpp")
+
+    # Both callers should be in affected_source_ids
+    assert hasattr(result, "affected_source_ids"), (
+        "InvalidationResult must expose affected_source_ids for orchestrator"
+    )
+    assert "caller1" in result.affected_source_ids
+    assert "caller2" in result.affected_source_ids
 
 
 def test_invalidate_file_resets_source_point_status_to_pending():

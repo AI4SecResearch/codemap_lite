@@ -821,6 +821,10 @@ class TestEdgeCentricReview:
         assert ucs[0].caller_id == "fn_dispatch"
         assert ucs[0].call_file == "src/main.c"
         assert ucs[0].call_line == 15
+        # architecture.md §5: regenerated UC must have retry_count=0
+        # so the repair agent treats it as a fresh GAP.
+        assert ucs[0].retry_count == 0
+        assert ucs[0].status == "pending"
 
     def test_review_nonexistent_edge_returns_404(self) -> None:
         """Cannot review an edge that doesn't exist."""

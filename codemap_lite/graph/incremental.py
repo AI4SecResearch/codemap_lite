@@ -16,6 +16,7 @@ class InvalidationResult:
     removed_unresolved_calls: list[str] = field(default_factory=list)
     affected_callers: list[str] = field(default_factory=list)
     regenerated_unresolved_calls: list[str] = field(default_factory=list)
+    affected_source_ids: list[str] = field(default_factory=list)
 
 
 class IncrementalUpdater:
@@ -118,5 +119,9 @@ class IncrementalUpdater:
             sp = self._store.get_source_point(source_id)
             if sp is not None and getattr(sp, "status", "") != "pending":
                 self._store.update_source_point_status(source_id, "pending")
+
+        # Expose affected_source_ids so the orchestrator can trigger re-repair
+        # (architecture.md §7 step 5).
+        result.affected_source_ids = list(affected_source_ids)
 
         return result
