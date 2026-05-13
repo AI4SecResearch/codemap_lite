@@ -1108,6 +1108,20 @@ class TestFeedbackEndpoint:
         # provenance without hitting /repair-logs.
         assert "total_repair_logs" in data
         assert data["total_repair_logs"] == 0
+        # Source points count (architecture.md §8).
+        assert "total_source_points" in data
+        assert data["total_source_points"] == 0
+
+    def test_get_stats_total_source_points(self) -> None:
+        """/stats reports total_source_points from app.state.source_points."""
+        client, _ = get_test_client()
+        client.app.state.source_points = [
+            {"id": "sp1", "kind": "callback_registration", "module": "m1"},
+            {"id": "sp2", "kind": "entry_point", "module": "m2"},
+        ]
+        resp = client.get("/api/v1/stats")
+        assert resp.status_code == 200
+        assert resp.json()["total_source_points"] == 2
 
     def test_get_stats_total_feedback_with_store(self, tmp_path) -> None:
         """/stats reports `total_feedback` from the wired FeedbackStore so
