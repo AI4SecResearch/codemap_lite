@@ -420,6 +420,44 @@ class TestAnalyzeEndpoint:
         assert s["edges_written"] == 4
         assert s["last_error"] == "gate_failed: 3 pending GAPs remain"
 
+    def test_analyze_background_incremental_exposes_affected_source_ids(self) -> None:
+        """architecture.md §7 step 5: after incremental analysis, the analyze
+        state must expose affected_source_ids so the frontend/CLI knows which
+        sources need re-repair."""
+        from unittest.mock import patch, MagicMock
+        from codemap_lite.api.routes.analyze import _run_analysis_background
+
+        store = InMemoryGraphStore()
+        app = create_app(store=store)
+
+        # Mock PipelineOrchestrator to return affected_source_ids
+        mock_result = MagicMock()
+        mock_result.files_scanned = 3
+        mock_result.functions_found = 10
+        mock_result.direct_calls = 5
+        mock_result.unresolved_calls = 2
+        mock_result.success = True
+        mock_result.affected_source_ids = ["src_001", "src_002"]
+
+        mock_orch = MagicMock()
+        mock_orch.run_incremental_analysis.return_value = mock_result
+
+        mock_settings = MagicMock()
+        mock_settings.project.target_dir = "/tmp/test"
+
+        with patch(
+            "codemap_lite.pipeline.orchestrator.PipelineOrchestrator",
+            return_value=mock_orch,
+        ):
+            _run_analysis_background(app, mock_settings, "incremental")
+
+        state = app.state.analyze_state
+        assert "affected_source_ids" in state.get("result", {}), (
+            "architecture.md §7 step 5: incremental analysis result must "
+            "expose affected_source_ids for re-repair trigger"
+        )
+        assert state["result"]["affected_source_ids"] == ["src_001", "src_002"]
+
 
 class TestSourcePointsEndpoint:
     def test_get_source_points_empty(self) -> None:

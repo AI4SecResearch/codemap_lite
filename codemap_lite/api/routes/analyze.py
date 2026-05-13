@@ -111,6 +111,7 @@ def _run_analysis_background(app: Any, settings: Any, mode: str) -> None:
                 "direct_calls": result.direct_calls,
                 "unresolved_calls": result.unresolved_calls,
                 "success": result.success,
+                "affected_source_ids": getattr(result, "affected_source_ids", []),
             },
         }
     except Exception as exc:
