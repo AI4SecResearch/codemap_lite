@@ -81,6 +81,29 @@ def test_check_complete_returns_false_when_pending(mock_graph_store):
     assert result["remaining_gaps"] == 1
 
 
+def test_check_complete_accepts_dataclass_pending_gaps():
+    """Regression: Neo4jGraphStore + InMemoryGraphStore return
+    ``list[UnresolvedCallNode]`` dataclasses, not list[dict]. Prior
+    impl crashed with ``TypeError: 'UnresolvedCallNode' object is not
+    subscriptable`` against production stores, silently flipping every
+    gate check to False. architecture.md §3 门禁机制 requires
+    ``check-complete`` to work uniformly across store shapes.
+    """
+
+    class _FakeGap:
+        def __init__(self, gap_id: str) -> None:
+            self.id = gap_id
+
+    class _DataclassStore:
+        def get_pending_gaps_for_source(self, source_id):
+            return [_FakeGap("gap_001"), _FakeGap("gap_002")]
+
+    result = check_complete(source_id="src_001", store=_DataclassStore())
+    assert result["complete"] is False
+    assert result["remaining_gaps"] == 2
+    assert result["pending_gap_ids"] == ["gap_001", "gap_002"]
+
+
 # --- Fixtures ---
 
 import pytest

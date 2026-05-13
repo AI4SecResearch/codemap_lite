@@ -46,7 +46,10 @@ class GraphStoreProtocol(Protocol):
     def create_calls_edge(self, caller_id: str, callee_id: str, props: dict[str, Any]) -> None: ...
     def create_repair_log(self, log_data: dict[str, Any]) -> None: ...
     def delete_unresolved_call(self, caller_id: str, call_file: str, call_line: int) -> None: ...
-    def get_pending_gaps_for_source(self, source_id: str) -> list[dict[str, Any]]: ...
+    def get_pending_gaps_for_source(self, source_id: str) -> list[Any]: ...
+    # Real stores (InMemoryGraphStore / Neo4jGraphStore) return
+    # list[UnresolvedCallNode] dataclasses; the test harness returns
+    # list[dict]. ``check_complete`` accepts either via ``_gap_id``.
 
 
 def query_reachable(source_id: str, store: GraphStoreProtocol) -> dict[str, Any]:
@@ -108,13 +111,30 @@ def write_edge(
     return {"skipped": False, "edge_created": True}
 
 
+def _gap_id(gap: Any) -> str:
+    """Extract the ``id`` field from a pending-gap record.
+
+    architecture.md §3 门禁机制: ``check-complete`` returns
+    ``pending_gap_ids``, but the GraphStoreProtocol does not nail down
+    whether stores hand back dataclasses or dicts. Real stores
+    (InMemoryGraphStore / Neo4jGraphStore) return
+    ``UnresolvedCallNode`` dataclasses; the test harness returns
+    ``list[dict]``. Both shapes carry an ``id`` — accept either so the
+    CLI does not raise ``TypeError: 'UnresolvedCallNode' object is not
+    subscriptable`` against production stores.
+    """
+    if isinstance(gap, dict):
+        return gap["id"]
+    return gap.id
+
+
 def check_complete(source_id: str, store: GraphStoreProtocol) -> dict[str, Any]:
     """Check if all reachable GAPs for a source point are resolved."""
     pending = store.get_pending_gaps_for_source(source_id)
     return {
         "complete": len(pending) == 0,
         "remaining_gaps": len(pending),
-        "pending_gap_ids": [g["id"] for g in pending],
+        "pending_gap_ids": [_gap_id(g) for g in pending],
     }
 
 
