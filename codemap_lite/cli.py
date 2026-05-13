@@ -16,14 +16,20 @@ app = typer.Typer(help="codemap-lite: function-level call graph construction + i
 
 
 def _load_settings(config: str):
-    """Load Settings from YAML, exiting with a clear message if missing."""
+    """Load Settings from YAML, exiting with a clear message if missing/invalid."""
+    from pydantic import ValidationError
+
     from codemap_lite.config.settings import Settings
 
     path = Path(config)
     if not path.exists():
         typer.echo(f"error: config file not found: {path}", err=True)
         raise typer.Exit(code=2)
-    return Settings.from_yaml(path)
+    try:
+        return Settings.from_yaml(path)
+    except ValidationError as exc:
+        typer.echo(f"error: invalid config: {exc}", err=True)
+        raise typer.Exit(code=2)
 
 
 @app.command()

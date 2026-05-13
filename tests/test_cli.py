@@ -193,7 +193,8 @@ def test_repair_rejects_unknown_backend(tmp_path):
         app, ["repair", "--config", str(cfg), "--source-points-file", str(sp_path)]
     )
     assert result.exit_code != 0
-    assert "wat" in result.output or "wat" in (result.stderr or "")
+    # Pydantic ValidationError is caught by _load_settings and echoed
+    assert "wat" in result.output or "invalid config" in result.output
 
 
 # --- status ------------------------------------------------------------------

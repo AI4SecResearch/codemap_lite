@@ -3,7 +3,10 @@ import os
 import tempfile
 from pathlib import Path
 
-from codemap_lite.config.settings import Settings
+import pytest
+from pydantic import ValidationError
+
+from codemap_lite.config.settings import AgentConfig, Settings
 
 
 def test_settings_from_yaml_loads_all_sections():
@@ -88,3 +91,24 @@ def test_subprocess_timeout_seconds_from_yaml(tmp_path):
     )
     settings = Settings.from_yaml(config_file)
     assert settings.agent.subprocess_timeout_seconds == 120.5
+
+
+class TestAgentConfigBackendEnum:
+    """architecture.md §10 配置校验: agent.backend must be enum-constrained."""
+
+    def test_valid_backends_accepted(self):
+        """Both 'claudecode' and 'opencode' are valid backend values."""
+        assert AgentConfig(backend="claudecode").backend == "claudecode"
+        assert AgentConfig(backend="opencode").backend == "opencode"
+
+    def test_invalid_backend_raises_validation_error(self):
+        """Invalid backend value must raise ValidationError at config load time."""
+        with pytest.raises(ValidationError):
+            AgentConfig(backend="invalid_backend")
+
+    def test_invalid_backend_in_yaml_raises(self, tmp_path):
+        """Loading a YAML with invalid agent.backend must fail validation."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("agent:\n  backend: \"not_a_backend\"\n")
+        with pytest.raises(ValidationError):
+            Settings.from_yaml(config_file)

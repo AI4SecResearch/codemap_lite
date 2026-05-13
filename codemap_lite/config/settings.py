@@ -1,7 +1,7 @@
 """Configuration management — Pydantic Settings with YAML + env var support."""
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field
@@ -33,7 +33,7 @@ class OpenCodeConfig(BaseModel):
 
 
 class AgentConfig(BaseModel):
-    backend: str = "claudecode"
+    backend: Literal["claudecode", "opencode"] = "claudecode"
     max_concurrency: int = 5
     retry_failed_gaps: bool = True
     subprocess_timeout_seconds: float | None = None
