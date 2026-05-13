@@ -51,11 +51,11 @@ def test_orchestrator_creates_injection_files(orchestrator, tmp_path):
 
     assert (target_dir / "CLAUDE.md").exists()
     assert (target_dir / ".claude" / "settings.json").exists()
-    assert (target_dir / ".icslpreprocess" / "config.yaml").exists()
-    assert (target_dir / ".icslpreprocess" / "counter_examples.md").exists()
+    assert (target_dir / ".icslpreprocess_src_001" / "config.yaml").exists()
+    assert (target_dir / ".icslpreprocess_src_001" / "counter_examples.md").exists()
     # Closes Known gap #1: icsl_tools.py must ship to the target dir so the
     # agent CLI invocations declared in claude_md_template work end-to-end.
-    injected = target_dir / ".icslpreprocess" / "icsl_tools.py"
+    injected = target_dir / ".icslpreprocess_src_001" / "icsl_tools.py"
     assert injected.exists()
     # Sanity-check that what we copied is the real module, not a stub.
     content = injected.read_text(encoding="utf-8")
@@ -77,7 +77,7 @@ def test_orchestrator_cleans_injection_files(orchestrator, tmp_path):
     orchestrator._cleanup_injection(target_dir, "src_001")
 
     assert not (target_dir / "CLAUDE.md").exists()
-    assert not (target_dir / ".icslpreprocess").exists()
+    assert not (target_dir / ".icslpreprocess_src_001").exists()
 
 
 def test_orchestrator_backs_up_existing_claude_md(orchestrator, tmp_path):
@@ -192,6 +192,38 @@ def test_concurrent_sources_use_independent_backups(orchestrator, tmp_path):
     assert original_md.read_text() == "# Original"
 
 
+def test_concurrent_sources_have_isolated_icslpreprocess_dirs(orchestrator, tmp_path):
+    """architecture.md §3: source 间并发 — each source gets its own
+    .icslpreprocess_{source_id}/ directory. Cleanup of one source must
+    NOT remove another source's injected tools/config."""
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    # Inject for two sources concurrently
+    orchestrator._inject_files(target_dir=target_dir, source_id="src_A", counter_examples="# A")
+    orchestrator._inject_files(target_dir=target_dir, source_id="src_B", counter_examples="# B")
+
+    # Both have their own directories
+    dir_a = target_dir / ".icslpreprocess_src_A"
+    dir_b = target_dir / ".icslpreprocess_src_B"
+    assert dir_a.exists()
+    assert dir_b.exists()
+    assert (dir_a / "icsl_tools.py").exists()
+    assert (dir_b / "icsl_tools.py").exists()
+    assert (dir_a / "counter_examples.md").read_text() == "# A"
+    assert (dir_b / "counter_examples.md").read_text() == "# B"
+
+    # Cleanup of A does NOT affect B
+    orchestrator._cleanup_injection(target_dir, "src_A")
+    assert not dir_a.exists()
+    assert dir_b.exists()
+    assert (dir_b / "icsl_tools.py").exists()
+
+    # Cleanup of B removes B
+    orchestrator._cleanup_injection(target_dir, "src_B")
+    assert not dir_b.exists()
+
+
 @pytest.mark.asyncio
 async def test_orchestrator_respects_concurrency_limit(repair_config, tmp_path):
     target_dir = tmp_path / "target_code"
@@ -250,7 +282,7 @@ async def test_orchestrator_retries_on_gate_failure(repair_config, tmp_path):
 
 @pytest.mark.asyncio
 async def test_orchestrator_injects_feedback_store_counter_examples(tmp_path):
-    """Counter examples from FeedbackStore must land in .icslpreprocess/counter_examples.md.
+    """Counter examples from FeedbackStore must land in .icslpreprocess_{source_id}/counter_examples.md.
 
     architecture.md §3 反馈机制 step 4: "更新 counter_examples.md（最新反例库）".
     """
@@ -292,7 +324,7 @@ async def test_orchestrator_injects_feedback_store_counter_examples(tmp_path):
         )
         # Snapshot the written file before _cleanup_injection removes it.
         captured["on_disk"] = (
-            target_dir / ".icslpreprocess" / "counter_examples.md"
+            target_dir / ".icslpreprocess_src_001" / "counter_examples.md"
         ).read_text(encoding="utf-8")
 
     orchestrator._inject_files = spy  # type: ignore[assignment]
@@ -305,7 +337,7 @@ async def test_orchestrator_injects_feedback_store_counter_examples(tmp_path):
     assert "legacy_handler" in captured["ce"]
     assert "modern_handler" in captured["ce"]
     assert "dispatcher vtable resolution" in captured["ce"]
-    # And the same content hit .icslpreprocess/counter_examples.md
+    # And the same content hit .icslpreprocess_src_001/counter_examples.md
     assert "dispatcher->handle(req)" in captured["on_disk"]
     assert "modern_handler" in captured["on_disk"]
 
@@ -803,7 +835,7 @@ async def test_orchestrator_no_timeout_when_not_configured(tmp_path):
 @pytest.mark.asyncio
 async def test_check_gate_invokes_icsl_tools_check_complete_subprocess(orchestrator):
     """architecture.md §3 门禁机制: _check_gate must subprocess-exec
-    ``python .icslpreprocess/icsl_tools.py check-complete --source <id>``
+    ``python .icslpreprocess_{source_id}/icsl_tools.py check-complete --source <id>``
     in target_dir and parse ``{"complete": bool}`` from stdout.
     """
     fake_proc = MagicMock()
@@ -825,7 +857,7 @@ async def test_check_gate_invokes_icsl_tools_check_complete_subprocess(orchestra
     assert "check-complete" in cmd_args
     assert "--source" in cmd_args
     assert "src_001" in cmd_args
-    # Subprocess must run in target_dir so .icslpreprocess/ resolves.
+    # Subprocess must run in target_dir so .icslpreprocess_{source_id}/ resolves.
     assert spawn.call_args.kwargs["cwd"] == str(orchestrator._config.target_dir)
 
 
@@ -1028,7 +1060,7 @@ async def test_write_progress_merges_with_hook_written_fields(tmp_path):
 
 
 def test_inject_files_copies_hooks_and_source_id(orchestrator, tmp_path):
-    """Bug #1/#3: hooks must be copied to .icslpreprocess/hooks/ and
+    """Bug #1/#3: hooks must be copied to .icslpreprocess_{source_id}/hooks/ and
     source_id.txt must exist so hook scripts can identify the source."""
     target_dir = tmp_path / "target_code"
     target_dir.mkdir()
@@ -1039,7 +1071,7 @@ def test_inject_files_copies_hooks_and_source_id(orchestrator, tmp_path):
         counter_examples="",
     )
 
-    hooks_dir = target_dir / ".icslpreprocess" / "hooks"
+    hooks_dir = target_dir / ".icslpreprocess_src_hook_test" / "hooks"
     assert hooks_dir.is_dir()
     assert (hooks_dir / "log_notification.py").exists()
     assert (hooks_dir / "log_tool_use.py").exists()
@@ -1052,7 +1084,7 @@ def test_inject_files_copies_hooks_and_source_id(orchestrator, tmp_path):
         )
 
     # source_id.txt must contain the source_id (Bug #3)
-    sid_path = target_dir / ".icslpreprocess" / "source_id.txt"
+    sid_path = target_dir / ".icslpreprocess_src_hook_test" / "source_id.txt"
     assert sid_path.exists()
     assert sid_path.read_text(encoding="utf-8") == "src_hook_test"
 
@@ -1272,7 +1304,7 @@ async def test_check_gate_real_subprocess_returns_false_on_neo4j_error(tmp_path)
     )
     orchestrator = RepairOrchestrator(config=config)
 
-    # Inject files so .icslpreprocess/icsl_tools.py exists
+    # Inject files so .icslpreprocess_src_gate_test/icsl_tools.py exists
     orchestrator._inject_files(
         target_dir=target_dir,
         source_id="src_gate_test",
@@ -1288,7 +1320,7 @@ async def test_check_gate_real_subprocess_returns_false_on_neo4j_error(tmp_path)
 
 @pytest.mark.asyncio
 async def test_check_gate_returns_false_when_icsl_tools_missing(tmp_path):
-    """_check_gate must return False (not crash) when .icslpreprocess/
+    """_check_gate must return False (not crash) when .icslpreprocess_{source_id}/
     icsl_tools.py doesn't exist — e.g. if cleanup ran early."""
     target_dir = tmp_path / "target_code"
     target_dir.mkdir()
@@ -1679,7 +1711,7 @@ async def test_orchestrator_updates_source_point_status_on_exhaustion(tmp_path):
 async def test_feedback_loop_injects_counter_examples_into_next_repair(tmp_path):
     """architecture.md §3 反馈机制 + §13 验证方案:
     Counter-examples submitted via feedback must appear in the agent's
-    .icslpreprocess/counter_examples.md on the next repair run.
+    .icslpreprocess_{source_id}/counter_examples.md on the next repair run.
 
     Full chain: feedback_store.add() → orchestrator._inject_files() →
     counter_examples.md contains the pattern.

@@ -152,7 +152,9 @@ def check_complete(source_id: str, store: GraphStoreProtocol) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-_DEFAULT_CONFIG_PATH = ".icslpreprocess/config.yaml"
+# Default config path: same directory as this script (works when copied to
+# .icslpreprocess_{source_id}/ by the orchestrator).
+_DEFAULT_CONFIG_PATH = str(Path(__file__).parent / "config.yaml")
 
 
 def _json_default(obj: Any) -> Any:

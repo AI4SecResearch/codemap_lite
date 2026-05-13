@@ -383,7 +383,7 @@ def test_cli_subprocess_end_to_end(tmp_path):
         counter_examples="",
     )
 
-    injected = target_dir / ".icslpreprocess" / "icsl_tools.py"
+    injected = target_dir / ".icslpreprocess_src_001" / "icsl_tools.py"
     result = subprocess.run(
         [sys.executable, str(injected), "--help"],
         capture_output=True,

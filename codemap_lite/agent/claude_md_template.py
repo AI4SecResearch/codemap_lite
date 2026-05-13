@@ -8,6 +8,12 @@ def generate_claude_md(
     counter_examples_path: str = ".icslpreprocess/counter_examples.md",
 ) -> str:
     """Generate CLAUDE.md content for a repair agent working on a specific source point."""
+    # Derive the icsl_tools.py path from the config path's parent directory
+    # (e.g. ".icslpreprocess_src_001/config.yaml" → ".icslpreprocess_src_001/icsl_tools.py")
+    from pathlib import PurePosixPath
+    icsl_dir = str(PurePosixPath(neo4j_config_path).parent)
+    icsl_tools = f"{icsl_dir}/icsl_tools.py"
+
     return f"""# Repair Agent — Source Point {source_id}
 
 ## Role
@@ -18,16 +24,16 @@ and write resolved edges to the call graph.
 
 ## Tools
 
-Use `.icslpreprocess/icsl_tools.py` for all graph operations:
+Use `{icsl_tools}` for all graph operations:
 
-- `python .icslpreprocess/icsl_tools.py query-reachable --source {source_id}`
+- `python {icsl_tools} query-reachable --source {source_id}`
   → Returns the reachable subgraph (nodes, edges, unresolved calls)
 
-- `python .icslpreprocess/icsl_tools.py write-edge --caller <id> --callee <id> --call-type <type> --call-file <file> --call-line <line> [--llm-response <raw>] [--reasoning-summary <one-sentence justification>]`
+- `python {icsl_tools} write-edge --caller <id> --callee <id> --call-type <type> --call-file <file> --call-line <line> [--llm-response <raw>] [--reasoning-summary <one-sentence justification>]`
   → Writes a CALLS edge + RepairLog, deletes the UnresolvedCall.
   → `--llm-response` / `--reasoning-summary` populate `RepairLogNode.llm_response` / `reasoning_summary` and are surfaced to human reviewers in the call-graph UI — **pass both on every edge you resolve here** (see "Reasoning capture" below).
 
-- `python .icslpreprocess/icsl_tools.py check-complete --source {source_id}`
+- `python {icsl_tools} check-complete --source {source_id}`
   → Checks if all reachable GAPs are resolved
 
 ## Configuration

@@ -4,18 +4,19 @@ from __future__ import annotations
 
 def build_repair_prompt(source_id: str) -> str:
     """Build the prompt passed to the CLI agent for repairing a specific source point."""
+    icsl_dir = f".icslpreprocess_{source_id}"
     return f"""You are repairing indirect calls for source point {source_id}.
 
 Follow these steps:
 
-1. Run: python .icslpreprocess/icsl_tools.py query-reachable --source {source_id}
+1. Run: python {icsl_dir}/icsl_tools.py query-reachable --source {source_id}
    This returns the reachable subgraph with all UnresolvedCalls.
 
 2. For each UnresolvedCall:
    - Read the source file at the call location
    - Analyze variable types, assignments, and context
    - Identify the correct call target(s)
-   - Run: python .icslpreprocess/icsl_tools.py write-edge --caller <caller_id> --callee <callee_id> --call-type <indirect|virtual> --call-file <file> --call-line <line> --llm-response "<your analysis excerpt>" --reasoning-summary "<one-sentence justification>"
+   - Run: python {icsl_dir}/icsl_tools.py write-edge --caller <caller_id> --callee <callee_id> --call-type <indirect|virtual> --call-file <file> --call-line <line> --llm-response "<your analysis excerpt>" --reasoning-summary "<one-sentence justification>"
 
 3. After processing all current UnresolvedCalls, run query-reachable again.
    New UnresolvedCalls may appear as newly reachable nodes are discovered.

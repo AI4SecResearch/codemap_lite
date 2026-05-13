@@ -32,10 +32,12 @@ if __name__ == "__main__":
     import sys
 
     # Invoked by Claude Code / opencode hook system.
-    # Reads JSON event from stdin; source_id from .icslpreprocess/source_id.txt;
+    # Reads JSON event from stdin; source_id from ../source_id.txt (relative
+    # to hooks/ dir inside .icslpreprocess_{source_id}/);
     # gap_id from the event payload (falls back to "unknown").
     cwd = Path.cwd()
-    source_id_path = cwd / ".icslpreprocess" / "source_id.txt"
+    # Resolve source_id.txt relative to this script's parent directory
+    source_id_path = Path(__file__).resolve().parent.parent / "source_id.txt"
     if not source_id_path.exists():
         sys.exit(0)  # Graceful no-op if not in a repair context
     source_id = source_id_path.read_text(encoding="utf-8").strip()

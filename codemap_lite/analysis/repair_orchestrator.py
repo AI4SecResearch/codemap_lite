@@ -113,11 +113,14 @@ class RepairOrchestrator:
         # Write CLAUDE.md
         from codemap_lite.agent.claude_md_template import generate_claude_md
 
+        # Use source-specific .icslpreprocess directory to avoid race
+        # conditions when multiple sources run concurrently (§3).
+        icsl_dirname = f".icslpreprocess_{source_id}"
         claude_md_path.write_text(
             generate_claude_md(
                 source_id=source_id,
-                neo4j_config_path=".icslpreprocess/config.yaml",
-                counter_examples_path=".icslpreprocess/counter_examples.md",
+                neo4j_config_path=f"{icsl_dirname}/config.yaml",
+                counter_examples_path=f"{icsl_dirname}/counter_examples.md",
             ),
             encoding="utf-8",
         )
@@ -127,16 +130,16 @@ class RepairOrchestrator:
         claude_dir.mkdir(parents=True, exist_ok=True)
         settings = {
             "hooks": {
-                "PostToolUse": [{"command": "python .icslpreprocess/hooks/log_tool_use.py"}],
-                "Notification": [{"command": "python .icslpreprocess/hooks/log_notification.py"}],
+                "PostToolUse": [{"command": f"python {icsl_dirname}/hooks/log_tool_use.py"}],
+                "Notification": [{"command": f"python {icsl_dirname}/hooks/log_notification.py"}],
             }
         }
         (claude_dir / "settings.json").write_text(
             json.dumps(settings, indent=2), encoding="utf-8"
         )
 
-        # Write .icslpreprocess/ directory
-        icsl_dir = target_dir / ".icslpreprocess"
+        # Write source-specific .icslpreprocess_{source_id}/ directory
+        icsl_dir = target_dir / icsl_dirname
         icsl_dir.mkdir(parents=True, exist_ok=True)
 
         # Copy icsl_tools.py so the agent CLI invocation (see architecture §3
@@ -181,8 +184,8 @@ class RepairOrchestrator:
         Uses source-specific backup names to avoid race conditions when
         multiple sources run concurrently (architecture.md §3).
         """
-        # Remove .icslpreprocess/
-        icsl_dir = target_dir / ".icslpreprocess"
+        # Remove source-specific .icslpreprocess_{source_id}/
+        icsl_dir = target_dir / f".icslpreprocess_{source_id}"
         if icsl_dir.exists():
             shutil.rmtree(icsl_dir)
 
@@ -433,7 +436,7 @@ class RepairOrchestrator:
         """Check if all reachable GAPs for a source are resolved.
 
         architecture.md §3 门禁机制: orchestrator invokes the agent-side
-        tool CLI ``python .icslpreprocess/icsl_tools.py check-complete
+        tool CLI ``python .icslpreprocess_{source_id}/icsl_tools.py check-complete
         --source <id>`` in the target directory and parses its JSON
         response ``{"complete": bool, "remaining_gaps": int,
         "pending_gap_ids": [...]}``. Returns True only on
@@ -446,7 +449,7 @@ class RepairOrchestrator:
         ``orchestrator._check_gate = AsyncMock(return_value=True)``.
         """
         target_dir = self._config.target_dir
-        tool_path = target_dir / ".icslpreprocess" / "icsl_tools.py"
+        tool_path = target_dir / f".icslpreprocess_{source_id}" / "icsl_tools.py"
         cmd = [
             sys.executable,
             str(tool_path),
@@ -493,15 +496,12 @@ class RepairOrchestrator:
         if store is None:
             return
         timestamp = datetime.now(timezone.utc).isoformat()
-        for gap in store.get_unresolved_calls(status="pending"):
-            # Limit audit stamp to GAPs actually owned by this source's
-            # caller chain — but we don't have cheap reverse lookup here,
-            # so stamp all pending GAPs for this source's caller set via
-            # the source_id's reachable subgraph.
-            if self._is_gap_in_source(store, source_id, gap.caller_id):
-                store.update_unresolved_call_retry_state(
-                    call_id=gap.id, timestamp=timestamp, reason=reason
-                )
+        # Use the source-scoped query directly — avoids fetching ALL pending
+        # gaps then filtering, which is O(total_gaps) instead of O(source_gaps).
+        for gap in store.get_pending_gaps_for_source(source_id):
+            store.update_unresolved_call_retry_state(
+                call_id=gap.id, timestamp=timestamp, reason=reason
+            )
 
     def _update_source_status(self, source_id: str, status: str) -> None:
         """Update SourcePoint.status in the graph store.
