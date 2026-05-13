@@ -209,6 +209,10 @@ codemap-lite serve    [--config PATH] [--port 8000]     # 启 FastAPI
 - `codemap-lite repair` / `status` / `serve` 已从 stub 升级为真实编排（2026-05-12）：`repair` 读 config → `SourcePointClient.load_from_file` 或 `.fetch()` → `RepairOrchestrator.run_repairs` 并发修复并汇总成功/失败；`status` 读 `.icslpreprocess/state.json` + `logs/repair/*/progress.json`；`serve` 真实 `uvicorn.run(create_app(), host, port)`。`analyze` 增量分支保持原状。
 - `docs/agents/domain.md` 规定仓库根目录应有一个 `CONTEXT.md`，目前不存在——本 CLAUDE.md 暂时兼任 root context；待 domain docs 成熟再单独拆出。
 - 仓库暂无 `.github/workflows/` CI，Loop Workflow 里的"push only after green"当前以**本地** `pytest` + `npm run build` 为准。
+- **`docs/test-plan-opencode-glm-castengine.md` 未落盘**（2026-05-13）：7-entry E2E 已跑出实测遥测（34 RepairLog、35 LLM 边、100% reasoning_summary 非空、GLM-5 在 3/7 source 上 0-edge 放弃的模式），但 opencode + GLM-5 + CastEngine 的全量测试计划文档尚未成文。应覆盖的断言：reasoning 捕获命中率、放弃率按 source kind 分布、mirror 吞吐、门禁通过率按 source kind 分布。
+- **35 LLM 边 vs 34 RepairLog 的 1 条差值**（2026-05-13，7-entry run 观察到）：`65cecfa5cf3a→f41875af7db5 @line132` 与 `94a77ea67585→1ccd8bba9eab @line1189` 两条 CALLS 边在 Neo4j 里没有 `(caller_id, callee_id, call_location)` 三元组精确匹配的 RepairLog。怀疑 `create_repair_log` 的 `MERGE` 键与 `write_edge` 时拼出的 `call_location` 格式不一致，或 RepairLog 的 `MERGE` 键太粗导致同一 agent 调用内第二次 `write-edge` 覆盖了前一条。未深究、未定位根因。
+- **门禁机制尚未真 pass 过**（2026-05-13）：`check-complete` TypeError 修复前每次必 False；修复后的 7-entry run 所有 source 都有剩余 pending GAP（0-edge 放弃 + counter-example 全覆盖），没跑出过 `complete=True` 的实际路径。下一次 E2E 会是第一次真门禁验证——需要挑一个 agent 能真正解全 GAP 的 source 或构造用例。
+- 仓库根目录没有 check-in 的 `config.yaml`，4 个 CLI 子命令默认 `--config config.yaml` 找当前工作目录——首次跑前要么 `cp codemap_lite/config/default_config.yaml config.yaml`，要么显式 `--config codemap_lite/config/default_config.yaml`。
 - gap-analysis 历史：`docs/adr/0001-gap-analysis-corrections.md` / `0002-gap-analysis-round2.md` / `0003-gap-analysis-round3.md`。
 
 ---
