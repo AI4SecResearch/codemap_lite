@@ -9,7 +9,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -74,17 +74,80 @@ def _read_source_progress(target_dir: Path | None) -> list[dict[str, Any]]:
     return rows
 
 
+def _run_analysis_background(app: Any, settings: Any, mode: str) -> None:
+    """Run the pipeline analysis in a background task.
+
+    architecture.md §8: POST /api/v1/analyze triggers full/incremental.
+    """
+    try:
+        from codemap_lite.pipeline.orchestrator import PipelineOrchestrator
+
+        target_dir = Path(settings.project.target_dir)
+        orch = PipelineOrchestrator(target_dir=target_dir)
+
+        if mode == "incremental":
+            result = orch.run_incremental_analysis()
+        else:
+            result = orch.run_full_analysis()
+
+        app.state.analyze_state = {
+            "state": "idle",
+            "progress": 1.0,
+            "mode": mode,
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "result": {
+                "files_scanned": result.files_scanned,
+                "functions_found": result.functions_found,
+                "direct_calls": result.direct_calls,
+                "unresolved_calls": result.unresolved_calls,
+                "success": result.success,
+            },
+        }
+    except Exception as exc:
+        logger.error("Background analysis failed: %s", exc)
+        app.state.analyze_state = {
+            "state": "idle",
+            "progress": 0.0,
+            "error": str(exc),
+        }
+
+
 def create_analyze_router() -> APIRouter:
     """Create the analyze router."""
     router = APIRouter(tags=["analyze"])
 
     @router.post("/analyze", status_code=202)
-    def trigger_analyze(request: Request, body: AnalyzeRequest) -> dict[str, Any]:
+    def trigger_analyze(
+        request: Request, body: AnalyzeRequest, background_tasks: BackgroundTasks
+    ) -> dict[str, Any]:
+        """Trigger full or incremental analysis.
+
+        architecture.md §8: POST /api/v1/analyze triggers the pipeline
+        asynchronously. Returns 202 immediately; progress is polled via
+        GET /api/v1/analyze/status.
+        """
+        # Prevent double-spawn
+        current = request.app.state.analyze_state
+        if current.get("state") in ("running", "analyzing"):
+            raise HTTPException(
+                status_code=409,
+                detail="Analysis is already running",
+            )
+
         request.app.state.analyze_state = {
-            "state": "running",
+            "state": "analyzing",
             "mode": body.mode.value,
             "progress": 0.0,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "completed_at": None,
         }
+
+        settings = getattr(request.app.state, "settings", None)
+        if settings is not None:
+            background_tasks.add_task(
+                _run_analysis_background, request.app, settings, body.mode.value
+            )
+
         return {"status": "accepted", "mode": body.mode.value}
 
     @router.post("/analyze/repair", status_code=202)

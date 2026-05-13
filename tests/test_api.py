@@ -209,6 +209,30 @@ class TestAnalyzeEndpoint:
         resp = client.post("/api/v1/analyze", json={"mode": "incremental"})
         assert resp.status_code == 202
 
+    def test_analyze_trigger_conflict_returns_409(self) -> None:
+        """architecture.md §8: double-spawn of analysis must return 409."""
+        client, _ = get_test_client()
+        client.app.state.analyze_state = {"state": "analyzing", "progress": 0.5}
+        resp = client.post("/api/v1/analyze", json={"mode": "full"})
+        assert resp.status_code == 409
+
+    def test_analyze_trigger_spawns_background_task(self) -> None:
+        """architecture.md §8: POST /analyze with settings triggers pipeline."""
+        from unittest.mock import patch, MagicMock
+        from codemap_lite.config.settings import Settings
+
+        store = InMemoryGraphStore()
+        settings = Settings()
+        app = create_app(store=store, settings=settings)
+        client = TestClient(app)
+
+        with patch(
+            "codemap_lite.api.routes.analyze._run_analysis_background"
+        ) as mock_run:
+            resp = client.post("/api/v1/analyze", json={"mode": "full"})
+            assert resp.status_code == 202
+            mock_run.assert_called_once()
+
     def test_analyze_trigger_invalid_mode(self) -> None:
         client, _ = get_test_client()
         resp = client.post("/api/v1/analyze", json={"mode": "invalid"})
