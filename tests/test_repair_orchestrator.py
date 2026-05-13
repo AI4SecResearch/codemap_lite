@@ -1650,3 +1650,86 @@ async def test_orchestrator_updates_source_point_status_on_exhaustion(tmp_path):
         "architecture.md §3: all GAPs exhausted must set "
         "SourcePoint.status = 'partial_complete'"
     )
+
+
+@pytest.mark.asyncio
+async def test_feedback_loop_injects_counter_examples_into_next_repair(tmp_path):
+    """architecture.md §3 反馈机制 + §13 验证方案:
+    Counter-examples submitted via feedback must appear in the agent's
+    .icslpreprocess/counter_examples.md on the next repair run.
+
+    Full chain: feedback_store.add() → orchestrator._inject_files() →
+    counter_examples.md contains the pattern.
+    """
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import (
+        FunctionNode,
+        UnresolvedCallNode,
+    )
+
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    # Set up feedback store with a counter-example
+    feedback_store = FeedbackStore(storage_dir=tmp_path / "feedback")
+    feedback_store.add(CounterExample(
+        pattern="function pointer cast to void* then called",
+        call_context="void* fp = (void*)handler; ((fn_t)fp)()",
+        wrong_target="generic_handler",
+        correct_target="specific_handler",
+    ))
+
+    store = InMemoryGraphStore()
+    fn = FunctionNode(
+        signature="void entry()", name="entry", file_path="main.cpp",
+        start_line=1, end_line=10, body_hash="h1", id="f1",
+    )
+    store.create_function(fn)
+    store.create_unresolved_call(UnresolvedCallNode(
+        id="gap1", caller_id="f1", call_expression="fp()",
+        call_file="main.cpp", call_line=5, call_type="indirect",
+        source_code_snippet="fp();", var_name="fp", var_type="void*",
+    ))
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        command="echo",
+        args=["done"],
+        max_concurrency=1,
+        neo4j_uri="bolt://localhost:7687",
+        neo4j_user="neo4j",
+        neo4j_password="test",
+        graph_store=store,
+        feedback_store=feedback_store,
+    )
+    orch = RepairOrchestrator(config)
+
+    # Patch subprocess to avoid real agent spawn; just verify injection
+    injected_content = {}
+
+    original_inject = orch._inject_files
+
+    def capture_inject(target_dir, source_id, counter_examples=""):
+        injected_content["counter_examples"] = counter_examples
+        original_inject(target_dir, source_id, counter_examples)
+
+    with patch.object(orch, "_inject_files", side_effect=capture_inject):
+        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_proc:
+            proc = AsyncMock()
+            proc.communicate = AsyncMock(return_value=(b"done", b""))
+            proc.returncode = 0
+            proc.kill = MagicMock()
+            proc.wait = AsyncMock()
+            mock_proc.return_value = proc
+
+            await orch.run_repairs(["f1"])
+
+    # Verify counter-example was injected
+    assert "counter_examples" in injected_content
+    ce_text = injected_content["counter_examples"]
+    assert "function pointer cast to void*" in ce_text, (
+        "architecture.md §3: counter-example pattern must be injected into agent context"
+    )
+    assert "generic_handler" in ce_text
+    assert "specific_handler" in ce_text

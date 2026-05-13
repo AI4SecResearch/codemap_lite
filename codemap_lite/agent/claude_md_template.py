@@ -36,8 +36,16 @@ Neo4j connection: `{neo4j_config_path}`
 
 ## Counter Examples (反例库)
 
-Review `{counter_examples_path}` before making repair decisions.
-These are patterns where previous repairs were incorrect — avoid repeating them.
+**MANDATORY**: Before resolving any UnresolvedCall, read `{counter_examples_path}`.
+Each entry describes a pattern where a previous repair was incorrect.
+
+For every edge you are about to write:
+1. Check if the call context matches any counter-example pattern
+2. If it matches → do NOT write that edge; reconsider your analysis
+3. If unsure → err on the side of caution and skip
+
+These rules override your own analysis. A repeated mistake wastes reviewer time
+and burns retry budget.
 
 ## Workflow
 

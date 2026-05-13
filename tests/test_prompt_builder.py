@@ -81,3 +81,16 @@ def test_generate_claude_md_includes_reasoning_capture_section():
     assert "Reasoning capture" in result
     assert "--llm-response" in result
     assert "--reasoning-summary" in result
+
+
+def test_generate_claude_md_enforces_counter_example_checking():
+    """architecture.md §3 反馈机制: CLAUDE.md must mandate (not just suggest)
+    that the agent checks counter-examples before writing any edge."""
+    result = generate_claude_md(source_id="src_001")
+    # Must contain mandatory language, not just a passive reference
+    assert "MANDATORY" in result or "mandatory" in result, (
+        "counter-example section must use mandatory language"
+    )
+    assert "do NOT write" in result or "do not write" in result.lower(), (
+        "must instruct agent to skip edges matching counter-example patterns"
+    )
