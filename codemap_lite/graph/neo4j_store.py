@@ -403,7 +403,9 @@ class InMemoryGraphStore:
         query so the stats page doesn't need to materialize 23k+ UCs to
         count them.
         """
-        by_status: dict[str, int] = {}
+        # architecture.md §8: unresolved_by_status must always contain
+        # {pending, unresolvable} keys so the frontend can render without null-checks.
+        by_status: dict[str, int] = {"pending": 0, "unresolvable": 0}
         for u in self._unresolved_calls.values():
             key = getattr(u, "status", None) or "pending"
             by_status[key] = by_status.get(key, 0) + 1
@@ -984,13 +986,12 @@ class Neo4jGraphStore:
             total_repair_logs = session.run(
                 "MATCH (r:RepairLog) RETURN count(r) AS n"
             ).single()["n"]
-            by_status: dict[str, int] = {
-                (row["s"] or "pending"): row["n"]
-                for row in session.run(
-                    "MATCH (u:UnresolvedCall) "
-                    "RETURN coalesce(u.status, 'pending') AS s, count(u) AS n"
-                )
-            }
+            by_status: dict[str, int] = {"pending": 0, "unresolvable": 0}
+            for row in session.run(
+                "MATCH (u:UnresolvedCall) "
+                "RETURN coalesce(u.status, 'pending') AS s, count(u) AS n"
+            ):
+                by_status[row["s"] or "pending"] = row["n"]
             # last_attempt_reason may be absent; bucket missing/malformed
             # to "none" so the Dashboard chip row never silently drops UCs.
             # architecture.md §3: valid categories are {gate_failed,

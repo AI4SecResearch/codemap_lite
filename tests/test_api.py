@@ -746,6 +746,61 @@ class TestEdgeCentricReview:
         })
         assert resp.status_code == 422
 
+    def test_review_incorrect_with_correct_target_creates_counter_example(self) -> None:
+        """architecture.md §5: when verdict=incorrect AND correct_target is
+        provided, the review endpoint must create a counter-example in the
+        FeedbackStore. This is the primary mechanism for building the
+        counter-example library from reviewer feedback."""
+        from codemap_lite.analysis.feedback_store import FeedbackStore
+        import tempfile
+
+        store = InMemoryGraphStore()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from pathlib import Path
+            feedback_store = FeedbackStore(storage_dir=Path(tmpdir))
+            app = create_app(store=store, feedback_store=feedback_store)
+            client = TestClient(app)
+
+            # Setup edge
+            fn1 = FunctionNode(
+                signature="void dispatch()", name="dispatch",
+                file_path="src/main.c", start_line=10, end_line=20,
+                body_hash="h1", id="fn_dispatch",
+            )
+            fn2 = FunctionNode(
+                signature="void handler()", name="handler",
+                file_path="src/handler.c", start_line=1, end_line=5,
+                body_hash="h2", id="fn_handler",
+            )
+            store.create_function(fn1)
+            store.create_function(fn2)
+            store.create_calls_edge(
+                "fn_dispatch", "fn_handler",
+                CallsEdgeProps(
+                    resolved_by="llm", call_type="indirect",
+                    call_file="src/main.c", call_line=15,
+                ),
+            )
+
+            # Mark incorrect WITH correct_target
+            resp = client.post("/api/v1/reviews", json={
+                "caller_id": "fn_dispatch",
+                "callee_id": "fn_handler",
+                "call_file": "src/main.c",
+                "call_line": 15,
+                "verdict": "incorrect",
+                "correct_target": "fn_real_handler",
+            })
+            assert resp.status_code == 201
+
+            # Counter-example should have been created
+            examples = feedback_store.list_all()
+            assert len(examples) == 1, (
+                "architecture.md §5: correct_target provided → counter-example must be created"
+            )
+            assert examples[0].wrong_target == "fn_handler"
+            assert examples[0].correct_target == "fn_real_handler"
+
 
 class TestFeedbackEndpoint:
     def test_get_feedback_empty(self) -> None:
@@ -912,7 +967,7 @@ class TestFeedbackEndpoint:
         # New breakdown surfaces GAP lifecycle on the Dashboard without
         # drilling into ReviewQueue (architecture.md §3 UnresolvedCall 生命周期).
         assert "unresolved_by_status" in data
-        assert data["unresolved_by_status"] == {}
+        assert data["unresolved_by_status"] == {"pending": 0, "unresolvable": 0}
         # Breakdown by CallsEdgeProps.resolved_by (architecture.md §4 +
         # §5 审阅对象：单条 CALLS 边，特别是 resolved_by='llm' 的).
         # All 5 keys must always be present (architecture.md §8).
@@ -1156,7 +1211,7 @@ class TestNoPrivateAttrLeak:
                     "total_functions": 1, "total_files": 1,
                     "total_calls": 1, "total_unresolved": 0,
                     "total_repair_logs": 0,
-                    "unresolved_by_status": {},
+                    "unresolved_by_status": {"pending": 0, "unresolvable": 0},
                     "unresolved_by_category": {},
                     "calls_by_resolved_by": {"llm": 1},
                 }

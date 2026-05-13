@@ -210,6 +210,22 @@ def create_review_router() -> APIRouter:
                 status="pending",
             )
             store.create_unresolved_call(uc)
+
+            # architecture.md §5: if correct_target provided, create
+            # counter-example in FeedbackStore (反例生成).
+            if body.correct_target:
+                feedback_store = getattr(request.app.state, "feedback_store", None)
+                if feedback_store is not None:
+                    from codemap_lite.analysis.feedback_store import CounterExample
+
+                    example = CounterExample(
+                        call_context=f"{body.call_file}:{body.call_line}",
+                        wrong_target=body.callee_id,
+                        correct_target=body.correct_target,
+                        pattern=f"{body.caller_id} -> {body.callee_id} at {body.call_file}:{body.call_line}",
+                    )
+                    feedback_store.add(example)
+
             # Step 4: Trigger async repair
             settings = getattr(request.app.state, "settings", None)
             if settings is not None:
