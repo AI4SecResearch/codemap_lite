@@ -65,12 +65,10 @@ class IncrementalUpdater:
 
         # Step 3: Delete functions, their edges, and associated UnresolvedCalls
         # architecture.md §7: "删除旧 Function 节点及关联 CALLS 边 + UnresolvedCall"
+        # Count total edges before bulk deletion (single pass, not per-function)
+        edges_before = len(self._store.list_calls_edges())
         for fid in function_ids:
-            # Count edges before deletion for reporting
-            edges_before = len(self._store.list_calls_edges())
             self._store.delete_calls_edges_for_function(fid)
-            edges_after = len(self._store.list_calls_edges())
-            result.removed_edges += edges_before - edges_after
             # Delete UnresolvedCalls where this function is the caller
             gaps = self._store.get_unresolved_calls(caller_id=fid)
             for gap in gaps:
@@ -81,6 +79,7 @@ class IncrementalUpdater:
                 )
                 result.removed_unresolved_calls.append(gap.id)
             self._store.delete_function(fid)
+        result.removed_edges = edges_before - len(self._store.list_calls_edges())
 
         # Step 3b: Delete RepairLogs and regenerate UnresolvedCalls for
         # affected LLM callers.
@@ -115,11 +114,9 @@ class IncrementalUpdater:
         # so the repair orchestrator will re-process them.
         # architecture.md §7 + §3: invalidation regenerates pending GAPs,
         # so the source must transition back to allow re-repair.
-        if hasattr(self._store, "update_source_point_status"):
-            for source_id in affected_source_ids:
-                if hasattr(self._store, "get_source_point"):
-                    sp = self._store.get_source_point(source_id)
-                    if sp is not None and getattr(sp, "status", "") != "pending":
-                        self._store.update_source_point_status(source_id, "pending")
+        for source_id in affected_source_ids:
+            sp = self._store.get_source_point(source_id)
+            if sp is not None and getattr(sp, "status", "") != "pending":
+                self._store.update_source_point_status(source_id, "pending")
 
         return result
