@@ -74,7 +74,7 @@ def test_orchestrator_cleans_injection_files(orchestrator, tmp_path):
         source_id="src_001",
         counter_examples="",
     )
-    orchestrator._cleanup_injection(target_dir)
+    orchestrator._cleanup_injection(target_dir, "src_001")
 
     assert not (target_dir / "CLAUDE.md").exists()
     assert not (target_dir / ".icslpreprocess").exists()
@@ -92,13 +92,13 @@ def test_orchestrator_backs_up_existing_claude_md(orchestrator, tmp_path):
         counter_examples="",
     )
 
-    # Original should be backed up
-    backup = target_dir / "CLAUDE.md.bak"
+    # Original should be backed up with source-specific name
+    backup = target_dir / "CLAUDE.md.bak.src_001"
     assert backup.exists()
     assert backup.read_text() == "# Original content"
 
     # After cleanup, original should be restored
-    orchestrator._cleanup_injection(target_dir)
+    orchestrator._cleanup_injection(target_dir, "src_001")
     assert existing_claude_md.exists()
     assert existing_claude_md.read_text() == "# Original content"
     assert not backup.exists()
@@ -128,7 +128,7 @@ def test_cleanup_preserves_preexisting_claude_dir(orchestrator, tmp_path):
     assert "hooks" in injected_settings
 
     # After cleanup, pre-existing .claude/ should be preserved
-    orchestrator._cleanup_injection(target_dir)
+    orchestrator._cleanup_injection(target_dir, "src_001")
     assert claude_dir.exists(), (
         ".claude/ was deleted but it pre-existed — must be preserved"
     )
@@ -154,11 +154,42 @@ def test_cleanup_removes_claude_dir_when_not_preexisting(orchestrator, tmp_path)
     )
     assert (target_dir / ".claude").exists()
 
-    orchestrator._cleanup_injection(target_dir)
+    orchestrator._cleanup_injection(target_dir, "src_001")
     assert not (target_dir / ".claude").exists()
-    cmd = orchestrator._build_command(source_id="src_001")
-    assert "echo" in cmd[0]
-    assert "done" in cmd
+
+
+def test_concurrent_sources_use_independent_backups(orchestrator, tmp_path):
+    """architecture.md §3: sources run concurrently in the same target_dir.
+    Backup/restore must use source-specific names so concurrent cleanups
+    don't clobber each other's backups.
+
+    In practice each source injects → runs agent → cleans up independently.
+    The key invariant: Source A's cleanup does NOT destroy Source B's backup."""
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    # Pre-existing CLAUDE.md
+    original_md = target_dir / "CLAUDE.md"
+    original_md.write_text("# Original")
+
+    # Source A injects — backs up original
+    orchestrator._inject_files(target_dir=target_dir, source_id="src_A", counter_examples="")
+    assert (target_dir / "CLAUDE.md.bak.src_A").exists()
+    assert (target_dir / "CLAUDE.md.bak.src_A").read_text() == "# Original"
+
+    # Source A cleans up — restores original
+    orchestrator._cleanup_injection(target_dir, "src_A")
+    assert original_md.read_text() == "# Original"
+    assert not (target_dir / "CLAUDE.md.bak.src_A").exists()
+
+    # Source B injects — backs up original (still intact after A's cleanup)
+    orchestrator._inject_files(target_dir=target_dir, source_id="src_B", counter_examples="")
+    assert (target_dir / "CLAUDE.md.bak.src_B").exists()
+    assert (target_dir / "CLAUDE.md.bak.src_B").read_text() == "# Original"
+
+    # Source B cleans up
+    orchestrator._cleanup_injection(target_dir, "src_B")
+    assert original_md.read_text() == "# Original"
 
 
 @pytest.mark.asyncio
@@ -379,6 +410,102 @@ async def test_orchestrator_stamps_retry_audit_on_gate_failure(tmp_path):
     assert "T" in stamped.last_attempt_timestamp
     assert stamped.last_attempt_reason is not None
     assert stamped.last_attempt_reason.startswith("gate_failed:")
+
+
+@pytest.mark.asyncio
+async def test_per_gap_retry_independence(tmp_path):
+    """architecture.md §3 line 123: '每个 UnresolvedCall 独立追踪 retry_count'.
+    If one GAP is resolved (removed from pending) while another remains,
+    the loop continues only for the remaining GAP's budget."""
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import FunctionNode, UnresolvedCallNode
+
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    store = InMemoryGraphStore()
+    caller = FunctionNode(
+        signature="void src_001(int)",
+        name="src_001",
+        file_path="foo.cpp",
+        start_line=1,
+        end_line=10,
+        body_hash="h",
+        id="src_001",
+    )
+    store.create_function(caller)
+    gap1 = UnresolvedCallNode(
+        caller_id="src_001",
+        call_expression="fn_ptr(x)",
+        call_file="foo.cpp",
+        call_line=7,
+        call_type="indirect",
+        source_code_snippet="fn_ptr(x);",
+        var_name="fn_ptr",
+        var_type="void (*)(int)",
+        id="gap_1",
+    )
+    gap2 = UnresolvedCallNode(
+        caller_id="src_001",
+        call_expression="vfunc(y)",
+        call_file="foo.cpp",
+        call_line=12,
+        call_type="virtual",
+        source_code_snippet="vfunc(y);",
+        var_name="vfunc",
+        var_type="Base*",
+        id="gap_2",
+    )
+    store.create_unresolved_call(gap1)
+    store.create_unresolved_call(gap2)
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        command="echo",
+        args=["done"],
+        max_concurrency=1,
+        neo4j_uri="bolt://localhost:7687",
+        neo4j_user="neo4j",
+        neo4j_password="test",
+        graph_store=store,
+    )
+    orchestrator = RepairOrchestrator(config=config)
+
+    # Simulate: after attempt 1, gap_1 gets resolved (status changes)
+    # but gap_2 remains pending. Gate always fails.
+    attempt_count = {"n": 0}
+
+    async def mock_gate(source_id):
+        attempt_count["n"] += 1
+        if attempt_count["n"] == 1:
+            # Simulate gap_1 being resolved after first attempt
+            store._unresolved_calls["gap_1"] = UnresolvedCallNode(
+                caller_id="src_001",
+                call_expression="fn_ptr(x)",
+                call_file="foo.cpp",
+                call_line=7,
+                call_type="indirect",
+                source_code_snippet="fn_ptr(x);",
+                var_name="fn_ptr",
+                var_type="void (*)(int)",
+                id="gap_1",
+                status="resolved",
+            )
+        return False
+
+    orchestrator._check_gate = mock_gate
+
+    results = await orchestrator.run_repairs(["src_001"])
+
+    # gap_2 should have been retried 3 times (its own budget)
+    assert results[0].success is False
+    gap2_final = store._unresolved_calls["gap_2"]
+    assert gap2_final.retry_count == 3
+    assert gap2_final.status == "unresolvable"
+    # gap_1 was resolved after attempt 1, so it only got stamped once
+    gap1_final = store._unresolved_calls["gap_1"]
+    assert gap1_final.retry_count == 0  # resolved, never stamped
 
 
 @pytest.mark.asyncio

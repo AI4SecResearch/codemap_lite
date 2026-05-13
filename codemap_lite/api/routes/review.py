@@ -6,7 +6,7 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from codemap_lite.graph.schema import CallsEdgeProps
 
@@ -35,6 +35,26 @@ class EdgeCreate(BaseModel):
     call_type: str
     call_file: str
     call_line: int
+
+    @field_validator("resolved_by")
+    @classmethod
+    def validate_resolved_by(cls, v: str) -> str:
+        allowed = {"symbol_table", "signature", "dataflow", "context", "llm", "manual"}
+        if v not in allowed:
+            raise ValueError(
+                f"resolved_by must be one of {sorted(allowed)}, got '{v}'"
+            )
+        return v
+
+    @field_validator("call_type")
+    @classmethod
+    def validate_call_type(cls, v: str) -> str:
+        allowed = {"direct", "indirect", "virtual"}
+        if v not in allowed:
+            raise ValueError(
+                f"call_type must be one of {sorted(allowed)}, got '{v}'"
+            )
+        return v
 
 
 def create_review_router() -> APIRouter:

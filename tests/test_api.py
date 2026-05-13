@@ -481,6 +481,32 @@ class TestReviewEndpoint:
         resp = client.delete("/api/v1/edges/x")
         assert resp.status_code == 204
 
+    def test_post_edge_invalid_resolved_by_returns_422(self) -> None:
+        """architecture.md §8: resolved_by must be one of the allowed enum values."""
+        client, _ = get_test_client()
+        resp = client.post("/api/v1/edges", json={
+            "caller_id": "x",
+            "callee_id": "y",
+            "resolved_by": "magic",
+            "call_type": "direct",
+            "call_file": "f.py",
+            "call_line": 2,
+        })
+        assert resp.status_code == 422
+
+    def test_post_edge_invalid_call_type_returns_422(self) -> None:
+        """architecture.md §8: call_type must be one of {direct, indirect, virtual}."""
+        client, _ = get_test_client()
+        resp = client.post("/api/v1/edges", json={
+            "caller_id": "x",
+            "callee_id": "y",
+            "resolved_by": "llm",
+            "call_type": "unknown",
+            "call_file": "f.py",
+            "call_line": 2,
+        })
+        assert resp.status_code == 422
+
 
 class TestFeedbackEndpoint:
     def test_get_feedback_empty(self) -> None:

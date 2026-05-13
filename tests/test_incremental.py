@@ -144,3 +144,43 @@ def test_invalidate_file_reports_removed_edges_count(store_with_data):
     # After invalidation, only edges not touching a.cpp functions remain
     remaining = store_with_data.list_calls_edges()
     assert len(remaining) == 0  # both edges touch f1 or f2
+
+
+def test_cascade_regenerates_unresolved_calls_for_affected_callers():
+    """architecture.md §7 step 3: '变更函数的 callers 中如有 LLM 修复的边指向旧函数
+    → 删除该 CALLS 边 + 对应 RepairLog，重新生成 UnresolvedCall'.
+
+    When an LLM edge A→B is invalidated because B's file changed, the
+    IncrementalUpdater must create a new UnresolvedCall for caller A so
+    the repair agent can re-resolve it in the next run."""
+    store = InMemoryGraphStore()
+
+    # A (in b.cpp) calls B (in a.cpp) via LLM-resolved edge
+    store.create_function(FunctionNode(
+        id="A", name="caller_a", signature="void caller_a()",
+        file_path="src/b.cpp", start_line=1, end_line=10, body_hash="hA",
+    ))
+    store.create_function(FunctionNode(
+        id="B", name="callee_b", signature="void callee_b()",
+        file_path="src/a.cpp", start_line=1, end_line=10, body_hash="hB",
+    ))
+    store.create_calls_edge("A", "B", CallsEdgeProps(
+        resolved_by="llm", call_type="indirect",
+        call_file="src/b.cpp", call_line=5,
+    ))
+
+    updater = IncrementalUpdater(store=store)
+    result = updater.invalidate_file("src/a.cpp")
+
+    # A should be in affected_callers
+    assert "A" in result.affected_callers
+
+    # A new UnresolvedCall should be regenerated for caller A
+    gaps = store.get_unresolved_calls(caller_id="A")
+    assert len(gaps) == 1, (
+        "architecture.md §7 step 3: must regenerate UnresolvedCall for "
+        "affected callers after LLM edge invalidation"
+    )
+    assert gaps[0].call_file == "src/b.cpp"
+    assert gaps[0].call_line == 5
+    assert gaps[0].call_type == "indirect"

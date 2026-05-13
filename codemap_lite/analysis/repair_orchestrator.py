@@ -89,16 +89,19 @@ class RepairOrchestrator:
         counter_examples: str,
     ) -> None:
         """Generate injection files in the target code directory."""
-        # Backup existing CLAUDE.md if present
+        # Backup existing CLAUDE.md if present.
+        # Use source-specific backup names to avoid race conditions when
+        # multiple sources run concurrently in the same target_dir
+        # (architecture.md §3: source 间并发, source 内串行).
         claude_md_path = target_dir / "CLAUDE.md"
+        backup_path = target_dir / f"CLAUDE.md.bak.{source_id}"
         if claude_md_path.exists():
-            backup_path = target_dir / "CLAUDE.md.bak"
             shutil.copy2(claude_md_path, backup_path)
 
         # Backup existing .claude/ if present (architecture.md §3: preserve
         # pre-existing user config after cleanup)
         claude_dir = target_dir / ".claude"
-        claude_dir_backup = target_dir / ".claude.bak"
+        claude_dir_backup = target_dir / f".claude.bak.{source_id}"
         if claude_dir.exists():
             if claude_dir_backup.exists():
                 shutil.rmtree(claude_dir_backup)
@@ -169,8 +172,12 @@ class RepairOrchestrator:
             counter_examples or "# No counter examples yet\n", encoding="utf-8"
         )
 
-    def _cleanup_injection(self, target_dir: Path) -> None:
-        """Remove injection files and restore backups."""
+    def _cleanup_injection(self, target_dir: Path, source_id: str) -> None:
+        """Remove injection files and restore backups.
+
+        Uses source-specific backup names to avoid race conditions when
+        multiple sources run concurrently (architecture.md §3).
+        """
         # Remove .icslpreprocess/
         icsl_dir = target_dir / ".icslpreprocess"
         if icsl_dir.exists():
@@ -179,7 +186,7 @@ class RepairOrchestrator:
         # Restore .claude/ backup or remove generated one
         # (architecture.md §3: preserve pre-existing user config)
         claude_dir = target_dir / ".claude"
-        claude_dir_backup = target_dir / ".claude.bak"
+        claude_dir_backup = target_dir / f".claude.bak.{source_id}"
         if claude_dir.exists():
             shutil.rmtree(claude_dir)
         if claude_dir_backup.exists():
@@ -187,7 +194,7 @@ class RepairOrchestrator:
 
         # Restore CLAUDE.md backup or remove generated one
         claude_md_path = target_dir / "CLAUDE.md"
-        backup_path = target_dir / "CLAUDE.md.bak"
+        backup_path = target_dir / f"CLAUDE.md.bak.{source_id}"
         if backup_path.exists():
             shutil.move(str(backup_path), str(claude_md_path))
         elif claude_md_path.exists():
@@ -246,12 +253,18 @@ class RepairOrchestrator:
             return 0
 
     async def _run_single_repair(self, source_id: str) -> SourceRepairResult:
-        """Run repair for a single source point with retry logic."""
+        """Run repair for a single source point with per-GAP retry logic.
+
+        architecture.md §3 line 123: "每个 UnresolvedCall 独立追踪
+        retry_count，最多 3 次". The loop continues as long as there are
+        pending GAPs with retry_count < MAX_RETRIES_PER_GAP. When all
+        remaining GAPs hit the limit, they are marked "unresolvable" by
+        update_unresolved_call_retry_state and the loop terminates.
+        """
         target_dir = self._config.target_dir
         attempts = 0
-        max_attempts = self.MAX_RETRIES_PER_GAP
 
-        while attempts < max_attempts:
+        while self._has_retryable_gaps(source_id):
             attempts += 1
 
             # Write progress: attempt starting
@@ -259,7 +272,7 @@ class RepairOrchestrator:
                 source_id,
                 state="running",
                 attempt=attempts,
-                max_attempts=max_attempts,
+                max_attempts=self.MAX_RETRIES_PER_GAP,
                 gate_result="pending",
             )
 
@@ -396,14 +409,14 @@ class RepairOrchestrator:
                     last_error="gate_failed: remaining pending GAPs",
                 )
             finally:
-                self._cleanup_injection(target_dir)
+                self._cleanup_injection(target_dir, source_id)
 
         self._write_progress(source_id, state="failed")
         return SourceRepairResult(
             source_id=source_id,
             success=False,
             attempts=attempts,
-            error=f"Gate check failed after {max_attempts} attempts",
+            error="All remaining GAPs reached retry limit (unresolvable)",
         )
 
     async def _check_gate(self, source_id: str) -> bool:
@@ -485,6 +498,32 @@ class RepairOrchestrator:
             reachable = {fn.id for fn in subgraph["nodes"]}
             self._reachable_cache[source_id] = reachable
         return caller_id in reachable
+
+    def _has_retryable_gaps(self, source_id: str) -> bool:
+        """Return True if there are pending GAPs with retry_count < MAX.
+
+        architecture.md §3 line 123: "每个 UnresolvedCall 独立追踪
+        retry_count，最多 3 次。已修复的 GAP 不会被重复处理"。
+        When no graph_store is configured (test/stub mode), fall back to
+        a source-level attempt counter capped at MAX_RETRIES_PER_GAP.
+        """
+        store = self._config.graph_store
+        if store is None:
+            # No store → can't check per-GAP state; use source-level counter
+            key = f"_no_store_attempts_{source_id}"
+            count = len(self._reachable_cache.get(key) or set())
+            if count >= self.MAX_RETRIES_PER_GAP:
+                return False
+            if key not in self._reachable_cache:
+                self._reachable_cache[key] = set()
+            self._reachable_cache[key].add(count)
+            return True
+
+        pending_gaps = store.get_pending_gaps_for_source(source_id)
+        return any(
+            getattr(g, "retry_count", 0) < self.MAX_RETRIES_PER_GAP
+            for g in pending_gaps
+        )
 
     async def run_repairs(self, source_ids: list[str]) -> list[SourceRepairResult]:
         """Run repairs for multiple source points with concurrency control."""

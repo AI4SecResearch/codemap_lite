@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from codemap_lite.graph.schema import FunctionNode
+from codemap_lite.graph.schema import FunctionNode, UnresolvedCallNode
 
 
 @dataclass
@@ -15,6 +15,7 @@ class InvalidationResult:
     removed_edges: int = 0
     removed_unresolved_calls: list[str] = field(default_factory=list)
     affected_callers: list[str] = field(default_factory=list)
+    regenerated_unresolved_calls: list[str] = field(default_factory=list)
 
 
 class IncrementalUpdater:
@@ -33,7 +34,8 @@ class IncrementalUpdater:
         5-step cascade (architecture.md §7):
         1. Find all functions in the file
         2. Find LLM edges pointing TO these functions (from other files)
-        3. Delete functions + their edges + UnresolvedCalls
+        3. Delete functions + their edges + UnresolvedCalls;
+           regenerate UnresolvedCalls for affected callers
         4. Mark affected callers for re-repair
         5. Return affected callers for orchestrator to handle
         """
@@ -44,11 +46,17 @@ class IncrementalUpdater:
         function_ids = {f.id for f in functions}
         result.removed_functions = list(function_ids)
 
-        # Step 2: Find LLM edges from OTHER functions pointing to functions in this file
+        # Step 2: Find LLM edges from OTHER functions pointing to functions
+        # in this file. Capture edge details before deletion so we can
+        # regenerate UnresolvedCalls (architecture.md §7 step 3).
+        invalidated_llm_edges: list[tuple[str, str, Any]] = []
         for edge in self._store.list_calls_edges():
             if edge.callee_id in function_ids and edge.caller_id not in function_ids:
                 if edge.props.resolved_by == "llm":
                     result.affected_callers.append(edge.caller_id)
+                    invalidated_llm_edges.append(
+                        (edge.caller_id, edge.callee_id, edge.props)
+                    )
 
         # Step 3: Delete functions, their edges, and associated UnresolvedCalls
         # architecture.md §7: "删除旧 Function 节点及关联 CALLS 边 + UnresolvedCall"
@@ -68,5 +76,23 @@ class IncrementalUpdater:
                 )
                 result.removed_unresolved_calls.append(gap.id)
             self._store.delete_function(fid)
+
+        # Step 3b: Regenerate UnresolvedCalls for affected callers
+        # architecture.md §7 step 3: "重新生成 UnresolvedCall"
+        for caller_id, _callee_id, props in invalidated_llm_edges:
+            gap = UnresolvedCallNode(
+                caller_id=caller_id,
+                call_expression="",  # Original expression not stored on edge
+                call_file=props.call_file,
+                call_line=props.call_line,
+                call_type=props.call_type,
+                source_code_snippet="",
+                var_name="",
+                var_type="",
+                retry_count=0,
+                status="pending",
+            )
+            self._store.create_unresolved_call(gap)
+            result.regenerated_unresolved_calls.append(gap.id)
 
         return result
