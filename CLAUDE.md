@@ -208,6 +208,7 @@ codemap-lite serve    [--config PATH] [--port 8000]     # 启 FastAPI
 - `docs/agents/domain.md` 规定仓库根目录应有一个 `CONTEXT.md`，目前不存在——本 CLAUDE.md 暂时兼任 root context；待 domain docs 成熟再单独拆出。
 - 仓库暂无 `.github/workflows/` CI，Loop Workflow 里的"push only after green"当前以**本地** `pytest` + `npm run build` 为准。
 - gap-analysis 历史：`docs/adr/0001-gap-analysis-corrections.md` / `0002-gap-analysis-round2.md` / `0003-gap-analysis-round3.md`。
+
 ---
 
 ## Key references
