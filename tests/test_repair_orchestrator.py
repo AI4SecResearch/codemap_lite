@@ -226,28 +226,75 @@ def test_concurrent_sources_have_isolated_icslpreprocess_dirs(orchestrator, tmp_
 
 @pytest.mark.asyncio
 async def test_orchestrator_respects_concurrency_limit(repair_config, tmp_path):
+    """architecture.md §3: 'source 间并发' with max_concurrency=2 means
+    at most 2 sources run simultaneously."""
     target_dir = tmp_path / "target_code"
     target_dir.mkdir()
+
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import FunctionNode, UnresolvedCallNode
+
+    store = InMemoryGraphStore()
+    for i in range(4):
+        sid = f"src_{i:03d}"
+        store.create_function(FunctionNode(
+            id=sid, name=f"fn{i}", signature=f"void fn{i}()",
+            file_path="x.cpp", start_line=i * 10, end_line=i * 10 + 5,
+            body_hash=f"h{i}",
+        ))
+        store.create_unresolved_call(UnresolvedCallNode(
+            caller_id=sid, call_expression=f"cb{i}()",
+            call_file="x.cpp", call_line=i * 10 + 3, call_type="indirect",
+            source_code_snippet=f"cb{i}();", var_name=None, var_type=None,
+        ))
+
+    # Track concurrent execution count
+    import threading
+    lock = threading.Lock()
+    max_concurrent = 0
+    current_concurrent = 0
+
+    original_create_subprocess = asyncio.create_subprocess_exec
+
+    async def tracked_subprocess(*args, **kwargs):
+        nonlocal max_concurrent, current_concurrent
+        with lock:
+            current_concurrent += 1
+            max_concurrent = max(max_concurrent, current_concurrent)
+        await asyncio.sleep(0.05)  # Simulate work
+        with lock:
+            current_concurrent -= 1
+        proc = AsyncMock()
+        proc.communicate = AsyncMock(return_value=(b"", b""))
+        proc.returncode = 0
+        proc.kill = MagicMock()
+        proc.wait = AsyncMock()
+        return proc
+
     repair_config = RepairConfig(
         target_dir=target_dir,
         backend="claudecode",
-        command="sleep",
-        args=["0.1"],
+        command="echo",
+        args=["done"],
         max_concurrency=2,
         neo4j_uri="bolt://localhost:7687",
         neo4j_user="neo4j",
         neo4j_password="test",
+        graph_store=store,
     )
     orchestrator = RepairOrchestrator(config=repair_config)
-
-    # Mock gate checker to always pass
     orchestrator._check_gate = AsyncMock(return_value=True)
 
-    source_ids = ["src_001", "src_002", "src_003", "src_004"]
-    results = await orchestrator.run_repairs(source_ids)
+    with patch("asyncio.create_subprocess_exec", side_effect=tracked_subprocess):
+        source_ids = ["src_000", "src_001", "src_002", "src_003"]
+        results = await orchestrator.run_repairs(source_ids)
 
-    # All should complete (gate passes)
+    # All should complete
     assert len(results) == 4
+    # At most 2 should have run concurrently
+    assert max_concurrent <= 2, (
+        f"architecture.md §3: max_concurrency=2 but saw {max_concurrent} concurrent"
+    )
 
 
 @pytest.mark.asyncio
