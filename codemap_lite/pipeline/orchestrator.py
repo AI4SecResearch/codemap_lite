@@ -13,6 +13,24 @@ from codemap_lite.parsing.plugin_registry import PluginRegistry
 from codemap_lite.parsing.types import CallType
 
 
+# Architecture §4: CALLS.call_type ∈ {"direct", "indirect", "virtual"}.
+# The parser uses finer-grained internal types (CALLBACK, MEMBER_FN_PTR,
+# IPC_PROXY) for classification, but the graph schema normalizes them.
+_CALL_TYPE_NORMALIZATION: dict[str, str] = {
+    "direct": "direct",
+    "indirect": "indirect",
+    "virtual": "virtual",
+    "callback": "indirect",
+    "member_fn_ptr": "indirect",
+    "ipc_proxy": "indirect",
+}
+
+
+def _normalize_call_type(raw: str) -> str:
+    """Map parser call_type to architecture §4 allowed values."""
+    return _CALL_TYPE_NORMALIZATION.get(raw, "indirect")
+
+
 def _make_function_id(file_path: str, name: str, start_line: int) -> str:
     """Generate a short, URL-safe ID for a function node.
 
@@ -297,7 +315,7 @@ class PipelineOrchestrator:
                             call_expression=call.callee_name,
                             call_file=str(call.call_file),
                             call_line=call.call_line,
-                            call_type=call.call_type.value,
+                            call_type=_normalize_call_type(call.call_type.value),
                             source_code_snippet="",
                             var_name=None,
                             var_type=None,
@@ -309,7 +327,7 @@ class PipelineOrchestrator:
 
                     props = CallsEdgeProps(
                         resolved_by=call.resolved_by,
-                        call_type=call.call_type.value,
+                        call_type=_normalize_call_type(call.call_type.value),
                         call_file=str(call.call_file),
                         call_line=call.call_line,
                     )
@@ -331,7 +349,7 @@ class PipelineOrchestrator:
                         call_expression=uc.call_expression,
                         call_file=str(uc.call_file),
                         call_line=uc.call_line,
-                        call_type=uc.call_type.value,
+                        call_type=_normalize_call_type(uc.call_type.value),
                         source_code_snippet=uc.source_code_snippet,
                         var_name=uc.var_name,
                         var_type=uc.var_type,

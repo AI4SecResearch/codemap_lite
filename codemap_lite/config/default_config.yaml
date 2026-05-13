@@ -14,12 +14,13 @@ agent:
   backend: "claudecode"
   max_concurrency: 5
   retry_failed_gaps: true
+  # subprocess_timeout_seconds: 120  # opt-in (§3 超时护栏); None = no limit
   claudecode:
     command: "claude"
     args: ["-p", "--output-format", "text"]
   opencode:
     command: "opencode"
-    args: ["run", "--pure", "--dangerously-skip-permissions"]
+    args: ["-p"]
 
 visualization:
   aggregation: "hierarchical"

@@ -112,3 +112,41 @@ class TestAgentConfigBackendEnum:
         config_file.write_text("agent:\n  backend: \"not_a_backend\"\n")
         with pytest.raises(ValidationError):
             Settings.from_yaml(config_file)
+
+
+def test_default_config_yaml_matches_architecture_spec():
+    """architecture.md §10: default_config.yaml must produce settings that
+    match the architecture specification exactly.
+
+    Verifies:
+    - agent.backend = "claudecode"
+    - agent.max_concurrency = 5
+    - agent.retry_failed_gaps = true
+    - claudecode.command = "claude", args = ["-p", "--output-format", "text"]
+    - opencode.command = "opencode", args = ["-p"]
+    - neo4j defaults
+    - visualization.aggregation = "hierarchical"
+    """
+    config_path = Path(__file__).parent.parent / "codemap_lite" / "config" / "default_config.yaml"
+    settings = Settings.from_yaml(config_path)
+
+    # §10 agent section
+    assert settings.agent.backend == "claudecode"
+    assert settings.agent.max_concurrency == 5
+    assert settings.agent.retry_failed_gaps is True
+    assert settings.agent.subprocess_timeout_seconds is None
+
+    # §10 claudecode nested config
+    assert settings.agent.claudecode.command == "claude"
+    assert settings.agent.claudecode.args == ["-p", "--output-format", "text"]
+
+    # §10 opencode nested config — architecture specifies args: ["-p"]
+    assert settings.agent.opencode.command == "opencode"
+    assert settings.agent.opencode.args == ["-p"]
+
+    # §10 neo4j defaults
+    assert settings.neo4j.uri == "bolt://localhost:7687"
+    assert settings.neo4j.user == "neo4j"
+
+    # §10 visualization
+    assert settings.visualization.aggregation == "hierarchical"

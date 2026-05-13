@@ -142,3 +142,118 @@ def test_pipeline_resolved_by_uses_canonical_values(sample_cpp_dir, fake_registr
             f"resolved_by={edge.props.resolved_by!r}; "
             f"must be one of {sorted(canonical)}"
         )
+
+
+def test_pipeline_normalizes_call_type_to_architecture_spec(tmp_path):
+    """architecture.md §4: CALLS.call_type ∈ {direct, indirect, virtual}.
+
+    Parser may emit finer-grained types (callback, member_fn_ptr, ipc_proxy)
+    but the pipeline must normalize them to the 3 canonical values before
+    writing to the graph store.
+    """
+    from codemap_lite.pipeline.orchestrator import _normalize_call_type
+
+    # Verify the normalization function itself
+    assert _normalize_call_type("direct") == "direct"
+    assert _normalize_call_type("indirect") == "indirect"
+    assert _normalize_call_type("virtual") == "virtual"
+    assert _normalize_call_type("callback") == "indirect"
+    assert _normalize_call_type("member_fn_ptr") == "indirect"
+    assert _normalize_call_type("ipc_proxy") == "indirect"
+    # Unknown values default to indirect (safe fallback)
+    assert _normalize_call_type("unknown_type") == "indirect"
+
+
+def test_pipeline_stores_only_canonical_call_types(tmp_path):
+    """architecture.md §4: all call_type values in the graph store must be
+    one of {direct, indirect, virtual}. This tests the full pipeline path
+    with a plugin that emits non-canonical call_types."""
+
+    import hashlib
+
+    class NonCanonicalPlugin:
+        """Plugin that emits CALLBACK and MEMBER_FN_PTR call types."""
+
+        def supported_extensions(self):
+            return [".cpp"]
+
+        def parse_file(self, file_path):
+            return [
+                FunctionDef(
+                    name="caller_func",
+                    signature="void caller_func()",
+                    file_path=file_path,
+                    start_line=1,
+                    end_line=5,
+                    body_hash=hashlib.sha256(b"caller").hexdigest()[:16],
+                ),
+                FunctionDef(
+                    name="callee_func",
+                    signature="void callee_func()",
+                    file_path=file_path,
+                    start_line=7,
+                    end_line=10,
+                    body_hash=hashlib.sha256(b"callee").hexdigest()[:16],
+                ),
+            ]
+
+        def extract_symbols(self, file_path):
+            return []
+
+        def build_calls(self, file_path, symbols):
+            # Emit a direct call (should stay "direct") and unresolved calls
+            # with non-canonical types
+            resolved = [
+                CallEdge(
+                    caller_name="caller_func",
+                    callee_name="callee_func",
+                    call_file=file_path,
+                    call_line=3,
+                    call_type=CallType.DIRECT,
+                    resolved_by="symbol_table",
+                ),
+            ]
+            unresolved = [
+                UnresolvedCall(
+                    caller_name="caller_func",
+                    call_expression="cb_ptr()",
+                    call_file=file_path,
+                    call_line=4,
+                    call_type=CallType.CALLBACK,
+                    var_name="cb_ptr",
+                    var_type="void(*)()",
+                ),
+                UnresolvedCall(
+                    caller_name="caller_func",
+                    call_expression="obj->method()",
+                    call_file=file_path,
+                    call_line=5,
+                    call_type=CallType.MEMBER_FN_PTR,
+                    var_name="obj",
+                    var_type="Base*",
+                ),
+            ]
+            return resolved, unresolved
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "test.cpp").write_text("void caller_func() {\n}\nvoid callee_func() {\n}\n")
+
+    reg = PluginRegistry()
+    reg.register("cpp", NonCanonicalPlugin())
+
+    orch = PipelineOrchestrator(target_dir=tmp_path, registry=reg)
+    orch.run_full_analysis()
+
+    # Check CALLS edges: all must have canonical call_type
+    canonical_types = {"direct", "indirect", "virtual"}
+    for edge in orch._store.list_calls_edges():
+        assert edge.props.call_type in canonical_types, (
+            f"Edge has non-canonical call_type={edge.props.call_type!r}"
+        )
+
+    # Check UnresolvedCalls: all must have canonical call_type
+    for uc in orch._store.get_unresolved_calls():
+        assert uc.call_type in canonical_types, (
+            f"UnresolvedCall has non-canonical call_type={uc.call_type!r}"
+        )
