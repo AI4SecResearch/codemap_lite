@@ -29,9 +29,9 @@ Use `{icsl_tools}` for all graph operations:
 - `python {icsl_tools} query-reachable --source {source_id}`
   → Returns the reachable subgraph (nodes, edges, unresolved calls)
 
-- `python {icsl_tools} write-edge --caller <id> --callee <id> --call-type <type> --call-file <file> --call-line <line> [--llm-response <raw>] [--reasoning-summary <one-sentence justification>]`
+- `python {icsl_tools} write-edge --caller <id> --callee <id> --call-type <type> --call-file <file> --call-line <line> --llm-response <raw> --reasoning-summary <one-sentence justification>`
   → Writes a CALLS edge + RepairLog, deletes the UnresolvedCall.
-  → `--llm-response` / `--reasoning-summary` populate `RepairLogNode.llm_response` / `reasoning_summary` and are surfaced to human reviewers in the call-graph UI — **pass both on every edge you resolve here** (see "Reasoning capture" below).
+  → **MANDATORY**: You MUST pass both `--llm-response` and `--reasoning-summary` on every `write-edge` call. These populate `RepairLogNode` fields surfaced to human reviewers in the call-graph UI. Omitting them degrades the audit trail.
 
 - `python {icsl_tools} check-complete --source {source_id}`
   → Checks if all reachable GAPs are resolved
@@ -58,21 +58,22 @@ and burns retry budget.
 1. Run `query-reachable --source {source_id}` to get the current state
 2. For each UnresolvedCall in the result:
    a. Read the source file at the call location
-   b. Analyze the call context (variable type, assignment history, candidates)
-   c. Determine the correct call target(s)
-   d. Run `write-edge` for each resolved target (include `--llm-response` + `--reasoning-summary`, see below)
+   b. **Check `{counter_examples_path}`** — if the call context matches any counter-example pattern, skip this UC (do NOT write that edge)
+   c. Analyze the call context (variable type, assignment history, candidates)
+   d. Determine the correct call target(s)
+   e. Run `write-edge` for each resolved target (you MUST include `--llm-response` + `--reasoning-summary`)
 3. Run `query-reachable` again — new UnresolvedCalls may appear (newly reachable)
    - If new ones exist → repeat from step 2
    - If none → you are done
 
 ## Reasoning capture
 
-Every `write-edge` call you make here is an **llm-resolution** — downstream reviewers audit these edges in the call-graph UI. On each invocation pass:
+Every `write-edge` call you make here is an **llm-resolution** — downstream reviewers audit these edges in the call-graph UI. On each invocation you MUST pass:
 
 - `--reasoning-summary "<one sentence>"` — a concise human-readable justification, e.g. `"ptr->handle() dispatches to DerivedHandler::handle based on the ctor at line 24"`. Keep it ≤200 characters.
 - `--llm-response "<excerpt>"` — a short excerpt of your analysis (the key quote or conclusion). Truncate aggressively; shells don't like multi-kilobyte args. Pick what a reviewer would want to see.
 
-Leaving either flag empty is allowed but strongly discouraged — empty reasoning shows up in the UI as "No reasoning summary recorded", which forces reviewers to fall back to log files.
+Do NOT leave these flags empty. Empty reasoning shows up in the UI as "No reasoning summary recorded", which forces reviewers to fall back to log files and wastes their time.
 
 ## Termination Conditions
 
@@ -81,7 +82,8 @@ Stop processing an UnresolvedCall when ANY of these apply:
 2. 搜索整个代码库找不到函数实现 — Cannot find the function implementation anywhere in the codebase
 3. 调用链形成环（递归检测）— A cycle is detected in the call chain
 4. 所有可达 UnresolvedCall 已处理 — All reachable UnresolvedCalls have been processed
-5. 到达 sink 点后继续追踪 — After reaching a sink, continue tracing to discover all reachable paths
+
+**Important**: Reaching a sink point is NOT a stop condition. After reaching a sink, CONTINUE tracing to discover all reachable paths beyond it.
 
 ## Important Rules
 

@@ -1077,7 +1077,127 @@ class TestFeedbackEndpoint:
         )
         assert resp.status_code == 422
 
-    def test_get_stats(self) -> None:
+    def test_post_feedback_rejects_empty_fields(self, tmp_path) -> None:
+        """architecture.md §5: counter-example fields must be non-empty.
+
+        Empty strings are semantically invalid — a counter-example with
+        empty call_context or empty targets provides no useful signal to
+        the repair agent.
+        """
+        feedback_store = FeedbackStore(
+            storage_dir=tmp_path / ".codemap_lite" / "feedback"
+        )
+        app = create_app(store=InMemoryGraphStore(), feedback_store=feedback_store)
+        client = TestClient(app)
+
+        # Empty call_context
+        resp = client.post(
+            "/api/v1/feedback",
+            json={
+                "call_context": "",
+                "wrong_target": "a",
+                "correct_target": "b",
+                "pattern": "p",
+            },
+        )
+        assert resp.status_code == 422
+
+        # Empty pattern
+        resp = client.post(
+            "/api/v1/feedback",
+            json={
+                "call_context": "ctx",
+                "wrong_target": "a",
+                "correct_target": "b",
+                "pattern": "",
+            },
+        )
+        assert resp.status_code == 422
+
+    def test_post_feedback_response_includes_deduplicated_and_total(self, tmp_path) -> None:
+        """architecture.md §8: POST /feedback response must include
+        'deduplicated' (bool) and 'total' (int) signal fields so the
+        frontend can immediately show whether the submission broadened
+        an existing rule or opened a new one.
+        """
+        feedback_store = FeedbackStore(
+            storage_dir=tmp_path / ".codemap_lite" / "feedback"
+        )
+        app = create_app(store=InMemoryGraphStore(), feedback_store=feedback_store)
+        client = TestClient(app)
+
+        payload = {
+            "call_context": "src/main.cpp:42",
+            "wrong_target": "wrong_func",
+            "correct_target": "right_func",
+            "pattern": "fn_ptr -> wrong_func at main.cpp:42",
+        }
+
+        # First submission: new entry
+        resp1 = client.post("/api/v1/feedback", json=payload)
+        assert resp1.status_code == 201
+        data1 = resp1.json()
+        assert "deduplicated" in data1
+        assert "total" in data1
+        assert data1["deduplicated"] is False  # new entry, not merged
+        assert data1["total"] == 1
+
+        # Second submission with same pattern: deduplicated
+        resp2 = client.post("/api/v1/feedback", json=payload)
+        assert resp2.status_code == 201
+        data2 = resp2.json()
+        assert data2["deduplicated"] is True  # merged into existing
+        assert data2["total"] == 1  # still 1 after merge
+
+    def test_review_incorrect_with_correct_target_creates_feedback(self, tmp_path) -> None:
+        """architecture.md §5 审阅交互: marking an edge as incorrect with
+        correct_target must create a counter-example that is visible via
+        GET /feedback. This tests the full end-to-end flow:
+        POST /reviews (verdict=incorrect, correct_target) → GET /feedback.
+        """
+        feedback_store = FeedbackStore(
+            storage_dir=tmp_path / ".codemap_lite" / "feedback"
+        )
+        app = create_app(store=InMemoryGraphStore(), feedback_store=feedback_store)
+        client = TestClient(app)
+        store = app.state.store
+
+        # Setup: create two functions and a CALLS edge between them
+        fn1 = FunctionNode(
+            id="caller1", name="caller", signature="void caller()",
+            file_path="a.cpp", start_line=1, end_line=5, body_hash="h1",
+        )
+        fn2 = FunctionNode(
+            id="callee1", name="callee", signature="void callee()",
+            file_path="b.cpp", start_line=1, end_line=5, body_hash="h2",
+        )
+        store.create_function(fn1)
+        store.create_function(fn2)
+        store.create_calls_edge("caller1", "callee1", CallsEdgeProps(
+            resolved_by="llm", call_type="indirect",
+            call_file="a.cpp", call_line=3,
+        ))
+
+        # Mark edge as incorrect with correct_target
+        resp = client.post("/api/v1/reviews", json={
+            "caller_id": "caller1",
+            "callee_id": "callee1",
+            "call_file": "a.cpp",
+            "call_line": 3,
+            "verdict": "incorrect",
+            "correct_target": "real_callee",
+        })
+        assert resp.status_code == 201
+
+        # Verify counter-example is visible via GET /feedback
+        feedback_resp = client.get("/api/v1/feedback")
+        assert feedback_resp.status_code == 200
+        examples = feedback_resp.json()
+        assert len(examples) == 1
+        ex = examples[0]
+        assert ex["wrong_target"] == "callee1"
+        assert ex["correct_target"] == "real_callee"
+        assert "a.cpp:3" in ex["call_context"]
         client, store = get_test_client()
         fn = FunctionNode(
             signature="def a()", name="a", file_path="f.py",

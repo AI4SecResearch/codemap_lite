@@ -16,7 +16,7 @@ from dataclasses import asdict
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from codemap_lite.analysis.feedback_store import CounterExample
 
@@ -29,10 +29,10 @@ class CounterExampleCreate(BaseModel):
     ``(调用上下文, 错误目标, 正确目标)`` plus a generalized ``pattern``.
     """
 
-    call_context: str
-    wrong_target: str
-    correct_target: str
-    pattern: str
+    call_context: str = Field(..., min_length=1)
+    wrong_target: str = Field(..., min_length=1)
+    correct_target: str = Field(..., min_length=1)
+    pattern: str = Field(..., min_length=1)
 
     @model_validator(mode="after")
     def targets_must_differ(self) -> "CounterExampleCreate":
