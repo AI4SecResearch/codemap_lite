@@ -267,6 +267,9 @@ class RepairOrchestrator:
         target_dir = self._config.target_dir
         attempts = 0
 
+        # architecture.md §3 SourcePoint 状态: pending → running
+        self._update_source_status(source_id, "running")
+
         while self._has_retryable_gaps(source_id):
             attempts += 1
 
@@ -394,6 +397,8 @@ class RepairOrchestrator:
                         gate_result="passed",
                         edges_written=edges,
                     )
+                    # architecture.md §3: 无残留 → SourcePoint.status = "complete"
+                    self._update_source_status(source_id, "complete")
                     return SourceRepairResult(
                         source_id=source_id, success=True, attempts=attempts
                     )
@@ -415,6 +420,8 @@ class RepairOrchestrator:
                 self._cleanup_injection(target_dir, source_id)
 
         self._write_progress(source_id, state="failed")
+        # architecture.md §3: retry_count ≥ 3 → SourcePoint.status = "partial_complete"
+        self._update_source_status(source_id, "partial_complete")
         return SourceRepairResult(
             source_id=source_id,
             success=False,
@@ -487,6 +494,19 @@ class RepairOrchestrator:
                 store.update_unresolved_call_retry_state(
                     call_id=gap.id, timestamp=timestamp, reason=reason
                 )
+
+    def _update_source_status(self, source_id: str, status: str) -> None:
+        """Update SourcePoint.status in the graph store.
+
+        architecture.md §3 门禁机制 + §4 SourcePoint 状态:
+        pending → running → complete | partial_complete.
+        Silently noop when no graph_store is configured.
+        """
+        store = self._config.graph_store
+        if store is None:
+            return
+        if hasattr(store, "update_source_point_status"):
+            store.update_source_point_status(source_id, status)
 
     def _is_gap_in_source(
         self, store: GraphStore, source_id: str, caller_id: str

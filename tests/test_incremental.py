@@ -184,3 +184,87 @@ def test_cascade_regenerates_unresolved_calls_for_affected_callers():
     assert gaps[0].call_file == "src/b.cpp"
     assert gaps[0].call_line == 5
     assert gaps[0].call_type == "indirect"
+
+
+def test_pipeline_incremental_invalidates_modified_files():
+    """architecture.md §7 step 2: '变更文件重解析：删除旧 Function 节点及关联
+    CALLS 边 + UnresolvedCall，重新解析'. Modified files must be invalidated
+    before re-parsing so stale functions from the old version are removed."""
+    from unittest.mock import patch, MagicMock
+    from codemap_lite.pipeline.orchestrator import PipelineOrchestrator
+
+    store = InMemoryGraphStore()
+    # Pre-populate a function that will be "modified" (old version)
+    store.create_function(FunctionNode(
+        id="f1", name="old_func", signature="void old_func()",
+        file_path="src/modified.cpp", start_line=1, end_line=5, body_hash="h_old",
+    ))
+    # An edge from old_func to another function
+    store.create_function(FunctionNode(
+        id="f2", name="other", signature="void other()",
+        file_path="src/other.cpp", start_line=1, end_line=5, body_hash="h2",
+    ))
+    store.create_calls_edge("f1", "f2", CallsEdgeProps(
+        resolved_by="symbol_table", call_type="direct",
+        call_file="src/modified.cpp", call_line=3,
+    ))
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmpdir:
+        target_dir = Path(tmpdir)
+        orch = PipelineOrchestrator(target_dir=target_dir, store=store)
+
+        # Mock the scanner to report a modified file
+        changes = MagicMock()
+        changes.added = []
+        changes.modified = ["src/modified.cpp"]
+        changes.deleted = []
+
+        with patch.object(orch._scanner, "detect_changes", return_value=changes), \
+             patch.object(orch._scanner, "scan", return_value=[]), \
+             patch.object(orch._scanner, "save_state"):
+            result = orch.run_incremental_analysis()
+
+        # The old function should be invalidated (removed before re-parse)
+        assert store.get_function_by_id("f1") is None, (
+            "architecture.md §7: modified file's old functions must be "
+            "invalidated before re-parsing"
+        )
+        # The edge from old_func should also be gone
+        assert len(store.list_calls_edges()) == 0
+
+
+def test_pipeline_incremental_invalidates_deleted_files():
+    """architecture.md §7 step 2: 'deleted files → invalidate all functions
+    in that file + cascade'. The PipelineOrchestrator.run_incremental_analysis
+    must call IncrementalUpdater.invalidate_file for deleted files."""
+    from unittest.mock import patch, MagicMock
+    from codemap_lite.pipeline.orchestrator import PipelineOrchestrator
+
+    store = InMemoryGraphStore()
+    # Pre-populate a function in a file that will be "deleted"
+    store.create_function(FunctionNode(
+        id="f1", name="old_func", signature="void old_func()",
+        file_path="src/deleted.cpp", start_line=1, end_line=5, body_hash="h1",
+    ))
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmpdir:
+        target_dir = Path(tmpdir)
+        orch = PipelineOrchestrator(target_dir=target_dir, store=store)
+
+        # Mock the scanner to report a deleted file
+        changes = MagicMock()
+        changes.added = []
+        changes.modified = []
+        changes.deleted = ["src/deleted.cpp"]
+
+        with patch.object(orch._scanner, "detect_changes", return_value=changes), \
+             patch.object(orch._scanner, "scan", return_value=[]), \
+             patch.object(orch._scanner, "save_state"):
+            result = orch.run_incremental_analysis()
+
+        # The function from the deleted file should be removed
+        assert store.get_function_by_id("f1") is None, (
+            "architecture.md §7: deleted file's functions must be invalidated"
+        )

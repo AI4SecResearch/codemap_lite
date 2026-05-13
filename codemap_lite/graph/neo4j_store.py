@@ -10,6 +10,7 @@ from codemap_lite.graph.schema import (
     FileNode,
     FunctionNode,
     RepairLogNode,
+    SourcePointNode,
     UnresolvedCallNode,
 )
 
@@ -81,6 +82,12 @@ class GraphStore(Protocol):
         self, source_id: str, max_depth: int = 50
     ) -> dict: ...
 
+    def create_source_point(self, node: SourcePointNode) -> str: ...
+
+    def get_source_point(self, source_id: str) -> SourcePointNode | None: ...
+
+    def update_source_point_status(self, source_id: str, status: str) -> None: ...
+
 
 @dataclass
 class _CallsEdge:
@@ -100,6 +107,7 @@ class InMemoryGraphStore:
         self._calls_edges: list[_CallsEdge] = []
         self._unresolved_calls: dict[str, UnresolvedCallNode] = {}
         self._repair_logs: dict[str, RepairLogNode] = {}
+        self._source_points: dict[str, SourcePointNode] = {}
 
     def create_function(self, node: FunctionNode) -> str:
         self._functions[node.id] = node
@@ -268,6 +276,31 @@ class InMemoryGraphStore:
 
     def delete_function(self, id: str) -> None:
         self._functions.pop(id, None)
+
+    def create_source_point(self, node: SourcePointNode) -> str:
+        """Store a SourcePoint node (architecture.md §4 SourcePoint 状态)."""
+        self._source_points[node.id] = node
+        return node.id
+
+    def get_source_point(self, source_id: str) -> SourcePointNode | None:
+        """Retrieve a SourcePoint by id."""
+        return self._source_points.get(source_id)
+
+    def update_source_point_status(self, source_id: str, status: str) -> None:
+        """Update SourcePoint.status (architecture.md §3 门禁机制).
+
+        Valid transitions: pending → running → complete | partial_complete.
+        """
+        existing = self._source_points.get(source_id)
+        if existing is None:
+            return
+        self._source_points[source_id] = SourcePointNode(
+            id=existing.id,
+            entry_point_kind=existing.entry_point_kind,
+            reason=existing.reason,
+            function_id=existing.function_id,
+            status=status,
+        )
 
     def delete_calls_edges_for_function(self, function_id: str) -> None:
         self._calls_edges = [
@@ -933,6 +966,55 @@ class Neo4jGraphStore:
             if u is not None
         ]
         return {"nodes": nodes, "edges": edges, "unresolved": unresolved}
+
+    def create_source_point(self, node: SourcePointNode) -> str:
+        """MERGE a SourcePoint node into Neo4j."""
+        cypher = (
+            "MERGE (s:SourcePoint {id: $id}) "
+            "SET s.entry_point_kind = $entry_point_kind, "
+            "    s.reason = $reason, "
+            "    s.function_id = $function_id, "
+            "    s.status = $status"
+        )
+        with self._get_driver().session() as session:
+            session.run(
+                cypher,
+                id=node.id,
+                entry_point_kind=node.entry_point_kind,
+                reason=node.reason,
+                function_id=node.function_id,
+                status=node.status,
+            )
+        return node.id
+
+    def get_source_point(self, source_id: str) -> SourcePointNode | None:
+        """Retrieve a SourcePoint by id."""
+        cypher = (
+            "MATCH (s:SourcePoint {id: $id}) "
+            "RETURN s.id AS id, s.entry_point_kind AS entry_point_kind, "
+            "s.reason AS reason, s.function_id AS function_id, s.status AS status"
+        )
+        with self._get_driver().session() as session:
+            result = session.run(cypher, id=source_id)
+            record = result.single()
+        if record is None:
+            return None
+        return SourcePointNode(
+            id=record["id"],
+            entry_point_kind=record["entry_point_kind"],
+            reason=record["reason"],
+            function_id=record["function_id"],
+            status=record["status"],
+        )
+
+    def update_source_point_status(self, source_id: str, status: str) -> None:
+        """Update SourcePoint.status (architecture.md §3 门禁机制)."""
+        cypher = (
+            "MATCH (s:SourcePoint {id: $id}) "
+            "SET s.status = $status"
+        )
+        with self._get_driver().session() as session:
+            session.run(cypher, id=source_id, status=status)
 
 
 # --- Record → dataclass helpers ---------------------------------------------

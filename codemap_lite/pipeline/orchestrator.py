@@ -5,6 +5,7 @@ import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from codemap_lite.graph.incremental import IncrementalUpdater
 from codemap_lite.graph.neo4j_store import InMemoryGraphStore, GraphStore
 from codemap_lite.graph.schema import FunctionNode, FileNode, CallsEdgeProps, UnresolvedCallNode
 from codemap_lite.parsing.file_scanner import FileScanner
@@ -93,6 +94,14 @@ class PipelineOrchestrator:
         if not changed_files and not changes.deleted:
             result.success = True
             return result
+
+        # Invalidate deleted and modified files (architecture.md §7 step 2):
+        # Remove stale functions/edges before re-parsing modified files.
+        updater = IncrementalUpdater(store=self._store)
+        for deleted_file in changes.deleted:
+            updater.invalidate_file(deleted_file)
+        for modified_file in changes.modified:
+            updater.invalidate_file(modified_file)
 
         # Re-scan to update state
         scanned = self._scanner.scan(self._target_dir)

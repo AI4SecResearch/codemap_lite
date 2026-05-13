@@ -1543,3 +1543,110 @@ async def test_retry_failed_gaps_resets_unresolvable_on_run_start(tmp_path):
     # The key assertion: the run was able to proceed because the GAP
     # was reset from unresolvable to pending at the start.
     assert results[0].attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_updates_source_point_status_on_gate_pass(tmp_path):
+    """architecture.md §3 门禁机制: '无残留 → SourcePoint.status = "complete"'.
+    When the gate check passes, the orchestrator must update the SourcePoint
+    node's status to 'complete'."""
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import FunctionNode, SourcePointNode, UnresolvedCallNode
+
+    store = InMemoryGraphStore()
+    store.create_function(FunctionNode(
+        id="f1", name="entry", signature="void entry()",
+        file_path="src/a.cpp", start_line=1, end_line=10, body_hash="h1",
+    ))
+    sp = SourcePointNode(
+        id="f1",
+        entry_point_kind="entry_point",
+        reason="test source",
+        function_id="f1",
+        status="pending",
+    )
+    store.create_source_point(sp)
+
+    gap = UnresolvedCallNode(
+        id="gap1", caller_id="f1", call_expression="foo()",
+        call_file="src/a.cpp", call_line=5, call_type="indirect",
+        source_code_snippet="foo();", var_name="foo", var_type="void(*)()",
+    )
+    store.create_unresolved_call(gap)
+
+    config = RepairConfig(
+        target_dir=tmp_path / "target",
+        backend="claudecode",
+        command="echo",
+        args=["done"],
+        neo4j_uri="bolt://localhost:7687",
+        neo4j_user="neo4j",
+        neo4j_password="test",
+        graph_store=store,
+    )
+    orchestrator = RepairOrchestrator(config=config)
+    orchestrator._check_gate = AsyncMock(return_value=True)
+
+    results = await orchestrator.run_repairs(["f1"])
+    assert results[0].success is True
+
+    updated_sp = store.get_source_point("f1")
+    assert updated_sp is not None
+    assert updated_sp.status == "complete", (
+        "architecture.md §3: gate pass must set SourcePoint.status = 'complete'"
+    )
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_updates_source_point_status_on_exhaustion(tmp_path):
+    """architecture.md §3 门禁机制: 'retry_count ≥ 3 → GAP.status = "unresolvable",
+    SourcePoint.status = "partial_complete"'. When all GAPs are exhausted,
+    the orchestrator must update SourcePoint status to 'partial_complete'."""
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import FunctionNode, SourcePointNode, UnresolvedCallNode
+
+    store = InMemoryGraphStore()
+    store.create_function(FunctionNode(
+        id="f1", name="entry", signature="void entry()",
+        file_path="src/a.cpp", start_line=1, end_line=10, body_hash="h1",
+    ))
+    sp = SourcePointNode(
+        id="f1",
+        entry_point_kind="entry_point",
+        reason="test source",
+        function_id="f1",
+        status="running",
+    )
+    store.create_source_point(sp)
+
+    gap = UnresolvedCallNode(
+        id="gap1", caller_id="f1", call_expression="bar()",
+        call_file="src/a.cpp", call_line=5, call_type="indirect",
+        source_code_snippet="bar();", var_name="bar", var_type="void(*)()",
+        retry_count=2, status="pending",
+    )
+    store.create_unresolved_call(gap)
+
+    config = RepairConfig(
+        target_dir=tmp_path / "target",
+        backend="claudecode",
+        command="echo",
+        args=["done"],
+        neo4j_uri="bolt://localhost:7687",
+        neo4j_user="neo4j",
+        neo4j_password="test",
+        graph_store=store,
+        retry_failed_gaps=False,
+    )
+    orchestrator = RepairOrchestrator(config=config)
+    orchestrator._check_gate = AsyncMock(return_value=False)
+
+    results = await orchestrator.run_repairs(["f1"])
+    assert results[0].success is False
+
+    updated_sp = store.get_source_point("f1")
+    assert updated_sp is not None
+    assert updated_sp.status == "partial_complete", (
+        "architecture.md §3: all GAPs exhausted must set "
+        "SourcePoint.status = 'partial_complete'"
+    )
