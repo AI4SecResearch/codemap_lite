@@ -1339,6 +1339,31 @@ class TestUnresolvedCallsFiltering:
         assert resp.json()["total"] == 1
         assert resp.json()["items"][0]["id"] == "g3"
 
+    def test_pagination_limit_offset(self) -> None:
+        """architecture.md §8: GET /unresolved-calls supports ?limit= and ?offset=."""
+        client, store = get_test_client()
+        # Create 5 gaps
+        for i in range(5):
+            store.create_unresolved_call(UnresolvedCallNode(
+                caller_id="f1", call_expression=f"fn{i}()",
+                call_file="a.cpp", call_line=i + 1, call_type="indirect",
+                source_code_snippet="", var_name=None, var_type=None, id=f"g{i}",
+            ))
+        # Default: all 5
+        resp = client.get("/api/v1/unresolved-calls")
+        assert resp.json()["total"] == 5
+        assert len(resp.json()["items"]) == 5
+
+        # Limit to 2
+        resp = client.get("/api/v1/unresolved-calls?limit=2")
+        assert resp.json()["total"] == 5  # total is unaffected
+        assert len(resp.json()["items"]) == 2
+
+        # Offset 3, limit 2 → only 2 remaining
+        resp = client.get("/api/v1/unresolved-calls?offset=3&limit=10")
+        assert resp.json()["total"] == 5
+        assert len(resp.json()["items"]) == 2
+
 
 def _make_repair_log(
     *,
