@@ -1,6 +1,8 @@
 """Tests for the graph storage layer (Phase 1.7)."""
 from __future__ import annotations
 
+from unittest.mock import MagicMock, patch
+
 import pytest
 
 from codemap_lite.graph.schema import (
@@ -10,7 +12,7 @@ from codemap_lite.graph.schema import (
     RepairLogNode,
     UnresolvedCallNode,
 )
-from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+from codemap_lite.graph.neo4j_store import InMemoryGraphStore, Neo4jGraphStore
 
 
 @pytest.fixture
@@ -498,3 +500,188 @@ class TestAgentSideGapOperations:
             self._make_gap(caller_id=source.id, status="resolved")
         )
         assert store.get_pending_gaps_for_source(source.id) == []
+
+
+# ---- Neo4jGraphStore (architecture.md §4 Cypher contract) -----------------
+
+
+class _FakeSession:
+    """Stand-in for a neo4j Session — captures cypher + params for assertions
+    and returns the next configured result on ``run()``.
+    """
+
+    def __init__(self, results):
+        self.results = list(results)
+        self.calls: list[tuple[str, dict]] = []
+
+    def run(self, cypher, **params):
+        self.calls.append((cypher, params))
+        if self.results:
+            return self.results.pop(0)
+        # Default: empty result that supports both .consume() and .single().
+        empty = MagicMock()
+        empty.single.return_value = None
+        empty.__iter__ = lambda self: iter([])
+        empty.consume.return_value = None
+        return empty
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+class _FakeDriver:
+    def __init__(self, session):
+        self._session = session
+
+    def session(self):
+        return self._session
+
+    def close(self):
+        pass
+
+
+def _stub_result(*, single=None, records=None):
+    """Build a result mock supporting `.single()`, `.consume()`, iteration."""
+    res = MagicMock()
+    res.single.return_value = single
+    res.consume.return_value = None
+    if records is not None:
+        res.__iter__ = lambda self: iter(records)
+    else:
+        res.__iter__ = lambda self: iter([])
+    return res
+
+
+def _patch_driver(store: Neo4jGraphStore, session: _FakeSession):
+    """Force the lazy driver to a fake — no real neo4j connection made."""
+    store._driver = _FakeDriver(session)
+
+
+@pytest.fixture
+def neo4j_store() -> Neo4jGraphStore:
+    return Neo4jGraphStore(uri="bolt://x:7687", user="u", password="p")
+
+
+def test_neo4j_create_function_uses_merge(neo4j_store):
+    session = _FakeSession([_stub_result()])
+    _patch_driver(neo4j_store, session)
+    fn = FunctionNode(
+        signature="int main()", name="main",
+        file_path="a.cpp", start_line=1, end_line=10, body_hash="h",
+    )
+    returned = neo4j_store.create_function(fn)
+    assert returned == fn.id
+    cypher, params = session.calls[0]
+    assert "MERGE (f:Function {id: $id})" in cypher
+    assert params["id"] == fn.id
+    assert params["signature"] == "int main()"
+
+
+def test_neo4j_create_calls_edge_uses_merge_on_call_site(neo4j_store):
+    session = _FakeSession([_stub_result()])
+    _patch_driver(neo4j_store, session)
+    neo4j_store.create_calls_edge(
+        caller_id="c1",
+        callee_id="c2",
+        props=CallsEdgeProps(
+            resolved_by="llm", call_type="indirect",
+            call_file="x.cpp", call_line=42,
+        ),
+    )
+    cypher, params = session.calls[0]
+    # Idempotency guard: MERGE keyed by (call_file, call_line) so the
+    # same edge isn't duplicated across reruns (architecture.md §3
+    # Agent 内循环 step 2d).
+    assert "MERGE (a)-[r:CALLS {call_file: $call_file, call_line: $call_line}]->(b)" in cypher
+    assert params["resolved_by"] == "llm"
+    assert params["call_line"] == 42
+
+
+def test_neo4j_edge_exists_returns_true_when_count_positive(neo4j_store):
+    record = MagicMock()
+    record.__getitem__ = lambda self, k: 1 if k == "c" else None
+    session = _FakeSession([_stub_result(single=record)])
+    _patch_driver(neo4j_store, session)
+    assert neo4j_store.edge_exists("c1", "c2", "x.cpp", 42) is True
+
+
+def test_neo4j_edge_exists_returns_false_when_zero(neo4j_store):
+    record = MagicMock()
+    record.__getitem__ = lambda self, k: 0 if k == "c" else None
+    session = _FakeSession([_stub_result(single=record)])
+    _patch_driver(neo4j_store, session)
+    assert neo4j_store.edge_exists("c1", "c2", "x.cpp", 42) is False
+
+
+def test_neo4j_delete_unresolved_call_emits_detach_delete(neo4j_store):
+    session = _FakeSession([_stub_result()])
+    _patch_driver(neo4j_store, session)
+    neo4j_store.delete_unresolved_call("c1", "x.cpp", 42)
+    cypher, params = session.calls[0]
+    assert "DETACH DELETE u" in cypher
+    assert params == {"caller_id": "c1", "call_file": "x.cpp", "call_line": 42}
+
+
+def test_neo4j_update_retry_state_writes_audit_fields(neo4j_store):
+    session = _FakeSession([_stub_result()])
+    _patch_driver(neo4j_store, session)
+    neo4j_store.update_unresolved_call_retry_state(
+        call_id="g1", timestamp="2026-05-13T12:00:00+00:00",
+        reason="gate_failed: still pending",
+    )
+    cypher, params = session.calls[0]
+    assert "u.last_attempt_timestamp = $timestamp" in cypher
+    assert "u.last_attempt_reason = $reason" in cypher
+    assert params["reason"].startswith("gate_failed: ")
+
+
+def test_neo4j_get_pending_gaps_for_source_filters_by_status(neo4j_store):
+    record = {
+        "id": "g1", "caller_id": "c1", "call_expression": "fp()",
+        "call_file": "x.cpp", "call_line": 42, "call_type": "indirect",
+        "source_code_snippet": "fp();", "var_name": "fp", "var_type": "void(*)()",
+        "candidates": [], "retry_count": 0, "status": "pending",
+        "last_attempt_timestamp": None, "last_attempt_reason": None,
+    }
+    rec_obj = MagicMock()
+    rec_obj.__getitem__ = lambda self, k: record[k]
+    session = _FakeSession([_stub_result(records=[rec_obj])])
+    _patch_driver(neo4j_store, session)
+    pending = neo4j_store.get_pending_gaps_for_source("src_001")
+    assert len(pending) == 1
+    assert pending[0].id == "g1"
+    cypher, _ = session.calls[0]
+    assert "u.status = 'pending'" in cypher
+    # BFS via variable-length CALLS path so gates respect reachability.
+    assert "[:CALLS*0..]" in cypher
+
+
+def test_neo4j_close_releases_driver(neo4j_store):
+    fake_driver = MagicMock()
+    neo4j_store._driver = fake_driver
+    neo4j_store.close()
+    fake_driver.close.assert_called_once()
+    assert neo4j_store._driver is None
+
+
+def test_neo4j_lazy_driver_construction(neo4j_store):
+    """Driver should not be created until first call — keeps unit tests
+    that mock RepairOrchestrator from needing real Neo4j connectivity.
+    """
+    assert neo4j_store._driver is None
+    fake_driver = MagicMock()
+    fake_session = _FakeSession([_stub_result()])
+    fake_driver.session.return_value = fake_session
+    with patch(
+        "neo4j.GraphDatabase.driver", return_value=fake_driver
+    ) as ctor:
+        neo4j_store.create_function(
+            FunctionNode(
+                signature="void f()", name="f",
+                file_path="a.cpp", start_line=1, end_line=2, body_hash="h",
+            )
+        )
+    ctor.assert_called_once_with("bolt://x:7687", auth=("u", "p"))

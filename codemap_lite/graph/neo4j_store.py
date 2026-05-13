@@ -312,66 +312,303 @@ class InMemoryGraphStore:
 class Neo4jGraphStore:
     """Real Neo4j implementation of GraphStore.
 
-    Structured for production use with the neo4j Python driver.
-    Currently raises NotImplementedError — to be wired up when a
-    Neo4j instance is available.
+    Each method opens a short-lived session so the store is safe to use
+    across threads / asyncio tasks without sharing transactional state.
+    The driver itself is created lazily on first use so unit tests that
+    never touch Neo4j don't pay the driver-import cost.
+
+    Cypher mirrors architecture.md §4 Neo4j Schema: label conventions
+    (``File`` / ``Function`` / ``UnresolvedCall`` / ``RepairLog``),
+    relationship types (``DEFINES`` / ``CALLS`` / ``HAS_GAP``), and
+    ``CALLS`` edge properties ``{resolved_by, call_type, call_file,
+    call_line}`` (the schema column ``location: {file, line}`` is
+    flattened to ``call_file`` / ``call_line`` to match
+    ``CallsEdgeProps`` and ``edge_exists`` lookups).
     """
 
     def __init__(self, uri: str, user: str, password: str) -> None:
         self._uri = uri
         self._user = user
         self._password = password
+        self._driver = None
+
+    def _get_driver(self):
+        """Lazy-construct the Neo4j driver on first use."""
+        if self._driver is None:
+            from neo4j import GraphDatabase
+
+            self._driver = GraphDatabase.driver(
+                self._uri, auth=(self._user, self._password)
+            )
+        return self._driver
+
+    def close(self) -> None:
+        """Release the Neo4j driver connection pool."""
+        if self._driver is not None:
+            self._driver.close()
+            self._driver = None
 
     def create_function(self, node: FunctionNode) -> str:
-        raise NotImplementedError("Neo4j driver not yet wired")
+        cypher = (
+            "MERGE (f:Function {id: $id}) "
+            "SET f.signature = $signature, f.name = $name, "
+            "    f.file_path = $file_path, f.start_line = $start_line, "
+            "    f.end_line = $end_line, f.body_hash = $body_hash "
+            "RETURN f.id AS id"
+        )
+        with self._get_driver().session() as session:
+            session.run(
+                cypher,
+                id=node.id,
+                signature=node.signature,
+                name=node.name,
+                file_path=node.file_path,
+                start_line=node.start_line,
+                end_line=node.end_line,
+                body_hash=node.body_hash,
+            ).consume()
+        return node.id
 
     def create_file(self, node: FileNode) -> str:
-        raise NotImplementedError("Neo4j driver not yet wired")
+        cypher = (
+            "MERGE (f:File {id: $id}) "
+            "SET f.file_path = $file_path, f.hash = $hash, "
+            "    f.primary_language = $primary_language"
+        )
+        with self._get_driver().session() as session:
+            session.run(
+                cypher,
+                id=node.id,
+                file_path=node.file_path,
+                hash=node.hash,
+                primary_language=node.primary_language,
+            ).consume()
+        return node.id
 
     def create_calls_edge(
         self, caller_id: str, callee_id: str, props: CallsEdgeProps
     ) -> None:
-        raise NotImplementedError("Neo4j driver not yet wired")
+        cypher = (
+            "MATCH (a:Function {id: $caller_id}), (b:Function {id: $callee_id}) "
+            "MERGE (a)-[r:CALLS {call_file: $call_file, call_line: $call_line}]->(b) "
+            "SET r.resolved_by = $resolved_by, r.call_type = $call_type"
+        )
+        with self._get_driver().session() as session:
+            session.run(
+                cypher,
+                caller_id=caller_id,
+                callee_id=callee_id,
+                call_file=props.call_file,
+                call_line=props.call_line,
+                resolved_by=props.resolved_by,
+                call_type=props.call_type,
+            ).consume()
 
     def create_unresolved_call(self, node: UnresolvedCallNode) -> str:
-        raise NotImplementedError("Neo4j driver not yet wired")
+        cypher = (
+            "MERGE (u:UnresolvedCall {id: $id}) "
+            "SET u.caller_id = $caller_id, u.call_expression = $call_expression, "
+            "    u.call_file = $call_file, u.call_line = $call_line, "
+            "    u.call_type = $call_type, u.source_code_snippet = $source_code_snippet, "
+            "    u.var_name = $var_name, u.var_type = $var_type, "
+            "    u.candidates = $candidates, u.retry_count = $retry_count, "
+            "    u.status = $status, "
+            "    u.last_attempt_timestamp = $last_attempt_timestamp, "
+            "    u.last_attempt_reason = $last_attempt_reason "
+            "WITH u "
+            "MATCH (caller:Function {id: $caller_id}) "
+            "MERGE (caller)-[:HAS_GAP]->(u)"
+        )
+        with self._get_driver().session() as session:
+            session.run(
+                cypher,
+                id=node.id,
+                caller_id=node.caller_id,
+                call_expression=node.call_expression,
+                call_file=node.call_file,
+                call_line=node.call_line,
+                call_type=node.call_type,
+                source_code_snippet=node.source_code_snippet,
+                var_name=node.var_name,
+                var_type=node.var_type,
+                candidates=list(node.candidates),
+                retry_count=node.retry_count,
+                status=node.status,
+                last_attempt_timestamp=node.last_attempt_timestamp,
+                last_attempt_reason=node.last_attempt_reason,
+            ).consume()
+        return node.id
 
     def get_function_by_id(self, id: str) -> FunctionNode | None:
-        raise NotImplementedError("Neo4j driver not yet wired")
+        cypher = (
+            "MATCH (f:Function {id: $id}) RETURN f.id AS id, "
+            "f.signature AS signature, f.name AS name, f.file_path AS file_path, "
+            "f.start_line AS start_line, f.end_line AS end_line, "
+            "f.body_hash AS body_hash"
+        )
+        with self._get_driver().session() as session:
+            record = session.run(cypher, id=id).single()
+        if record is None:
+            return None
+        return FunctionNode(
+            signature=record["signature"],
+            name=record["name"],
+            file_path=record["file_path"],
+            start_line=record["start_line"],
+            end_line=record["end_line"],
+            body_hash=record["body_hash"],
+            id=record["id"],
+        )
 
     def get_callers(self, function_id: str) -> list[FunctionNode]:
-        raise NotImplementedError("Neo4j driver not yet wired")
+        cypher = (
+            "MATCH (caller:Function)-[:CALLS]->(callee:Function {id: $id}) "
+            "RETURN DISTINCT caller.id AS id, caller.signature AS signature, "
+            "caller.name AS name, caller.file_path AS file_path, "
+            "caller.start_line AS start_line, caller.end_line AS end_line, "
+            "caller.body_hash AS body_hash"
+        )
+        with self._get_driver().session() as session:
+            records = list(session.run(cypher, id=function_id))
+        return [_record_to_function(r) for r in records]
 
     def get_callees(self, function_id: str) -> list[FunctionNode]:
-        raise NotImplementedError("Neo4j driver not yet wired")
+        cypher = (
+            "MATCH (caller:Function {id: $id})-[:CALLS]->(callee:Function) "
+            "RETURN DISTINCT callee.id AS id, callee.signature AS signature, "
+            "callee.name AS name, callee.file_path AS file_path, "
+            "callee.start_line AS start_line, callee.end_line AS end_line, "
+            "callee.body_hash AS body_hash"
+        )
+        with self._get_driver().session() as session:
+            records = list(session.run(cypher, id=function_id))
+        return [_record_to_function(r) for r in records]
 
     def get_unresolved_calls(
         self, caller_id: str | None = None, status: str | None = None
     ) -> list[UnresolvedCallNode]:
-        raise NotImplementedError("Neo4j driver not yet wired")
+        clauses = []
+        params: dict = {}
+        if caller_id is not None:
+            clauses.append("u.caller_id = $caller_id")
+            params["caller_id"] = caller_id
+        if status is not None:
+            clauses.append("u.status = $status")
+            params["status"] = status
+        where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
+        cypher = (
+            f"MATCH (u:UnresolvedCall) {where}"
+            "RETURN u.id AS id, u.caller_id AS caller_id, "
+            "u.call_expression AS call_expression, u.call_file AS call_file, "
+            "u.call_line AS call_line, u.call_type AS call_type, "
+            "u.source_code_snippet AS source_code_snippet, "
+            "u.var_name AS var_name, u.var_type AS var_type, "
+            "u.candidates AS candidates, u.retry_count AS retry_count, "
+            "u.status AS status, "
+            "u.last_attempt_timestamp AS last_attempt_timestamp, "
+            "u.last_attempt_reason AS last_attempt_reason"
+        )
+        with self._get_driver().session() as session:
+            records = list(session.run(cypher, **params))
+        return [_record_to_unresolved(r) for r in records]
 
     def edge_exists(
         self, caller_id: str, callee_id: str, call_file: str, call_line: int
     ) -> bool:
-        raise NotImplementedError("Neo4j driver not yet wired")
+        cypher = (
+            "MATCH (a:Function {id: $caller_id})-[r:CALLS]->(b:Function {id: $callee_id}) "
+            "WHERE r.call_file = $call_file AND r.call_line = $call_line "
+            "RETURN count(r) AS c"
+        )
+        with self._get_driver().session() as session:
+            record = session.run(
+                cypher,
+                caller_id=caller_id,
+                callee_id=callee_id,
+                call_file=call_file,
+                call_line=call_line,
+            ).single()
+        return bool(record and record["c"] > 0)
 
     def delete_unresolved_call(
         self, caller_id: str, call_file: str, call_line: int
     ) -> None:
-        raise NotImplementedError("Neo4j driver not yet wired")
+        cypher = (
+            "MATCH (u:UnresolvedCall) "
+            "WHERE u.caller_id = $caller_id "
+            "  AND u.call_file = $call_file "
+            "  AND u.call_line = $call_line "
+            "DETACH DELETE u"
+        )
+        with self._get_driver().session() as session:
+            session.run(
+                cypher,
+                caller_id=caller_id,
+                call_file=call_file,
+                call_line=call_line,
+            ).consume()
 
     def get_pending_gaps_for_source(
         self, source_id: str
     ) -> list[UnresolvedCallNode]:
-        raise NotImplementedError("Neo4j driver not yet wired")
+        # architecture.md §3 门禁机制: intersect the source's reachable
+        # caller set with pending UnresolvedCall nodes — the exact list
+        # ``check-complete`` reports as ``remaining_gaps``.
+        cypher = (
+            "MATCH (src:Function {id: $source_id}) "
+            "MATCH (src)-[:CALLS*0..]->(caller:Function) "
+            "MATCH (caller)-[:HAS_GAP]->(u:UnresolvedCall) "
+            "WHERE u.status = 'pending' "
+            "RETURN DISTINCT u.id AS id, u.caller_id AS caller_id, "
+            "u.call_expression AS call_expression, u.call_file AS call_file, "
+            "u.call_line AS call_line, u.call_type AS call_type, "
+            "u.source_code_snippet AS source_code_snippet, "
+            "u.var_name AS var_name, u.var_type AS var_type, "
+            "u.candidates AS candidates, u.retry_count AS retry_count, "
+            "u.status AS status, "
+            "u.last_attempt_timestamp AS last_attempt_timestamp, "
+            "u.last_attempt_reason AS last_attempt_reason"
+        )
+        with self._get_driver().session() as session:
+            records = list(session.run(cypher, source_id=source_id))
+        return [_record_to_unresolved(r) for r in records]
 
     def update_unresolved_call_retry_state(
         self, call_id: str, timestamp: str, reason: str
     ) -> None:
-        raise NotImplementedError("Neo4j driver not yet wired")
+        cypher = (
+            "MATCH (u:UnresolvedCall {id: $id}) "
+            "SET u.last_attempt_timestamp = $timestamp, "
+            "    u.last_attempt_reason = $reason"
+        )
+        with self._get_driver().session() as session:
+            session.run(
+                cypher, id=call_id, timestamp=timestamp, reason=reason
+            ).consume()
 
     def create_repair_log(self, node: RepairLogNode) -> str:
-        raise NotImplementedError("Neo4j driver not yet wired")
+        cypher = (
+            "MERGE (r:RepairLog {id: $id}) "
+            "SET r.caller_id = $caller_id, r.callee_id = $callee_id, "
+            "    r.call_location = $call_location, "
+            "    r.repair_method = $repair_method, "
+            "    r.llm_response = $llm_response, "
+            "    r.timestamp = $timestamp, "
+            "    r.reasoning_summary = $reasoning_summary"
+        )
+        with self._get_driver().session() as session:
+            session.run(
+                cypher,
+                id=node.id,
+                caller_id=node.caller_id,
+                callee_id=node.callee_id,
+                call_location=node.call_location,
+                repair_method=node.repair_method,
+                llm_response=node.llm_response,
+                timestamp=node.timestamp,
+                reasoning_summary=node.reasoning_summary,
+            ).consume()
+        return node.id
 
     def get_repair_logs(
         self,
@@ -379,16 +616,168 @@ class Neo4jGraphStore:
         callee_id: str | None = None,
         call_location: str | None = None,
     ) -> list[RepairLogNode]:
-        raise NotImplementedError("Neo4j driver not yet wired")
+        clauses = []
+        params: dict = {}
+        if caller_id is not None:
+            clauses.append("r.caller_id = $caller_id")
+            params["caller_id"] = caller_id
+        if callee_id is not None:
+            clauses.append("r.callee_id = $callee_id")
+            params["callee_id"] = callee_id
+        if call_location is not None:
+            clauses.append("r.call_location = $call_location")
+            params["call_location"] = call_location
+        where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
+        cypher = (
+            f"MATCH (r:RepairLog) {where}"
+            "RETURN r.id AS id, r.caller_id AS caller_id, "
+            "r.callee_id AS callee_id, r.call_location AS call_location, "
+            "r.repair_method AS repair_method, r.llm_response AS llm_response, "
+            "r.timestamp AS timestamp, r.reasoning_summary AS reasoning_summary"
+        )
+        with self._get_driver().session() as session:
+            records = list(session.run(cypher, **params))
+        return [_record_to_repair_log(r) for r in records]
 
     def delete_function(self, id: str) -> None:
-        raise NotImplementedError("Neo4j driver not yet wired")
+        cypher = "MATCH (f:Function {id: $id}) DETACH DELETE f"
+        with self._get_driver().session() as session:
+            session.run(cypher, id=id).consume()
 
     def delete_calls_edges_for_function(self, function_id: str) -> None:
-        raise NotImplementedError("Neo4j driver not yet wired")
+        cypher = (
+            "MATCH (f:Function {id: $id}) "
+            "OPTIONAL MATCH (f)-[out:CALLS]->() "
+            "OPTIONAL MATCH ()-[in_:CALLS]->(f) "
+            "DELETE out, in_"
+        )
+        with self._get_driver().session() as session:
+            session.run(cypher, id=function_id).consume()
 
     def get_reachable_subgraph(
         self, source_id: str, max_depth: int = 50
     ) -> dict:
-        raise NotImplementedError("Neo4j driver not yet wired")
+        # APOC-free variable-length traversal. Bound by max_depth to
+        # keep pathological graphs from OOM'ing the driver session.
+        cypher = (
+            "MATCH (src:Function {id: $source_id}) "
+            f"MATCH path = (src)-[:CALLS*0..{int(max_depth)}]->(fn:Function) "
+            "WITH collect(DISTINCT fn) AS fns, src "
+            "WITH fns + [src] AS nodes "
+            "UNWIND nodes AS n "
+            "WITH collect(DISTINCT n) AS nodes "
+            "OPTIONAL MATCH (a:Function)-[r:CALLS]->(b:Function) "
+            "WHERE a IN nodes AND b IN nodes "
+            "WITH nodes, collect(DISTINCT {caller_id: a.id, callee_id: b.id, "
+            "                              resolved_by: r.resolved_by, "
+            "                              call_type: r.call_type, "
+            "                              call_file: r.call_file, "
+            "                              call_line: r.call_line}) AS edges "
+            "OPTIONAL MATCH (c:Function)-[:HAS_GAP]->(u:UnresolvedCall) "
+            "WHERE c IN nodes "
+            "RETURN nodes, edges, collect(DISTINCT u) AS unresolved"
+        )
+        with self._get_driver().session() as session:
+            record = session.run(
+                cypher, source_id=source_id
+            ).single()
+
+        if record is None:
+            return {"nodes": [], "edges": [], "unresolved": []}
+
+        nodes = [
+            FunctionNode(
+                signature=n.get("signature", ""),
+                name=n.get("name", ""),
+                file_path=n.get("file_path", ""),
+                start_line=n.get("start_line", 0),
+                end_line=n.get("end_line", 0),
+                body_hash=n.get("body_hash", ""),
+                id=n.get("id", ""),
+            )
+            for n in record["nodes"]
+            if n is not None
+        ]
+        edges = [
+            _CallsEdge(
+                caller_id=e["caller_id"],
+                callee_id=e["callee_id"],
+                props=CallsEdgeProps(
+                    resolved_by=e["resolved_by"],
+                    call_type=e["call_type"],
+                    call_file=e["call_file"],
+                    call_line=e["call_line"],
+                ),
+            )
+            for e in record["edges"]
+            if e and e.get("caller_id") is not None
+        ]
+        unresolved = [
+            UnresolvedCallNode(
+                caller_id=u.get("caller_id"),
+                call_expression=u.get("call_expression", ""),
+                call_file=u.get("call_file", ""),
+                call_line=u.get("call_line", 0),
+                call_type=u.get("call_type", ""),
+                source_code_snippet=u.get("source_code_snippet", ""),
+                var_name=u.get("var_name"),
+                var_type=u.get("var_type"),
+                candidates=list(u.get("candidates") or []),
+                retry_count=u.get("retry_count", 0),
+                status=u.get("status", "pending"),
+                last_attempt_timestamp=u.get("last_attempt_timestamp"),
+                last_attempt_reason=u.get("last_attempt_reason"),
+                id=u.get("id", ""),
+            )
+            for u in record["unresolved"]
+            if u is not None
+        ]
+        return {"nodes": nodes, "edges": edges, "unresolved": unresolved}
+
+
+# --- Record → dataclass helpers ---------------------------------------------
+
+
+def _record_to_function(record) -> FunctionNode:
+    return FunctionNode(
+        signature=record["signature"],
+        name=record["name"],
+        file_path=record["file_path"],
+        start_line=record["start_line"],
+        end_line=record["end_line"],
+        body_hash=record["body_hash"],
+        id=record["id"],
+    )
+
+
+def _record_to_unresolved(record) -> UnresolvedCallNode:
+    return UnresolvedCallNode(
+        caller_id=record["caller_id"],
+        call_expression=record["call_expression"],
+        call_file=record["call_file"],
+        call_line=record["call_line"],
+        call_type=record["call_type"],
+        source_code_snippet=record["source_code_snippet"],
+        var_name=record["var_name"],
+        var_type=record["var_type"],
+        candidates=list(record["candidates"] or []),
+        retry_count=record["retry_count"] or 0,
+        status=record["status"] or "pending",
+        last_attempt_timestamp=record["last_attempt_timestamp"],
+        last_attempt_reason=record["last_attempt_reason"],
+        id=record["id"],
+    )
+
+
+def _record_to_repair_log(record) -> RepairLogNode:
+    return RepairLogNode(
+        caller_id=record["caller_id"],
+        callee_id=record["callee_id"],
+        call_location=record["call_location"],
+        repair_method=record["repair_method"],
+        llm_response=record["llm_response"],
+        timestamp=record["timestamp"],
+        reasoning_summary=record["reasoning_summary"],
+        id=record["id"],
+    )
 
