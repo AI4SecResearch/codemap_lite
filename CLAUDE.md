@@ -120,29 +120,34 @@ codemap-lite serve    [--config PATH] [--port 8000]     # 启 FastAPI
 
 ## Claude Loop Workflow
 
-### 最高铁律：实现必须与 `docs/architecture.md` 吻合
+### 总体策略：先跑通最小系统，再逐步完善至架构设计
 
-`docs/architecture.md`（13 章 + 56 条 ADR）是本仓库的**唯一事实来源（Single Source of Truth）**。任何代码、配置、测试、前端行为都必须与该文档一致。当前实现与架构设计之间存在差距——**每轮 loop 的核心任务就是识别差距、用测试锁定预期行为、再实现对齐**。
+`docs/architecture.md`（13 章 + 56 条 ADR）是本仓库的**唯一事实来源（Single Source of Truth）**。但实现路径不是一步到位——**首要目标是尽快跑通架构中描述的核心功能链路（最小可用系统），然后在此基础上逐轮完善，最终达成与架构设计完全一致**。
 
-- **每轮循环开始前（Gap Identification）**：重新扫读 `docs/architecture.md` 受影响的章节（至少 §1 层次、§2 Neo4j Schema、§3 Repair Agent 协议、§8 REST API 契约），**逐条列出"架构描述 vs 当前实现"的差距清单**（字段缺失、行为不一致、接口未实现、约束未校验等）。没有这一步不准进 Implement。差距清单写进 issue body 或 plan 文档，作为本轮的验收标准。
-- **差距驱动测试（Test-First Gap Closure）**：对每个识别出的差距点，**先写测试用例**断言架构文档描述的行为（字段名、返回值、并发模型、重试上限、门禁条件等），让测试 RED；再实现代码使测试 GREEN。一轮只挑 1–3 个差距点闭环，不贪多——小步稳进，每步都有测试兜底。
-- **每轮循环结束前**：对照同样章节自检，确认本轮没有引入新的漂移。有漂移就必须在提交前解决——要么改代码回到架构，要么开 ADR 正式修订架构。
+**两阶段推进**：
+1. **Phase 1 — 最小系统（Make it work）**：优先实现架构中端到端链路必需的功能（解析 → 构图 → 修复 → 审阅），每个环节只做"能跑通"的最简实现。跳过的细节（性能优化、边界校验、高级特性）登记到 `## Known gaps`，不阻塞主链路。
+2. **Phase 2 — 逐步对齐（Make it right）**：最小系统跑通后，每轮 loop 从 `## Known gaps` 和架构差距清单中挑差距点，用测试锁定预期行为，实现对齐。持续迭代直到实现与 `docs/architecture.md` 完全一致。
+
+**判断当前处于哪个 Phase**：如果 `codemap-lite analyze → repair → serve` 全链路还不能在真实目标代码上跑通产出可审阅的结果，就还在 Phase 1；否则进入 Phase 2。
+
+### 铁律（两个 Phase 都适用）
+
 - **架构冲突处理顺序**：`docs/architecture.md` > ADR（`docs/adr/`）> 代码 > 测试。发现矛盾时，**先开 ADR 记录并修订架构文档，再改代码/测试**；绝不允许静默修改 `architecture.md` 来"迎合"已经写好的代码。
 - **偏离必须显式登记**：任何暂时无法对齐的实现，必须在 `## Known gaps` 或新 ADR 里写清楚（用架构里的原词命名），不允许隐式 gap。
 - **术语锁死**：节点 / 关系 / `resolved_by` 枚举 / 配置 section 名 / CLI 命令名 / REST 路径——严格使用 `architecture.md` 中的字面拼写，不改名、不加别名。
 
-### 6 步循环（每步都服务于"向架构靠拢"这一目标）
+### 每轮循环
 
-1. **Propose（识别差距 → 选定本轮目标）** — 先查 `gh issue list`（处理已有 open issue 优先于开新坑）。如需新方案，用 `/plan` skill 或 planner agent 起草。**核心动作**：对照 `architecture.md` 相关章节，输出一份差距清单（哪些字段/接口/行为/约束在架构里有描述但代码里缺失或不一致），从中挑 1–3 个差距点作为本轮闭环目标。**issue 描述必须引用 `architecture.md` 的具体章节/ADR 编号**，说明本次改动是在缩小哪个 gap。
-2. **Implement（测试先行 → 实现对齐）** — 对本轮选定的每个差距点：① 先写测试用例，断言架构文档描述的预期行为（RED）；② 实现/修改代码使测试通过（GREEN）；③ 重构清理（REFACTOR）。标准顺序：`/plan`（跨模块、新增概念、或含复杂设计时起草方案）→ `/tdd`（先写测试再实现，测试断言直接对标架构文档行为）→ 简单单点修复可跳过 `/plan`。棘手 bug 走 `/diagnose`。**不引入架构未定义的新概念**；确有必要，走步骤 5 先写 ADR 再回来实现。
+1. **Propose（识别差距 → 选定本轮目标）** — 先查 `gh issue list`（处理已有 open issue 优先于开新坑）。对照 `architecture.md` 相关章节，列出差距清单。**Phase 1 优先选阻塞端到端链路的缺失功能**；Phase 2 优先选能提升正确性/健壮性的差距点。一轮挑 1–3 个目标。**issue 描述必须引用 `architecture.md` 的具体章节/ADR 编号**。
+2. **Implement（测试先行 → 实现）** — 对本轮选定的每个目标：① 先写测试用例，断言架构文档描述的预期行为（RED）；② 实现/修改代码使测试通过（GREEN）；③ 重构清理（REFACTOR）。Phase 1 允许测试只覆盖 happy path；Phase 2 补齐边界和异常路径。棘手 bug 走 `/diagnose`。**不引入架构未定义的新概念**；确有必要，走步骤 5 先写 ADR 再回来实现。
 3. **Verify（端到端，必须全过）** —
-   - **架构对齐**：diff 当前实现 vs `docs/architecture.md` 相关章节，逐条确认字段名、接口签名、并发模型、门禁次数、retry 上限等都一致。
+   - **架构对齐**：diff 当前实现 vs `docs/architecture.md` 相关章节，逐条确认本轮改动与架构一致。
    - **后端**：`pytest` + 相关 `tests/run_e2e_*.py`。改动触及 `docs/e2e-test-plan.md §E2E-1..7` 中尚未覆盖的场景时，**新增测试用例**而不是跳过。
-   - **前端**：`cd frontend && npm run dev` 人眼过一遍——检查项（人眼清单）、北极星指标、候选优化方向统一在 `### 前端持续优化`。
+   - **前端**：`cd frontend && npm run dev` 人眼过一遍——检查项见 `### 前端持续优化`。
    - **契约**：改 REST API 时同步 `docs/architecture.md §8`、前端 API 客户端、相关 E2E 场景——三处同步更新才算完成。
 4. **Commit & Push** — `/commit`（或直接 `gh`），遵循 conventional commits。**commit body 必须引用 `architecture.md` 章节或 ADR 编号**，说明本次对齐了哪个 gap。具体 remote / 认证 / 分支策略见 `### Git Conventions`。
-5. **Learn** — 本轮新事实按归属分流：架构级决策走 `/doc-coauthoring` 写 ADR 并同步回 `architecture.md` 附录速查表；新增/修订工程约定写进本文件 `## Project-specific conventions`；暂时无法对齐的实现写进 `## Known gaps`；术语漂移走 `/grill-with-docs` 收敛到本 CLAUDE.md 或 `docs/architecture.md`；本轮做了什么的流水交给 `git log`（commit body 已要求引用章节/ADR 编号）。改完后用 `/simplify` 做一次自审。
-6. **Repeat** — 选下一个最高价值 issue，优先挑能进一步缩小架构 gap 的。每轮只闭环 1–3 个差距点，积少成多，最终实现与 `docs/architecture.md` 完全一致。
+5. **Learn** — 本轮新事实按归属分流：架构级决策走 ADR；新增工程约定写进 `## Project-specific conventions`；暂时无法对齐的实现写进 `## Known gaps`；本轮做了什么交给 `git log`。改完后用 `/simplify` 做一次自审。
+6. **Repeat** — 选下一个最高价值 issue。Phase 1 优先打通链路；Phase 2 优先缩小架构 gap。每轮只闭环 1–3 个点，积少成多，最终实现与 `docs/architecture.md` 完全一致。
 
 ### Git Conventions（本仓库具体）
 
