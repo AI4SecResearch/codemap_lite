@@ -270,6 +270,11 @@ class RepairOrchestrator:
         target_dir = self._config.target_dir
         attempts = 0
 
+        # architecture.md §4: ensure SourcePoint node exists in the graph
+        # before we attempt status updates. Without this, update_source_point_status
+        # is a silent no-op and the frontend never sees source state transitions.
+        self._ensure_source_point(source_id)
+
         # architecture.md §3 SourcePoint 状态: pending → running
         self._update_source_status(source_id, "running")
 
@@ -502,6 +507,29 @@ class RepairOrchestrator:
             store.update_unresolved_call_retry_state(
                 call_id=gap.id, timestamp=timestamp, reason=reason
             )
+
+    def _ensure_source_point(self, source_id: str) -> None:
+        """Create SourcePoint node if it doesn't already exist.
+
+        architecture.md §4: SourcePoint nodes track the lifecycle of each
+        repair target. The orchestrator must ensure the node exists before
+        attempting status transitions, otherwise update_source_point_status
+        is a silent no-op and the frontend never sees state changes.
+        """
+        store = self._config.graph_store
+        if store is None:
+            return
+        if store.get_source_point(source_id) is not None:
+            return
+        from codemap_lite.graph.schema import SourcePointNode
+
+        store.create_source_point(SourcePointNode(
+            id=source_id,
+            function_id=source_id,
+            entry_point_kind="unknown",
+            reason="",
+            status="pending",
+        ))
 
     def _update_source_status(self, source_id: str, status: str) -> None:
         """Update SourcePoint.status in the graph store.

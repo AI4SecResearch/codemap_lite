@@ -281,6 +281,60 @@ async def test_orchestrator_retries_on_gate_failure(repair_config, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_orchestrator_creates_source_point_node_if_not_exists(tmp_path):
+    """architecture.md §4: SourcePoint nodes must exist in Neo4j for
+    update_source_point_status to work. The orchestrator must ensure
+    the node exists before starting repair (create if not exists)."""
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import FunctionNode, UnresolvedCallNode
+
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    store = InMemoryGraphStore()
+
+    # Set up a function and a pending gap so the repair loop enters
+    fn = FunctionNode(
+        id="src_001", signature="void main()", name="main",
+        file_path="src/main.c", start_line=1, end_line=10, body_hash="abc",
+    )
+    store.create_function(fn)
+    gap = UnresolvedCallNode(
+        id="gap_001", caller_id="src_001", call_expression="foo()",
+        call_file="src/main.c", call_line=5, call_type="indirect",
+        source_code_snippet="foo();", var_name=None, var_type=None,
+        status="pending",
+    )
+    store.create_unresolved_call(gap)
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        command="echo",
+        args=["done"],
+        max_concurrency=1,
+        neo4j_uri="bolt://localhost:7687",
+        neo4j_user="neo4j",
+        neo4j_password="test",
+        graph_store=store,
+    )
+    orchestrator = RepairOrchestrator(config=config)
+    orchestrator._check_gate = AsyncMock(return_value=True)
+
+    # Before repair: no SourcePoint exists
+    assert store.get_source_point("src_001") is None
+
+    await orchestrator.run_repairs(["src_001"])
+
+    # After repair: SourcePoint should exist with status
+    sp = store.get_source_point("src_001")
+    assert sp is not None, "SourcePoint node must be created during repair"
+    assert sp.function_id == "src_001"
+    # Status should be "complete" since gate passed
+    assert sp.status == "complete"
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_injects_feedback_store_counter_examples(tmp_path):
     """Counter examples from FeedbackStore must land in .icslpreprocess_{source_id}/counter_examples.md.
 
@@ -1788,3 +1842,93 @@ async def test_feedback_loop_injects_counter_examples_into_next_repair(tmp_path)
     )
     assert "generic_handler" in ce_text
     assert "specific_handler" in ce_text
+
+
+@pytest.mark.asyncio
+async def test_retry_failed_gaps_false_skips_reset(tmp_path):
+    """architecture.md §10 line 523: retry_failed_gaps=false must NOT reset
+    unresolvable GAPs. Only when true should reset_unresolvable_gaps be called."""
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import FunctionNode, UnresolvedCallNode
+
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    store = InMemoryGraphStore()
+    # Create a function and an unresolvable gap
+    fn = FunctionNode(
+        id="src_001", signature="void main()", name="main",
+        file_path="src/main.c", start_line=1, end_line=10, body_hash="abc",
+    )
+    store.create_function(fn)
+    gap = UnresolvedCallNode(
+        id="gap_001", caller_id="src_001", call_expression="foo()",
+        call_file="src/main.c", call_line=5, call_type="indirect",
+        source_code_snippet="foo();", var_name=None, var_type=None,
+        status="unresolvable", retry_count=3,
+    )
+    store.create_unresolved_call(gap)
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        command="echo",
+        args=["done"],
+        max_concurrency=1,
+        graph_store=store,
+        retry_failed_gaps=False,  # <-- key: must NOT reset
+    )
+    orchestrator = RepairOrchestrator(config=config)
+    orchestrator._check_gate = AsyncMock(return_value=True)
+
+    await orchestrator.run_repairs(["src_001"])
+
+    # GAP must still be unresolvable — reset was skipped
+    gap_after = store._unresolved_calls["gap_001"]
+    assert gap_after.status == "unresolvable", (
+        "retry_failed_gaps=False must not reset unresolvable GAPs"
+    )
+    assert gap_after.retry_count == 3
+
+
+@pytest.mark.asyncio
+async def test_retry_failed_gaps_true_resets_unresolvable(tmp_path):
+    """architecture.md §10 line 523: retry_failed_gaps=true must reset
+    unresolvable GAPs to pending with retry_count=0 before starting repairs."""
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import FunctionNode, UnresolvedCallNode
+
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    store = InMemoryGraphStore()
+    fn = FunctionNode(
+        id="src_001", signature="void main()", name="main",
+        file_path="src/main.c", start_line=1, end_line=10, body_hash="abc",
+    )
+    store.create_function(fn)
+    gap = UnresolvedCallNode(
+        id="gap_001", caller_id="src_001", call_expression="foo()",
+        call_file="src/main.c", call_line=5, call_type="indirect",
+        source_code_snippet="foo();", var_name=None, var_type=None,
+        status="unresolvable", retry_count=3,
+    )
+    store.create_unresolved_call(gap)
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        command="echo",
+        args=["done"],
+        max_concurrency=1,
+        graph_store=store,
+        retry_failed_gaps=True,  # <-- key: MUST reset
+    )
+    orchestrator = RepairOrchestrator(config=config)
+    orchestrator._check_gate = AsyncMock(return_value=True)
+
+    await orchestrator.run_repairs(["src_001"])
+
+    # GAP must have been reset to pending with retry_count=0
+    gap_after = store._unresolved_calls["gap_001"]
+    assert gap_after.status != "unresolvable", (
+        "retry_failed_gaps=True must reset unresolvable GAPs to pending"
+    )

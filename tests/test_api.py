@@ -915,8 +915,11 @@ class TestFeedbackEndpoint:
         assert data["unresolved_by_status"] == {}
         # Breakdown by CallsEdgeProps.resolved_by (architecture.md §4 +
         # §5 审阅对象：单条 CALLS 边，特别是 resolved_by='llm' 的).
+        # All 5 keys must always be present (architecture.md §8).
         assert "calls_by_resolved_by" in data
-        assert data["calls_by_resolved_by"] == {}
+        assert data["calls_by_resolved_by"] == {
+            "symbol_table": 0, "signature": 0, "dataflow": 0, "context": 0, "llm": 0,
+        }
         # Counter-example library size (architecture.md §3 反馈机制 + §8).
         # Without a wired FeedbackStore the field is present and 0 so
         # the left-nav chip can render deterministically (北极星 #5).
@@ -1035,6 +1038,8 @@ class TestFeedbackEndpoint:
             "symbol_table": 1,
             "llm": 2,
             "signature": 1,
+            "dataflow": 0,
+            "context": 0,
         }
 
     def test_get_stats_unresolved_by_category(self) -> None:
@@ -1103,12 +1108,15 @@ class TestFeedbackEndpoint:
         }
 
     def test_get_stats_unresolved_by_category_empty(self) -> None:
-        """Empty store still returns the field (empty dict) so the
+        """Empty store still returns all category keys with 0 so the
         frontend doesn't have to guard against undefined."""
         client, _ = get_test_client()
         resp = client.get("/api/v1/stats")
         assert resp.status_code == 200
-        assert resp.json()["unresolved_by_category"] == {}
+        assert resp.json()["unresolved_by_category"] == {
+            "gate_failed": 0, "agent_error": 0, "subprocess_crash": 0,
+            "subprocess_timeout": 0, "none": 0,
+        }
 
 
 class TestNoPrivateAttrLeak:
@@ -1577,3 +1585,75 @@ class TestEdgeDeletion:
             assert resp.status_code == 204
             # Background task should have been called with settings + caller_id
             mock_trigger.assert_called_once_with(settings, "a")
+
+
+class TestStatsEndpoint:
+    """architecture.md §8: /api/v1/stats must return unresolved_by_category
+    with all 5 keys always present, and calls_by_resolved_by with all 5
+    resolved_by values."""
+
+    def test_stats_unresolved_by_category_all_keys_present(self) -> None:
+        """Even with no unresolved calls, all category keys must appear with 0."""
+        client, store = get_test_client()
+        resp = client.get("/api/v1/stats")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "unresolved_by_category" in data
+        cats = data["unresolved_by_category"]
+        expected_keys = {"gate_failed", "agent_error", "subprocess_crash",
+                         "subprocess_timeout", "none"}
+        assert set(cats.keys()) == expected_keys, (
+            f"unresolved_by_category must always have all 5 keys, got {set(cats.keys())}"
+        )
+        # All should be 0 when no unresolved calls exist
+        for k in expected_keys:
+            assert cats[k] == 0
+
+    def test_stats_calls_by_resolved_by_all_keys_present(self) -> None:
+        """Even with no calls edges, all resolved_by keys must appear with 0."""
+        client, store = get_test_client()
+        resp = client.get("/api/v1/stats")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "calls_by_resolved_by" in data
+        resolved = data["calls_by_resolved_by"]
+        expected_keys = {"symbol_table", "signature", "dataflow", "context", "llm"}
+        assert set(resolved.keys()) == expected_keys, (
+            f"calls_by_resolved_by must always have all 5 keys, got {set(resolved.keys())}"
+        )
+        for k in expected_keys:
+            assert resolved[k] == 0
+
+    def test_stats_category_bucketing_correct(self) -> None:
+        """Verify category extraction from last_attempt_reason prefix."""
+        client, store = get_test_client()
+        # Add unresolved calls with different reasons
+        fn = FunctionNode(
+            id="f1", signature="void f()", name="f",
+            file_path="a.c", start_line=1, end_line=5, body_hash="h",
+        )
+        store.create_function(fn)
+        reasons = [
+            ("gap_1", "gate_failed: remaining pending GAPs"),
+            ("gap_2", "agent_error: exit 1"),
+            ("gap_3", "subprocess_timeout: 30s"),
+            ("gap_4", "subprocess_crash: OSError: No such file"),
+            ("gap_5", None),  # no reason → "none" bucket
+        ]
+        for gap_id, reason in reasons:
+            gap = UnresolvedCallNode(
+                id=gap_id, caller_id="f1", call_expression="x()",
+                call_file="a.c", call_line=1, call_type="indirect",
+                source_code_snippet="x();", var_name=None, var_type=None,
+                last_attempt_reason=reason,
+            )
+            store.create_unresolved_call(gap)
+
+        resp = client.get("/api/v1/stats")
+        data = resp.json()
+        cats = data["unresolved_by_category"]
+        assert cats["gate_failed"] == 1
+        assert cats["agent_error"] == 1
+        assert cats["subprocess_timeout"] == 1
+        assert cats["subprocess_crash"] == 1
+        assert cats["none"] == 1

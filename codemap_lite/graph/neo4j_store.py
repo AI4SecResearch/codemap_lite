@@ -407,10 +407,13 @@ class InMemoryGraphStore:
         for u in self._unresolved_calls.values():
             key = getattr(u, "status", None) or "pending"
             by_status[key] = by_status.get(key, 0) + 1
-        by_category: dict[str, int] = {}
+        # architecture.md §8: unresolved_by_category must always contain all
+        # 5 keys so the frontend can render chips without null-checking.
         _VALID_CATEGORIES = {
             "gate_failed", "agent_error", "subprocess_crash", "subprocess_timeout"
         }
+        by_category: dict[str, int] = {c: 0 for c in _VALID_CATEGORIES}
+        by_category["none"] = 0
         for u in self._unresolved_calls.values():
             reason = getattr(u, "last_attempt_reason", None)
             if reason and ":" in reason:
@@ -419,7 +422,12 @@ class InMemoryGraphStore:
             else:
                 cat_key = "none"
             by_category[cat_key] = by_category.get(cat_key, 0) + 1
-        by_resolved: dict[str, int] = {}
+        # architecture.md §8: calls_by_resolved_by must always contain all
+        # 5 resolved_by keys.
+        _VALID_RESOLVED_BY = {
+            "symbol_table", "signature", "dataflow", "context", "llm"
+        }
+        by_resolved: dict[str, int] = {r: 0 for r in _VALID_RESOLVED_BY}
         for e in self._calls_edges:
             key = e.props.resolved_by or "unknown"
             by_resolved[key] = by_resolved.get(key, 0) + 1
@@ -994,7 +1002,8 @@ class Neo4jGraphStore:
                 "MATCH (u:UnresolvedCall) "
                 "RETURN u.last_attempt_reason AS reason, count(u) AS n"
             ))
-            by_category: dict[str, int] = {}
+            by_category: dict[str, int] = {c: 0 for c in _VALID_CATEGORIES}
+            by_category["none"] = 0
             for row in cat_rows:
                 reason = row["reason"]
                 if reason and ":" in reason:
@@ -1003,14 +1012,17 @@ class Neo4jGraphStore:
                 else:
                     cat_key = "none"
                 by_category[cat_key] = by_category.get(cat_key, 0) + row["n"]
-            by_resolved: dict[str, int] = {
-                (row["rb"] or "unknown"): row["n"]
-                for row in session.run(
-                    "MATCH ()-[r:CALLS]->() "
-                    "RETURN coalesce(r.resolved_by, 'unknown') AS rb, "
-                    "count(r) AS n"
-                )
+            _VALID_RESOLVED_BY = {
+                "symbol_table", "signature", "dataflow", "context", "llm"
             }
+            by_resolved: dict[str, int] = {r: 0 for r in _VALID_RESOLVED_BY}
+            for row in session.run(
+                "MATCH ()-[r:CALLS]->() "
+                "RETURN coalesce(r.resolved_by, 'unknown') AS rb, "
+                "count(r) AS n"
+            ):
+                key = row["rb"] or "unknown"
+                by_resolved[key] = by_resolved.get(key, 0) + row["n"]
         return {
             "total_functions": total_functions,
             "total_files": total_files,
