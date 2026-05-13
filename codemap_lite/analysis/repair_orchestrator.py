@@ -131,6 +131,22 @@ class RepairOrchestrator:
         tools_src = Path(_icsl_tools_module.__file__)
         shutil.copy2(tools_src, icsl_dir / "icsl_tools.py")
 
+        # Copy hook scripts so .claude/settings.json commands resolve.
+        # architecture.md §3 进度通信机制: hooks write progress.json +
+        # tool-use JSONL from within the agent subprocess.
+        from codemap_lite.agent import hooks as _hooks_pkg
+
+        hooks_src_dir = Path(_hooks_pkg.__file__).parent
+        hooks_dst_dir = icsl_dir / "hooks"
+        hooks_dst_dir.mkdir(parents=True, exist_ok=True)
+        for hook_file in ("log_notification.py", "log_tool_use.py"):
+            src = hooks_src_dir / hook_file
+            if src.exists():
+                shutil.copy2(src, hooks_dst_dir / hook_file)
+
+        # Write source_id so hooks can identify which source they serve.
+        (icsl_dir / "source_id.txt").write_text(source_id, encoding="utf-8")
+
         # config.yaml for Neo4j connection
         config_yaml = f"""neo4j:
   uri: "{self._config.neo4j_uri}"

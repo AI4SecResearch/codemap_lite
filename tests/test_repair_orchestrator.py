@@ -783,3 +783,46 @@ async def test_orchestrator_progress_shows_succeeded_on_gate_pass(tmp_path):
     assert data["state"] == "succeeded"
     assert data["gate_result"] == "passed"
     assert data["attempt"] == 1
+
+
+def test_inject_files_copies_hooks_and_source_id(orchestrator, tmp_path):
+    """Bug #1/#3: hooks must be copied to .icslpreprocess/hooks/ and
+    source_id.txt must exist so hook scripts can identify the source."""
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    orchestrator._inject_files(
+        target_dir=target_dir,
+        source_id="src_hook_test",
+        counter_examples="",
+    )
+
+    hooks_dir = target_dir / ".icslpreprocess" / "hooks"
+    assert hooks_dir.is_dir()
+    assert (hooks_dir / "log_notification.py").exists()
+    assert (hooks_dir / "log_tool_use.py").exists()
+
+    # Verify hook scripts have __main__ entry points (Bug #7)
+    for hook_file in ("log_notification.py", "log_tool_use.py"):
+        content = (hooks_dir / hook_file).read_text(encoding="utf-8")
+        assert '__name__' in content and '__main__' in content, (
+            f"{hook_file} missing __main__ entry point"
+        )
+
+    # source_id.txt must contain the source_id (Bug #3)
+    sid_path = target_dir / ".icslpreprocess" / "source_id.txt"
+    assert sid_path.exists()
+    assert sid_path.read_text(encoding="utf-8") == "src_hook_test"
+
+    # .claude/settings.json must reference the hook paths
+    settings_path = target_dir / ".claude" / "settings.json"
+    settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert "hooks" in settings
+    assert any(
+        "log_tool_use.py" in h.get("command", "")
+        for h in settings["hooks"].get("PostToolUse", [])
+    )
+    assert any(
+        "log_notification.py" in h.get("command", "")
+        for h in settings["hooks"].get("Notification", [])
+    )

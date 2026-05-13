@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -28,3 +29,23 @@ def process_notification_event(
     }
 
     progress_path.write_text(json.dumps(progress, ensure_ascii=False), encoding="utf-8")
+
+
+if __name__ == "__main__":
+    # Invoked by Claude Code / opencode hook system.
+    # Reads JSON event from stdin; source_id from .icslpreprocess/source_id.txt;
+    # log_dir defaults to cwd/logs (architecture.md §3 进度通信机制).
+    cwd = Path.cwd()
+    source_id_path = cwd / ".icslpreprocess" / "source_id.txt"
+    if not source_id_path.exists():
+        sys.exit(0)  # Graceful no-op if not in a repair context
+    source_id = source_id_path.read_text(encoding="utf-8").strip()
+
+    # Read event from stdin (Claude Code hook protocol passes JSON on stdin)
+    try:
+        event = json.loads(sys.stdin.read())
+    except (json.JSONDecodeError, ValueError):
+        sys.exit(0)
+
+    log_dir = cwd / "logs"
+    process_notification_event(event=event, source_id=source_id, log_dir=log_dir)

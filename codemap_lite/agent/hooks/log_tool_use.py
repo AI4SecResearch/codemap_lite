@@ -26,3 +26,26 @@ def process_tool_use_event(
 
     with open(log_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+if __name__ == "__main__":
+    import sys
+
+    # Invoked by Claude Code / opencode hook system.
+    # Reads JSON event from stdin; source_id from .icslpreprocess/source_id.txt;
+    # gap_id from the event payload (falls back to "unknown").
+    cwd = Path.cwd()
+    source_id_path = cwd / ".icslpreprocess" / "source_id.txt"
+    if not source_id_path.exists():
+        sys.exit(0)  # Graceful no-op if not in a repair context
+    source_id = source_id_path.read_text(encoding="utf-8").strip()
+
+    # Read event from stdin (Claude Code hook protocol passes JSON on stdin)
+    try:
+        event = json.loads(sys.stdin.read())
+    except (json.JSONDecodeError, ValueError):
+        sys.exit(0)
+
+    gap_id = event.get("gap_id", "unknown")
+    log_dir = cwd / "logs"
+    process_tool_use_event(event=event, source_id=source_id, gap_id=gap_id, log_dir=log_dir)

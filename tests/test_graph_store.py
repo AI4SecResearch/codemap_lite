@@ -316,6 +316,56 @@ class TestUpdateUnresolvedCallRetryState:
         )
         assert store._unresolved_calls == {}
 
+    def test_retry_count_increments_each_call(self, store):
+        """architecture.md §3: retry_count++ per GAP on each failed gate."""
+        gap = UnresolvedCallNode(
+            caller_id="caller_x",
+            call_expression="fn_ptr(x)",
+            call_file="foo.cpp",
+            call_line=42,
+            call_type="indirect",
+            source_code_snippet="fn_ptr(x);",
+            var_name="fn_ptr",
+            var_type="void (*)(int)",
+        )
+        store.create_unresolved_call(gap)
+        assert store._unresolved_calls[gap.id].retry_count == 0
+
+        store.update_unresolved_call_retry_state(
+            call_id=gap.id, timestamp="t1", reason="gate_failed: r1"
+        )
+        assert store._unresolved_calls[gap.id].retry_count == 1
+        assert store._unresolved_calls[gap.id].status == "pending"
+
+        store.update_unresolved_call_retry_state(
+            call_id=gap.id, timestamp="t2", reason="gate_failed: r2"
+        )
+        assert store._unresolved_calls[gap.id].retry_count == 2
+        assert store._unresolved_calls[gap.id].status == "pending"
+
+    def test_status_becomes_unresolvable_at_3_retries(self, store):
+        """architecture.md §3: retry_count >= 3 → status = 'unresolvable'."""
+        gap = UnresolvedCallNode(
+            caller_id="caller_x",
+            call_expression="fn_ptr(x)",
+            call_file="foo.cpp",
+            call_line=42,
+            call_type="indirect",
+            source_code_snippet="fn_ptr(x);",
+            var_name="fn_ptr",
+            var_type="void (*)(int)",
+        )
+        store.create_unresolved_call(gap)
+
+        for i in range(3):
+            store.update_unresolved_call_retry_state(
+                call_id=gap.id, timestamp=f"t{i}", reason=f"gate_failed: attempt {i}"
+            )
+
+        updated = store._unresolved_calls[gap.id]
+        assert updated.retry_count == 3
+        assert updated.status == "unresolvable"
+
 
 class TestRepairLogPersistence:
     """architecture.md §3 修复成功时 + §4 RepairLog schema + ADR #51 —

@@ -225,8 +225,8 @@ class InMemoryGraphStore:
             var_name=existing.var_name,
             var_type=existing.var_type,
             candidates=list(existing.candidates),
-            retry_count=existing.retry_count,
-            status=existing.status,
+            retry_count=existing.retry_count + 1,
+            status="unresolvable" if existing.retry_count + 1 >= 3 else existing.status,
             last_attempt_timestamp=timestamp,
             last_attempt_reason=reason,
             id=existing.id,
@@ -636,10 +636,15 @@ class Neo4jGraphStore:
     def update_unresolved_call_retry_state(
         self, call_id: str, timestamp: str, reason: str
     ) -> None:
+        # architecture.md §3: retry_count++ per GAP; when >= 3 → status = "unresolvable"
         cypher = (
             "MATCH (u:UnresolvedCall {id: $id}) "
             "SET u.last_attempt_timestamp = $timestamp, "
-            "    u.last_attempt_reason = $reason"
+            "    u.last_attempt_reason = $reason, "
+            "    u.retry_count = coalesce(u.retry_count, 0) + 1 "
+            "WITH u "
+            "WHERE u.retry_count >= 3 AND u.status <> 'unresolvable' "
+            "SET u.status = 'unresolvable'"
         )
         with self._get_driver().session() as session:
             session.run(
