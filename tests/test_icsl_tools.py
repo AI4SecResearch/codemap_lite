@@ -217,6 +217,68 @@ def test_cli_write_edge_creates_calls_edge(tmp_path, monkeypatch, capsys):
     assert payload == {"skipped": False, "edge_created": True}
     assert store.edges_created[-1]["resolved_by"] == "llm"
     assert store.edges_created[-1]["call_line"] == 42
+    # Backwards-compat guard: omitting the new --llm-response /
+    # --reasoning-summary flags must still produce a RepairLogNode (with
+    # empty reasoning fields) so the agent prompt can be rolled out
+    # incrementally without breaking existing callers.
+    assert len(store.repair_logs) == 1
+    log = store.repair_logs[-1]
+    assert log.llm_response == ""
+    assert log.reasoning_summary == ""
+
+
+def test_cli_write_edge_forwards_llm_response_and_reasoning(
+    tmp_path, monkeypatch, capsys
+):
+    """--llm-response / --reasoning-summary must land on RepairLogNode.
+
+    This closes the drift between architecture.md §4 RepairLogNode schema
+    (llm_response + reasoning_summary) and what the agent CLI actually
+    emits — without these flags forwarding through, every llm-repaired
+    edge writes an empty reasoning chain and the CallGraphView
+    EdgeLlmInspector (architecture.md §5) is structurally starved.
+    """
+    from codemap_lite.agent import icsl_tools
+
+    config = _write_config(tmp_path)
+    store = MockGraphStoreForTools()
+    monkeypatch.setattr(icsl_tools, "_load_store", lambda _p: store)
+
+    exit_code = icsl_tools.main(
+        [
+            "--config",
+            str(config),
+            "write-edge",
+            "--caller",
+            "func_001",
+            "--callee",
+            "func_002",
+            "--call-type",
+            "indirect",
+            "--call-file",
+            "test.cpp",
+            "--call-line",
+            "42",
+            "--llm-response",
+            "ptr is assigned a DerivedHandler at line 24, so ptr->handle() dispatches to DerivedHandler::handle.",
+            "--reasoning-summary",
+            "picked DerivedHandler::handle because the ctor at test.cpp:24 binds ptr to DerivedHandler",
+        ]
+    )
+    assert exit_code == 0
+
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload == {"skipped": False, "edge_created": True}
+    assert len(store.repair_logs) == 1
+    log = store.repair_logs[-1]
+    assert log.caller_id == "func_001"
+    assert log.callee_id == "func_002"
+    assert log.call_location == "test.cpp:42"
+    assert log.repair_method == "llm"
+    assert log.llm_response.startswith("ptr is assigned a DerivedHandler")
+    assert log.reasoning_summary.startswith(
+        "picked DerivedHandler::handle"
+    )
 
 
 def test_cli_check_complete_returns_status(tmp_path, monkeypatch, capsys):

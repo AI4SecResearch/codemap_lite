@@ -23,8 +23,9 @@ Use `.icslpreprocess/icsl_tools.py` for all graph operations:
 - `python .icslpreprocess/icsl_tools.py query-reachable --source {source_id}`
   → Returns the reachable subgraph (nodes, edges, unresolved calls)
 
-- `python .icslpreprocess/icsl_tools.py write-edge --caller <id> --callee <id> --call-type <type> --call-file <file> --call-line <line>`
-  → Writes a CALLS edge + RepairLog, deletes the UnresolvedCall
+- `python .icslpreprocess/icsl_tools.py write-edge --caller <id> --callee <id> --call-type <type> --call-file <file> --call-line <line> [--llm-response <raw>] [--reasoning-summary <one-sentence justification>]`
+  → Writes a CALLS edge + RepairLog, deletes the UnresolvedCall.
+  → `--llm-response` / `--reasoning-summary` populate `RepairLogNode.llm_response` / `reasoning_summary` and are surfaced to human reviewers in the call-graph UI — **pass both on every edge you resolve here** (see "Reasoning capture" below).
 
 - `python .icslpreprocess/icsl_tools.py check-complete --source {source_id}`
   → Checks if all reachable GAPs are resolved
@@ -45,10 +46,19 @@ These are patterns where previous repairs were incorrect — avoid repeating the
    a. Read the source file at the call location
    b. Analyze the call context (variable type, assignment history, candidates)
    c. Determine the correct call target(s)
-   d. Run `write-edge` for each resolved target
+   d. Run `write-edge` for each resolved target (include `--llm-response` + `--reasoning-summary`, see below)
 3. Run `query-reachable` again — new UnresolvedCalls may appear (newly reachable)
    - If new ones exist → repeat from step 2
    - If none → you are done
+
+## Reasoning capture
+
+Every `write-edge` call you make here is an **llm-resolution** — downstream reviewers audit these edges in the call-graph UI. On each invocation pass:
+
+- `--reasoning-summary "<one sentence>"` — a concise human-readable justification, e.g. `"ptr->handle() dispatches to DerivedHandler::handle based on the ctor at line 24"`. Keep it ≤200 characters.
+- `--llm-response "<excerpt>"` — a short excerpt of your analysis (the key quote or conclusion). Truncate aggressively; shells don't like multi-kilobyte args. Pick what a reviewer would want to see.
+
+Leaving either flag empty is allowed but strongly discouraged — empty reasoning shows up in the UI as "No reasoning summary recorded", which forces reviewers to fall back to log files.
 
 ## Termination Conditions
 

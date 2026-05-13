@@ -19,7 +19,9 @@ The module can be invoked in two ways, matching the CLI protocol declared in
        python .icslpreprocess/icsl_tools.py query-reachable --source src_001
        python .icslpreprocess/icsl_tools.py write-edge \\
            --caller func_a --callee func_b --call-type indirect \\
-           --call-file foo.cpp --call-line 42
+           --call-file foo.cpp --call-line 42 \\
+           [--llm-response "<raw excerpt>"] \\
+           [--reasoning-summary "picked X because Y"]
        python .icslpreprocess/icsl_tools.py check-complete --source src_001
 
 The CLI loads Neo4j connection settings from ``.icslpreprocess/config.yaml``
@@ -208,6 +210,25 @@ def _build_parser() -> argparse.ArgumentParser:
     we.add_argument(
         "--call-line", required=True, type=int, help="Line of the call site."
     )
+    we.add_argument(
+        "--llm-response",
+        default="",
+        help=(
+            "Raw agent stdout/llm reply that produced the resolution; "
+            "populates RepairLogNode.llm_response (architecture.md §4). "
+            "Leave empty for static/symbol-table edges."
+        ),
+    )
+    we.add_argument(
+        "--reasoning-summary",
+        default="",
+        help=(
+            "Human-readable summary of the agent's reasoning chain "
+            "(≤200 chars recommended); populates "
+            "RepairLogNode.reasoning_summary — surfaced by CallGraphView "
+            "EdgeLlmInspector. Leave empty for non-llm paths."
+        ),
+    )
 
     cc = subparsers.add_parser(
         "check-complete",
@@ -249,6 +270,8 @@ def main(argv: list[str] | None = None) -> int:
                 call_file=args.call_file,
                 call_line=args.call_line,
                 store=store,
+                llm_response=args.llm_response,
+                reasoning_summary=args.reasoning_summary,
             )
         elif args.command == "check-complete":
             result = check_complete(args.source, store)

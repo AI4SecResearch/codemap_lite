@@ -137,7 +137,7 @@ Agent 的工作流程（CLAUDE.md 中描述）：
    a. 读源码（利用 CLI 内置的文件读取能力）
    b. 分析调用上下文（结合候选列表作为参考）
    c. 确定调用目标
-   d. icsl_tools.py write-edge → 写入 CALLS 边 + 创建 RepairLog + 删除 UnresolvedCall
+   d. icsl_tools.py write-edge --caller <id> --callee <id> --call-type <t> --call-file <f> --call-line <n> [--llm-response <raw>] [--reasoning-summary <one-sentence justification>] → 写入 CALLS 边 + 创建 RepairLog + 删除 UnresolvedCall。`--llm-response` / `--reasoning-summary` 对 llm 解析路径**应当传**（填 `RepairLogNode.llm_response` / `reasoning_summary`，供 CallGraphView `EdgeLlmInspector` 直接渲染）；静态 / symbol_table 路径可合理留空（默认空串）。
 3. 再次 query-reachable → 发现新的 UnresolvedCall（修复后新可达的）
    - 有 → 回到步骤 2
    - 无 → 退出（交给 Orchestrator 门禁）
@@ -209,7 +209,7 @@ Hook 脚本将推理信息写入：
    }
    ```
    这也是 `/api/v1/analyze/status` 的 `sources[]` 元素契约（见 §8），前端 `SourceProgress` interface 直接消费。
-3. **Neo4j RepairLog**：修复完成后，从 `.jsonl` 提取关键步骤写入 RepairLog 节点的 reasoning_summary
+3. **Neo4j RepairLog**：**主路径**是 Agent 在 `write-edge` 时通过 `--llm-response` + `--reasoning-summary` 同步前传，CLI 直接构造 `RepairLogNode` 与 CALLS 边一并落库——这正是 CallGraphView `EdgeLlmInspector` 读取的字段，无需事后回补即可让审阅者看到"为什么 LLM 挑了这个 callee"。**Fallback**：若 Agent 未传（旧版 prompt / 非合作 backend），保留从 `.jsonl` 事后提取关键步骤回写 `reasoning_summary` 的路径，但仅作为兜底；CLAUDE.md 模板（`agent/claude_md_template.py`）必须显式要求 Agent 在每条 llm 修复边上传入推理。
 
 **进度通信机制**：
 - Hook 脚本写入 progress.json（Agent subprocess 内）
