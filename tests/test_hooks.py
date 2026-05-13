@@ -76,6 +76,64 @@ def test_log_notification_accepts_legacy_event_keys():
         }
 
 
+def test_log_tool_use_updates_progress_on_write_edge():
+    """architecture.md §3 进度通信机制: PostToolUse hook must update
+    progress.json when it detects a successful write-edge call, incrementing
+    gaps_fixed and updating current_gap. This is the primary mechanism for
+    real-time progress reporting — the agent doesn't emit Notification events
+    for every edge write, so the PostToolUse hook must detect it."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Pre-seed progress.json with orchestrator fields + initial gaps_total
+        progress_dir = Path(tmpdir) / "repair" / "src_001"
+        progress_dir.mkdir(parents=True)
+        progress_path = progress_dir / "progress.json"
+        progress_path.write_text(json.dumps({
+            "state": "running",
+            "attempt": 1,
+            "gaps_fixed": 0,
+            "gaps_total": 5,
+            "current_gap": "gap_001",
+        }))
+
+        # Simulate a write-edge tool call event
+        event = {
+            "tool_name": "Bash",
+            "params": {"command": "python .icslpreprocess_src_001/icsl_tools.py write-edge --caller fn_a --callee fn_b --call-type indirect --call-file src/main.c --call-line 42"},
+            "result": '{"status": "ok", "edge_id": "e_001"}',
+            "gap_id": "gap_001",
+        }
+        process_tool_use_event(event, source_id="src_001", gap_id="gap_001", log_dir=Path(tmpdir))
+
+        data = json.loads(progress_path.read_text())
+        assert data["gaps_fixed"] == 1, "gaps_fixed should increment on write-edge"
+        assert data["current_gap"] == "gap_001"
+        # Orchestrator fields preserved
+        assert data["state"] == "running"
+        assert data["attempt"] == 1
+
+
+def test_log_tool_use_does_not_increment_progress_for_non_write_edge():
+    """Only write-edge calls should increment gaps_fixed — other tool calls
+    (Read, query-reachable, etc.) must not touch progress.json."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        progress_dir = Path(tmpdir) / "repair" / "src_001"
+        progress_dir.mkdir(parents=True)
+        progress_path = progress_dir / "progress.json"
+        progress_path.write_text(json.dumps({"gaps_fixed": 2, "gaps_total": 5}))
+
+        # A Read tool call — should NOT increment
+        event = {
+            "tool_name": "Read",
+            "params": {"file_path": "/tmp/test.cpp"},
+            "result": "file contents",
+            "gap_id": "gap_003",
+        }
+        process_tool_use_event(event, source_id="src_001", gap_id="gap_003", log_dir=Path(tmpdir))
+
+        data = json.loads(progress_path.read_text())
+        assert data["gaps_fixed"] == 2, "non-write-edge calls must not increment gaps_fixed"
+
+
 def test_log_notification_merges_with_existing_progress():
     """architecture.md §3 进度通信机制: hook must merge with existing
     progress.json fields (state, attempt, gate_result written by
