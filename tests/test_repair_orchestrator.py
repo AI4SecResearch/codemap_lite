@@ -1882,6 +1882,73 @@ async def test_orchestrator_updates_source_point_status_on_exhaustion(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_unresolvable_detection_uses_reachable_subgraph(tmp_path):
+    """architecture.md §3: when determining partial_complete vs complete,
+    the orchestrator must check for unresolvable gaps in the source's
+    REACHABLE subgraph, not just gaps with caller_id == source_id.
+
+    Regression: previous implementation fetched ALL gaps O(n) and only
+    checked caller_id == source_id, missing unresolvable gaps on
+    reachable-but-not-direct functions."""
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import (
+        CallsEdgeProps, FunctionNode, SourcePointNode, UnresolvedCallNode,
+    )
+
+    store = InMemoryGraphStore()
+    # Source function "entry" calls "middle" which has an unresolvable gap
+    store.create_function(FunctionNode(
+        id="entry", name="entry", signature="void entry()",
+        file_path="src/a.cpp", start_line=1, end_line=10, body_hash="h1",
+    ))
+    store.create_function(FunctionNode(
+        id="middle", name="middle", signature="void middle()",
+        file_path="src/b.cpp", start_line=1, end_line=10, body_hash="h2",
+    ))
+    store.create_calls_edge("entry", "middle", CallsEdgeProps(
+        resolved_by="symbol_table", call_type="direct",
+        call_file="src/a.cpp", call_line=5,
+    ))
+    store.create_source_point(SourcePointNode(
+        id="entry", function_id="entry",
+        entry_point_kind="entry_point", reason="test", status="running",
+    ))
+    # Unresolvable gap on "middle" (reachable from "entry" but not direct)
+    store.create_unresolved_call(UnresolvedCallNode(
+        id="gap_mid", caller_id="middle", call_expression="fp()",
+        call_file="src/b.cpp", call_line=3, call_type="indirect",
+        source_code_snippet="fp();", var_name="fp", var_type="void(*)()",
+        retry_count=3, status="unresolvable",
+    ))
+
+    config = RepairConfig(
+        target_dir=tmp_path / "target",
+        backend="claudecode",
+        command="echo",
+        args=["done"],
+        neo4j_uri="bolt://localhost:7687",
+        neo4j_user="neo4j",
+        neo4j_password="test",
+        graph_store=store,
+        retry_failed_gaps=False,
+    )
+    orch = RepairOrchestrator(config=config)
+    # Gate always fails (no pending gaps to resolve, but unresolvable exists)
+    orch._check_gate = AsyncMock(return_value=False)
+
+    results = await orch.run_repairs(["entry"])
+    assert results[0].success is False
+
+    # Must be partial_complete (not complete) because reachable gap is unresolvable
+    updated_sp = store.get_source_point("entry")
+    assert updated_sp is not None
+    assert updated_sp.status == "partial_complete", (
+        "architecture.md §3: unresolvable gaps in reachable subgraph must "
+        "result in partial_complete, not complete"
+    )
+
+
+@pytest.mark.asyncio
 async def test_feedback_loop_injects_counter_examples_into_next_repair(tmp_path):
     """architecture.md §3 反馈机制 + §13 验证方案:
     Counter-examples submitted via feedback must appear in the agent's

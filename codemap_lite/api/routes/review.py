@@ -216,19 +216,20 @@ def create_review_router() -> APIRouter:
                     )
                     feedback_store.add(example)
 
+            # Reset SourcePoint status to "pending" BEFORE triggering repair
+            # so the frontend immediately reflects re-processing state and the
+            # repair agent sees the correct status on startup.
+            # architecture.md §5 step 4: "触发 Agent 重新修复该 source 点（异步）"
+            sp = store.get_source_point(body.caller_id)
+            if sp is not None and sp.status != "pending":
+                store.update_source_point_status(body.caller_id, "pending")
+
             # Step 4: Trigger async repair
             settings = getattr(request.app.state, "settings", None)
             if settings is not None:
                 background_tasks.add_task(
                     _trigger_repair_for_source, settings, body.caller_id
                 )
-
-            # Reset SourcePoint status to "pending" so the frontend reflects
-            # that this source needs re-processing (architecture.md §5 step 4:
-            # "触发 Agent 重新修复该 source 点" implies status must revert).
-            sp = store.get_source_point(body.caller_id)
-            if sp is not None and sp.status != "pending":
-                store.update_source_point_status(body.caller_id, "pending")
 
         request.app.state.reviews[review_id] = review
         return review
@@ -337,17 +338,18 @@ def create_review_router() -> APIRouter:
         )
         store.create_unresolved_call(uc)
 
+        # Reset SourcePoint status to "pending" BEFORE triggering repair
+        # (same ordering as review verdict=incorrect).
+        sp = store.get_source_point(body.caller_id)
+        if sp is not None and sp.status != "pending":
+            store.update_source_point_status(body.caller_id, "pending")
+
         # Step 4: Trigger async repair (architecture.md §5 line 328)
         settings = getattr(request.app.state, "settings", None)
         if settings is not None:
             background_tasks.add_task(
                 _trigger_repair_for_source, settings, body.caller_id
             )
-
-        # Reset SourcePoint status to "pending" (same as review verdict=incorrect)
-        sp = store.get_source_point(body.caller_id)
-        if sp is not None and sp.status != "pending":
-            store.update_source_point_status(body.caller_id, "pending")
 
         return Response(status_code=204)
 

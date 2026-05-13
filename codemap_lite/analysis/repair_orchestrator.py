@@ -456,12 +456,14 @@ class RepairOrchestrator:
         # But if there were never any pending gaps, the source is already done.
         store = self._config.graph_store
         if store is not None:
-            pending = store.get_pending_gaps_for_source(source_id)
+            # Check for unresolvable gaps in the source's reachable subgraph.
+            # Use get_reachable_subgraph (returns ALL UCs regardless of status)
+            # instead of get_pending_gaps_for_source (only pending).
+            subgraph = store.get_reachable_subgraph(source_id)
+            all_gaps = subgraph.get("unresolved", [])
             has_unresolvable = any(
                 getattr(g, "status", "") == "unresolvable"
-                for g in store.get_unresolved_calls(caller_id=None, status=None)
-                if getattr(g, "caller_id", "") == source_id
-                or g.id in {p.id for p in pending}
+                for g in all_gaps
             )
         else:
             has_unresolvable = attempts > 0
