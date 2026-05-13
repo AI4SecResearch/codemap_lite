@@ -261,4 +261,10 @@ def test_serve_launches_uvicorn_with_create_app(tmp_path):
     assert feedback_store._storage_dir == (
         tmp_path / "target" / ".codemap_lite" / "feedback"
     )
+    # architecture.md §8 REST API: serve must wire the same Neo4j store
+    # the analyze + repair pipelines write to. Without this, /api/v1/stats
+    # and friends return 0 even though Neo4j is fully populated — a silent
+    # disconnection between backend and frontend.
+    from codemap_lite.graph.neo4j_store import Neo4jGraphStore
+    assert isinstance(kwargs["store"], Neo4jGraphStore)
     fake_uvicorn.run.assert_called_once_with(fake_app, host="127.0.0.1", port=9123)

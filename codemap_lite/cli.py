@@ -233,9 +233,19 @@ def serve(
     # Backs ``GET /api/v1/feedback`` (architecture.md §3 反馈机制 + §8).
     feedback_store = FeedbackStore(storage_dir=target_dir / ".codemap_lite" / "feedback")
 
+    # architecture.md §8 REST API: stats / graph / call-chain / review
+    # routes all read from the same Neo4j the analyze + repair pipelines
+    # write to. Without an explicit store, ``create_app`` falls back to
+    # ``InMemoryGraphStore`` and every count returns 0 even though Neo4j
+    # is fully populated — the frontend looks "disconnected" while the
+    # backend is healthy. Wire the production graph store the same way
+    # ``repair`` does (cli.py:138).
+    graph_store = _build_graph_store(settings)
+
     # Pass target_dir through to the app so /api/v1/analyze/status can
     # aggregate logs/repair/*/progress.json (architecture.md §3, ADR #52).
     app_instance = create_app(
+        store=graph_store,
         target_dir=target_dir,
         feedback_store=feedback_store,
     )
