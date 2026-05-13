@@ -351,6 +351,7 @@ class RepairOrchestrator:
                     self._inject_lock.release()
                     if log_fh is not None:
                         log_fh.close()
+                    self._cleanup_injection(target_dir, source_id)
                     reason = _truncate_reason(
                         f"subprocess_crash: {type(exc).__name__}: {exc}"
                     )

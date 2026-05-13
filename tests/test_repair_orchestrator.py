@@ -2273,3 +2273,37 @@ async def test_log_path_follows_architecture_nested_format(tmp_path):
         f"architecture.md §3: expected log at {expected_log}, "
         f"found: {list(log_dir.rglob('*.log'))}"
     )
+
+
+@pytest.mark.asyncio
+async def test_cleanup_called_when_subprocess_creation_fails(tmp_path):
+    """architecture.md §3: if subprocess creation fails (e.g., binary not found),
+    injected files (CLAUDE.md, .icslpreprocess) must still be cleaned up."""
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        command="/nonexistent/binary",
+        args=[],
+        max_concurrency=1,
+        neo4j_uri="bolt://localhost:7687",
+        neo4j_user="neo4j",
+        neo4j_password="test",
+    )
+    orch = RepairOrchestrator(config=config)
+
+    results = await orch.run_repairs(["src_001"])
+
+    # Subprocess creation should fail but cleanup must still run
+    assert len(results) == 1
+    assert results[0].success is False
+
+    # Injected files must be cleaned up
+    assert not (target_dir / "CLAUDE.md").exists(), (
+        "CLAUDE.md not cleaned up after subprocess creation failure"
+    )
+    assert not (target_dir / ".icslpreprocess_src_001").exists(), (
+        ".icslpreprocess_src_001 not cleaned up after subprocess creation failure"
+    )
