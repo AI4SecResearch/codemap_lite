@@ -38,6 +38,18 @@ class GraphStore(Protocol):
         self, caller_id: str | None = None, status: str | None = None
     ) -> list[UnresolvedCallNode]: ...
 
+    def edge_exists(
+        self, caller_id: str, callee_id: str, call_file: str, call_line: int
+    ) -> bool: ...
+
+    def delete_unresolved_call(
+        self, caller_id: str, call_file: str, call_line: int
+    ) -> None: ...
+
+    def get_pending_gaps_for_source(
+        self, source_id: str
+    ) -> list[UnresolvedCallNode]: ...
+
     def update_unresolved_call_retry_state(
         self, call_id: str, timestamp: str, reason: str
     ) -> None: ...
@@ -124,6 +136,62 @@ class InMemoryGraphStore:
         if status is not None:
             results = [n for n in results if n.status == status]
         return results
+
+    def edge_exists(
+        self, caller_id: str, callee_id: str, call_file: str, call_line: int
+    ) -> bool:
+        """Check whether a CALLS edge for this exact call site already exists.
+
+        architecture.md §3 Agent 内循环 step 2d: before creating a new
+        CALLS edge, ``icsl_tools.write_edge`` must skip if the same
+        ``(caller_id, callee_id, call_file, call_line)`` quadruple is
+        already persisted — this matches the idempotency guard the
+        agent-side tool always assumed the store enforced.
+        """
+        for edge in self._calls_edges:
+            if (
+                edge.caller_id == caller_id
+                and edge.callee_id == callee_id
+                and edge.props.call_file == call_file
+                and edge.props.call_line == call_line
+            ):
+                return True
+        return False
+
+    def delete_unresolved_call(
+        self, caller_id: str, call_file: str, call_line: int
+    ) -> None:
+        """Remove an UnresolvedCall once its gap has been repaired.
+
+        architecture.md §3 修复成功时 step 3: after creating the CALLS
+        edge + RepairLog, delete the UnresolvedCall so ``check-complete``
+        can see the source point progress toward zero pending gaps.
+        Located by ``(caller_id, call_file, call_line)`` — the same
+        triple ``icsl_tools.write_edge`` passes on the CLI.
+        """
+        victims = [
+            call_id
+            for call_id, node in self._unresolved_calls.items()
+            if node.caller_id == caller_id
+            and node.call_file == call_file
+            and node.call_line == call_line
+        ]
+        for call_id in victims:
+            self._unresolved_calls.pop(call_id, None)
+
+    def get_pending_gaps_for_source(
+        self, source_id: str
+    ) -> list[UnresolvedCallNode]:
+        """Return pending UnresolvedCalls reachable from ``source_id``.
+
+        architecture.md §3 门禁机制: ``icsl_tools check-complete``
+        reports ``remaining_gaps`` = len(this) for a given source point;
+        the orchestrator's gate subprocess parses the same list to decide
+        whether to declare the source resolved.
+        """
+        reachable = self.get_reachable_subgraph(source_id)
+        unresolved: list[UnresolvedCallNode] = reachable.get("unresolved", [])
+        return [n for n in unresolved if n.status == "pending"]
 
     def update_unresolved_call_retry_state(
         self, call_id: str, timestamp: str, reason: str
@@ -279,6 +347,21 @@ class Neo4jGraphStore:
 
     def get_unresolved_calls(
         self, caller_id: str | None = None, status: str | None = None
+    ) -> list[UnresolvedCallNode]:
+        raise NotImplementedError("Neo4j driver not yet wired")
+
+    def edge_exists(
+        self, caller_id: str, callee_id: str, call_file: str, call_line: int
+    ) -> bool:
+        raise NotImplementedError("Neo4j driver not yet wired")
+
+    def delete_unresolved_call(
+        self, caller_id: str, call_file: str, call_line: int
+    ) -> None:
+        raise NotImplementedError("Neo4j driver not yet wired")
+
+    def get_pending_gaps_for_source(
+        self, source_id: str
     ) -> list[UnresolvedCallNode]:
         raise NotImplementedError("Neo4j driver not yet wired")
 

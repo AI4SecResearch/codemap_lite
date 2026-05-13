@@ -372,3 +372,129 @@ class TestRepairLogPersistence:
     def test_no_match_returns_empty_list(self, store):
         store.create_repair_log(self._make_log())
         assert store.get_repair_logs(caller_id="nope") == []
+
+
+class TestAgentSideGapOperations:
+    """architecture.md §3 Agent 内循环 — the three methods
+    ``icsl_tools`` calls over the GraphStore protocol:
+    ``edge_exists`` (idempotency guard before creating a CALLS edge),
+    ``delete_unresolved_call`` (清账 after successful repair), and
+    ``get_pending_gaps_for_source`` (gate 机制 reads this per source
+    point to decide whether to declare completion)."""
+
+    def _make_gap(
+        self,
+        caller_id: str = "func_a",
+        call_file: str = "src/main.cpp",
+        call_line: int = 42,
+        status: str = "pending",
+    ) -> UnresolvedCallNode:
+        return UnresolvedCallNode(
+            caller_id=caller_id,
+            call_expression="ptr->method()",
+            call_file=call_file,
+            call_line=call_line,
+            call_type="indirect",
+            source_code_snippet="ptr->method();",
+            var_name="ptr",
+            var_type="Base*",
+            candidates=["Derived::method"],
+            status=status,
+        )
+
+    def test_edge_exists_true_when_quadruple_matches(
+        self, store: InMemoryGraphStore
+    ) -> None:
+        props = CallsEdgeProps(
+            resolved_by="llm",
+            call_type="indirect",
+            call_file="src/main.cpp",
+            call_line=42,
+        )
+        store.create_calls_edge("func_a", "func_b", props)
+        assert store.edge_exists("func_a", "func_b", "src/main.cpp", 42) is True
+
+    def test_edge_exists_false_when_no_match(
+        self, store: InMemoryGraphStore
+    ) -> None:
+        props = CallsEdgeProps(
+            resolved_by="llm",
+            call_type="indirect",
+            call_file="src/main.cpp",
+            call_line=42,
+        )
+        store.create_calls_edge("func_a", "func_b", props)
+        # Same caller/callee but a different call site.
+        assert store.edge_exists("func_a", "func_b", "src/main.cpp", 99) is False
+        # Same location but a different callee.
+        assert store.edge_exists("func_a", "func_c", "src/main.cpp", 42) is False
+
+    def test_delete_unresolved_call_removes_matching_gap(
+        self, store: InMemoryGraphStore
+    ) -> None:
+        target = self._make_gap(call_line=42)
+        other = self._make_gap(call_line=99)
+        store.create_unresolved_call(target)
+        store.create_unresolved_call(other)
+
+        store.delete_unresolved_call("func_a", "src/main.cpp", 42)
+
+        remaining = store.get_unresolved_calls()
+        assert len(remaining) == 1
+        assert remaining[0].call_line == 99
+
+    def test_delete_unresolved_call_noop_when_missing(
+        self, store: InMemoryGraphStore
+    ) -> None:
+        store.create_unresolved_call(self._make_gap(call_line=42))
+        # Different file — nothing should match.
+        store.delete_unresolved_call("func_a", "src/other.cpp", 42)
+        assert len(store.get_unresolved_calls()) == 1
+
+    def test_get_pending_gaps_for_source_returns_only_pending(
+        self, store: InMemoryGraphStore
+    ) -> None:
+        # Set up a tiny reachable subgraph: source -> callee, each with
+        # one pending gap; the callee also has one already-resolved gap.
+        source = FunctionNode(
+            signature="void src()", name="src",
+            file_path="m.cpp", start_line=1, end_line=5, body_hash="s",
+        )
+        callee = FunctionNode(
+            signature="void c()", name="c",
+            file_path="m.cpp", start_line=7, end_line=9, body_hash="c",
+        )
+        store.create_function(source)
+        store.create_function(callee)
+        props = CallsEdgeProps(
+            resolved_by="symbol_table", call_type="direct",
+            call_file="m.cpp", call_line=2,
+        )
+        store.create_calls_edge(source.id, callee.id, props)
+
+        store.create_unresolved_call(
+            self._make_gap(caller_id=source.id, call_line=3, status="pending")
+        )
+        store.create_unresolved_call(
+            self._make_gap(caller_id=callee.id, call_line=8, status="pending")
+        )
+        store.create_unresolved_call(
+            self._make_gap(caller_id=callee.id, call_line=9, status="resolved")
+        )
+
+        pending = store.get_pending_gaps_for_source(source.id)
+        assert len(pending) == 2
+        assert all(g.status == "pending" for g in pending)
+
+    def test_get_pending_gaps_for_source_empty_when_all_resolved(
+        self, store: InMemoryGraphStore
+    ) -> None:
+        source = FunctionNode(
+            signature="void src()", name="src",
+            file_path="m.cpp", start_line=1, end_line=5, body_hash="s",
+        )
+        store.create_function(source)
+        store.create_unresolved_call(
+            self._make_gap(caller_id=source.id, status="resolved")
+        )
+        assert store.get_pending_gaps_for_source(source.id) == []
