@@ -102,6 +102,12 @@ def create_review_router() -> APIRouter:
     @router.post("/edges", status_code=201)
     def create_edge(request: Request, body: EdgeCreate) -> dict[str, Any]:
         store = request.app.state.store
+        # Validate that both functions exist (architecture.md §8: edges
+        # reference valid Function nodes)
+        if store.get_function_by_id(body.caller_id) is None:
+            raise HTTPException(status_code=404, detail="Caller function not found")
+        if store.get_function_by_id(body.callee_id) is None:
+            raise HTTPException(status_code=404, detail="Callee function not found")
         props = CallsEdgeProps(
             resolved_by=body.resolved_by,
             call_type=body.call_type,

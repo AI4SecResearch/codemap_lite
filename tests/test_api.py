@@ -503,7 +503,41 @@ class TestReviewEndpoint:
         })
         assert resp.status_code == 201
 
-    def test_delete_edge(self) -> None:
+    def test_post_edge_nonexistent_caller_returns_404(self) -> None:
+        """architecture.md §8: edges must reference valid Function nodes."""
+        client, store = get_test_client()
+        fn2 = FunctionNode(
+            signature="def y()", name="y", file_path="f.py",
+            start_line=5, end_line=8, body_hash="h2", id="y",
+        )
+        store.create_function(fn2)
+        resp = client.post("/api/v1/edges", json={
+            "caller_id": "nonexistent",
+            "callee_id": "y",
+            "resolved_by": "manual",
+            "call_type": "direct",
+            "call_file": "f.py",
+            "call_line": 2,
+        })
+        assert resp.status_code == 404
+
+    def test_post_edge_nonexistent_callee_returns_404(self) -> None:
+        """architecture.md §8: edges must reference valid Function nodes."""
+        client, store = get_test_client()
+        fn1 = FunctionNode(
+            signature="def x()", name="x", file_path="f.py",
+            start_line=1, end_line=3, body_hash="h1", id="x",
+        )
+        store.create_function(fn1)
+        resp = client.post("/api/v1/edges", json={
+            "caller_id": "x",
+            "callee_id": "nonexistent",
+            "resolved_by": "manual",
+            "call_type": "direct",
+            "call_file": "f.py",
+            "call_line": 2,
+        })
+        assert resp.status_code == 404
         client, store = get_test_client()
         fn1 = FunctionNode(
             signature="def x()", name="x", file_path="f.py",
