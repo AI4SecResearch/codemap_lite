@@ -248,6 +248,7 @@ def serve(
         store=graph_store,
         target_dir=target_dir,
         feedback_store=feedback_store,
+        settings=settings,
     )
     uvicorn.run(app_instance, host=host, port=port)
 

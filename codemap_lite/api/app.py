@@ -26,6 +26,7 @@ def create_app(
     store: GraphStore | None = None,
     target_dir: Path | None = None,
     feedback_store: FeedbackStore | None = None,
+    settings: Any | None = None,
 ) -> FastAPI:
     """Create and configure the FastAPI application.
 
@@ -73,6 +74,9 @@ def create_app(
     # Backs GET /api/v1/feedback (architecture.md §3 反馈机制 + §8).
     # None is allowed — endpoint gracefully returns [] in that case.
     app.state.feedback_store = feedback_store
+    # Full settings object — used by POST /api/v1/analyze/repair to build
+    # RepairConfig and spawn the orchestrator (architecture.md §8).
+    app.state.settings = settings
 
     # Health check
     @app.get("/health")
