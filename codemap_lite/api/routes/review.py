@@ -275,6 +275,11 @@ def create_review_router() -> APIRouter:
             raise HTTPException(status_code=404, detail="Caller function not found")
         if store.get_function_by_id(body.callee_id) is None:
             raise HTTPException(status_code=404, detail="Callee function not found")
+        # architecture.md §4: CALLS edges unique by (caller_id, callee_id, call_file, call_line)
+        if hasattr(store, "edge_exists") and store.edge_exists(
+            body.caller_id, body.callee_id, body.call_file, body.call_line
+        ):
+            raise HTTPException(status_code=409, detail="Edge already exists")
         props = CallsEdgeProps(
             resolved_by=body.resolved_by,
             call_type=body.call_type,

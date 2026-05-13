@@ -1463,6 +1463,38 @@ class TestRepairLogsEndpoint:
         assert populated["total_repair_logs"] == 2
 
 
+class TestEdgeCreation:
+    """POST /api/v1/edges — manual edge creation with duplicate guard."""
+
+    def test_create_edge_rejects_duplicate(self) -> None:
+        """architecture.md §4: CALLS edges are unique by (caller_id, callee_id,
+        call_file, call_line). Submitting a duplicate must return 409 Conflict."""
+        client, store = get_test_client()
+        store.create_function(FunctionNode(
+            id="fn_a", name="a", signature="void a()",
+            file_path="x.c", start_line=1, end_line=5, body_hash="h1",
+        ))
+        store.create_function(FunctionNode(
+            id="fn_b", name="b", signature="void b()",
+            file_path="x.c", start_line=10, end_line=15, body_hash="h2",
+        ))
+        body = {
+            "caller_id": "fn_a",
+            "callee_id": "fn_b",
+            "resolved_by": "manual",
+            "call_type": "direct",
+            "call_file": "x.c",
+            "call_line": 3,
+        }
+        # First creation succeeds
+        resp = client.post("/api/v1/edges", json=body)
+        assert resp.status_code == 201
+
+        # Duplicate must be rejected
+        resp2 = client.post("/api/v1/edges", json=body)
+        assert resp2.status_code == 409
+
+
 class TestEdgeDeletion:
     """architecture.md §5 审阅交互: '标记错误时 → 立即删除该 CALLS 边 + 对应
     RepairLog'. DELETE /api/v1/edges must target a specific edge by
