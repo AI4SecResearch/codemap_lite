@@ -46,6 +46,8 @@ def analyze(
     if incremental:
         result = orch.run_incremental_analysis()
         typer.echo(f"Incremental: {result.files_changed} files changed, {result.functions_found} functions updated")
+        if result.affected_source_ids:
+            typer.echo(f"  {len(result.affected_source_ids)} source(s) need re-repair: {', '.join(result.affected_source_ids[:5])}")
     else:
         result = orch.run_full_analysis()
         typer.echo(f"Full: {result.files_scanned} files, {result.functions_found} functions, {result.direct_calls} calls, {result.unresolved_calls} gaps")

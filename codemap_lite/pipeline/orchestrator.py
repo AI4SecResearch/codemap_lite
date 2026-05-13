@@ -52,6 +52,7 @@ class PipelineResult:
     direct_calls: int = 0
     unresolved_calls: int = 0
     files_changed: int = 0
+    affected_source_ids: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
 
@@ -117,8 +118,10 @@ class PipelineOrchestrator:
         # Remove stale functions/edges before re-parsing modified files.
         updater = IncrementalUpdater(store=self._store)
         affected_caller_files: set[str] = set()
+        all_affected_source_ids: set[str] = set()
         for deleted_file in changes.deleted:
             inv_result = updater.invalidate_file(deleted_file)
+            all_affected_source_ids.update(inv_result.affected_source_ids)
             # Collect files of affected callers for re-parsing
             for caller_id in inv_result.affected_callers:
                 fn = self._store.get_function_by_id(caller_id)
@@ -126,6 +129,7 @@ class PipelineOrchestrator:
                     affected_caller_files.add(fn.file_path)
         for modified_file in changes.modified:
             inv_result = updater.invalidate_file(modified_file)
+            all_affected_source_ids.update(inv_result.affected_source_ids)
             for caller_id in inv_result.affected_callers:
                 fn = self._store.get_function_by_id(caller_id)
                 if fn is not None:
@@ -146,6 +150,10 @@ class PipelineOrchestrator:
         result.files_scanned = len(changed_scanned)
 
         self._parse_and_store(changed_scanned, result)
+
+        # Expose affected sources so the caller can trigger re-repair
+        # (architecture.md §7 step 5).
+        result.affected_source_ids = list(all_affected_source_ids)
 
         return result
 

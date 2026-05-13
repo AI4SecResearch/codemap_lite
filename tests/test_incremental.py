@@ -529,3 +529,57 @@ def test_invalidate_file_resets_source_point_status_for_non_llm_callers():
 
     # src_fn should be in affected_source_ids so orchestrator can trigger re-repair
     assert "src_fn" in result.affected_source_ids
+
+
+def test_pipeline_incremental_exposes_affected_source_ids_in_result():
+    """architecture.md §7 step 5: PipelineResult must expose affected_source_ids
+    so the caller (CLI / orchestrator) can trigger re-repair for sources whose
+    reachable subgraph changed during incremental invalidation."""
+    from unittest.mock import patch, MagicMock
+    from codemap_lite.pipeline.orchestrator import PipelineOrchestrator
+    from codemap_lite.graph.schema import SourcePointNode
+
+    store = InMemoryGraphStore()
+
+    # Source function (also a SourcePoint) in file_a.c
+    store.create_function(FunctionNode(
+        id="src_fn", name="src_fn", signature="void src_fn()",
+        file_path="file_a.c", start_line=1, end_line=10, body_hash="ha",
+    ))
+    # Target function in file_b.c (will be invalidated)
+    store.create_function(FunctionNode(
+        id="target_fn", name="target_fn", signature="void target_fn()",
+        file_path="file_b.c", start_line=1, end_line=10, body_hash="hb",
+    ))
+    # LLM edge from src_fn → target_fn
+    store.create_calls_edge("src_fn", "target_fn", CallsEdgeProps(
+        resolved_by="llm", call_type="indirect",
+        call_file="file_a.c", call_line=5,
+    ))
+    # SourcePoint for src_fn
+    store.create_source_point(SourcePointNode(
+        id="src_fn", function_id="src_fn",
+        entry_point_kind="entry_point", reason="test", status="complete",
+    ))
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmpdir:
+        target_dir = Path(tmpdir)
+        orch = PipelineOrchestrator(target_dir=target_dir, store=store)
+
+        changes = MagicMock()
+        changes.added = []
+        changes.modified = ["file_b.c"]
+        changes.deleted = []
+
+        with patch.object(orch._scanner, "detect_changes", return_value=changes), \
+             patch.object(orch._scanner, "scan", return_value=[]), \
+             patch.object(orch._scanner, "save_state"):
+            result = orch.run_incremental_analysis()
+
+        # PipelineResult must have affected_source_ids field
+        assert hasattr(result, "affected_source_ids"), (
+            "architecture.md §7 step 5: PipelineResult must expose "
+            "affected_source_ids for re-repair trigger"
+        )
+        assert "src_fn" in result.affected_source_ids
