@@ -87,24 +87,36 @@ ALIBABA_SETTINGS = Path("/home/panckae/.claude/settings-alibaba.json")
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
 LOG_ROOT = Path(__file__).parent / "_e2e_repair_logs"
 
-# Fixed CastEngine entry points to mine GAPs from. Picked because each one
-# exercises a distinct indirect-dispatch pattern we want Phase 3 to keep
-# routing through UnresolvedCall:
-#   * CastSessionImpl::ProcessSetUp  — member_fn_ptr stateProcessor_ dispatch
-#   * UnpackFuA                       — direct entry with downstream virtuals
-#   * CastStreamManager::OnEvent      — virtual listener fan-out
-#   * WfdSessionImpl::ProcessCommand  — member_fn_ptr handler table
-#   * CastSessionImpl::OnEvent        — another virtual listener branch
-#   * Scheduler::Run                  — thread-pool dispatch loop
-#   * MediaChannel::Dispatch          — channel handler-table dispatch
-DEFAULT_ENTRY_NAMES: tuple[str, ...] = (
-    "CastSessionImpl::ProcessSetUp",
-    "UnpackFuA",
-    "CastStreamManager::OnEvent",
-    "WfdSessionImpl::ProcessCommand",
-    "CastSessionImpl::OnEvent",
-    "Scheduler::Run",
-    "MediaChannel::Dispatch",
+# Fixed CastEngine entry points to mine GAPs from. Each tuple is
+# ``(qualified_name, file_path_hint)``: the C++ tree-sitter plugin only stores
+# the bare last identifier in ``FunctionNode.name`` (see
+# ``codemap_lite/parsing/cpp/symbol_extractor.py:_get_function_name``), so
+# qualified names alone collide across forks (cast_session_impl.cpp lives in
+# both ``cast_framework/service/`` and ``cast_plus_stream/``) and unittest
+# fixtures. The file_path_hint is matched as a substring against
+# ``FunctionNode.file_path`` to pick the production-side definition.
+#   * CastSessionImpl::ProcessSetUp        — member_fn_ptr stateProcessor_ dispatch
+#   * UnpackFuA                            — direct entry with downstream virtuals
+#   * CastSessionImpl::OnEvent             — virtual listener fan-out (cast_framework fork)
+#   * CastSessionImpl::ProcessSetUpSuccess — second member_fn_ptr table entry
+#   * CastSessionManagerService::CreateCastSession — service factory dispatch
+#   * ConnectionManager::OnConsultDataReceivedFromSink — protocol-driven dispatch
+#   * ConnectionManager::ParseAndCheckJsonData         — input parsing fan-out
+DEFAULT_ENTRY_NAMES: tuple[tuple[str, str], ...] = (
+    ("CastSessionImpl::ProcessSetUp",
+     "castengine_cast_framework/service/src/session/src/cast_session_impl.cpp"),
+    ("UnpackFuA",
+     "castengine_wifi_display/services/protocol/rtp/src/rtp_codec_h264.cpp"),
+    ("CastSessionImpl::OnEvent",
+     "castengine_cast_framework/service/src/session/src/cast_session_impl.cpp"),
+    ("CastSessionImpl::ProcessSetUpSuccess",
+     "castengine_cast_framework/service/src/session/src/cast_session_impl.cpp"),
+    ("CastSessionManagerService::CreateCastSession",
+     "castengine_cast_framework/service/src/cast_session_manager_service.cpp"),
+    ("ConnectionManager::OnConsultDataReceivedFromSink",
+     "castengine_cast_framework/service/src/device_manager/src/connection_manager.cpp"),
+    ("ConnectionManager::ParseAndCheckJsonData",
+     "castengine_cast_framework/service/src/device_manager/src/connection_manager.cpp"),
 )
 
 CANONICAL_RESOLVED_BY = {"symbol_table", "signature", "dataflow", "context", "llm"}
@@ -268,46 +280,70 @@ def run_static_analysis(store: InMemoryGraphStore) -> dict[str, Any]:
 
 
 def resolve_entry_points(
-    store: InMemoryGraphStore, names: tuple[str, ...]
+    store: InMemoryGraphStore, names: tuple[tuple[str, str], ...]
 ) -> list[EntryPoint]:
     """Map fixed CastEngine source-point names to :class:`FunctionNode.id`.
 
-    Uses the same strategy as ``tests/run_e2e_full.py``:
-      * build an index keyed on ``(abs_file_posix, name)`` mapping to the
-        list of FunctionNodes that match,
-      * for each requested name, pick the candidate inside CastEngine that
-        has the lowest ``start_line`` (the declaration).
+    Each request is a ``(qualified_name, file_path_hint)`` tuple. The C++
+    plugin stores only the bare last identifier in ``FunctionNode.name`` and
+    the qualified form inside ``FunctionNode.signature`` — so we match
+    qualified names via **substring against signature**, and tie-break with
+    the file_path_hint (a substring of the desired ``file_path``). If the
+    qualified name has no ``::`` we fall back to ``FunctionNode.name``.
 
-    Names without a qualifying ``Class::Method`` prefix fall back to
-    ``by_bare_name`` so ``UnpackFuA`` resolves to a free function.
+    This replaces the previous bare-name matcher which silently collapsed
+    ``CastSessionImpl::OnEvent`` and ``CastStreamManager::OnEvent`` onto the
+    same unittest fixture because both ended in ``OnEvent``.
     """
-    by_full: dict[str, list[FunctionNode]] = defaultdict(list)
-    by_bare: dict[str, list[FunctionNode]] = defaultdict(list)
-    for fn in store._functions.values():
-        by_full[fn.name].append(fn)
-        if "::" in fn.name:
-            by_bare[fn.name.split("::")[-1]].append(fn)
-        else:
-            by_bare[fn.name].append(fn)
-
     resolved: list[EntryPoint] = []
     castengine_root = str(CASTENGINE_ROOT.resolve()).replace("\\", "/")
-    for name in names:
-        cands = by_full.get(name) or by_bare.get(name.split("::")[-1]) or []
-        cands = [
+    all_fns = list(store._functions.values())
+
+    for qualified_name, file_hint in names:
+        bare = qualified_name.split("::")[-1]
+        # Filter to functions inside CastEngine whose bare name matches.
+        in_tree = [
             fn
-            for fn in cands
-            if str(Path(fn.file_path).resolve()).replace("\\", "/").startswith(
+            for fn in all_fns
+            if fn.name == bare
+            and str(Path(fn.file_path).resolve()).replace("\\", "/").startswith(
                 castengine_root
             )
         ]
-        if not cands:
-            logger.warning("entry point %s: no candidate in CastEngine", name)
+        if not in_tree:
+            logger.warning(
+                "entry point %s: no candidate in CastEngine (bare name %s)",
+                qualified_name,
+                bare,
+            )
             continue
-        best = min(cands, key=lambda fn: fn.start_line)
+        # If the request is qualified (has ::), insist on signature carrying
+        # the qualified name so we don't mis-attribute a free function.
+        qualified_candidates = (
+            [fn for fn in in_tree if qualified_name in fn.signature]
+            if "::" in qualified_name
+            else in_tree
+        )
+        # Then narrow by file_hint substring so we pick the right fork
+        # (service/session/src vs cast_plus_stream) or skip unittest fixtures.
+        hinted = [
+            fn
+            for fn in qualified_candidates
+            if file_hint
+            and file_hint.replace("\\", "/") in fn.file_path.replace("\\", "/")
+        ] or qualified_candidates
+        if not hinted:
+            logger.warning(
+                "entry point %s: found %d bare-name matches but none carry "
+                "qualified signature or file_hint",
+                qualified_name,
+                len(in_tree),
+            )
+            continue
+        best = min(hinted, key=lambda fn: fn.start_line)
         resolved.append(
             EntryPoint(
-                name=name,
+                name=qualified_name,
                 function_id=best.id,
                 file_path=best.file_path,
                 start_line=best.start_line,
@@ -315,7 +351,7 @@ def resolve_entry_points(
         )
         logger.info(
             "entry point %s -> id=%s file=%s:%d",
-            name,
+            qualified_name,
             best.id,
             best.file_path,
             best.start_line,
@@ -432,6 +468,85 @@ def mirror_store_to_neo4j(
     """
     neo = Neo4jGraphStore(uri=uri, user=user, password=password)
     driver = neo._get_driver()
+
+    # Pre-serialize as plain dicts so driver param binding stays fast.
+    fn_rows = [
+        {
+            "id": fn.id,
+            "signature": fn.signature,
+            "name": fn.name,
+            "file_path": fn.file_path,
+            "start_line": fn.start_line,
+            "end_line": fn.end_line,
+            "body_hash": fn.body_hash,
+        }
+        for fn in in_mem._functions.values()
+    ]
+    file_rows = [
+        {
+            "id": f.id,
+            "file_path": f.file_path,
+            "hash": f.hash,
+            "primary_language": f.primary_language,
+        }
+        for f in in_mem._files.values()
+    ]
+    call_rows = [
+        {
+            "caller_id": edge.caller_id,
+            "callee_id": edge.callee_id,
+            "call_file": edge.props.call_file,
+            "call_line": edge.props.call_line,
+            "resolved_by": edge.props.resolved_by,
+            "call_type": edge.props.call_type,
+        }
+        for edge in in_mem._calls_edges
+    ]
+    uc_rows = [
+        {
+            "id": uc.id,
+            "caller_id": uc.caller_id,
+            "call_expression": uc.call_expression,
+            "call_file": uc.call_file,
+            "call_line": uc.call_line,
+            "call_type": uc.call_type,
+            "source_code_snippet": uc.source_code_snippet,
+            "var_name": uc.var_name,
+            "var_type": uc.var_type,
+            "candidates": list(uc.candidates),
+            "retry_count": uc.retry_count,
+            "status": uc.status,
+            "last_attempt_timestamp": uc.last_attempt_timestamp,
+            "last_attempt_reason": uc.last_attempt_reason,
+        }
+        for uc in in_mem._unresolved_calls.values()
+    ]
+    log_rows = [
+        {
+            "id": r.id,
+            "caller_id": r.caller_id,
+            "callee_id": r.callee_id,
+            "call_location": r.call_location,
+            "repair_method": r.repair_method,
+            "llm_response": r.llm_response,
+            "timestamp": r.timestamp,
+            "reasoning_summary": r.reasoning_summary,
+        }
+        for r in in_mem._repair_logs.values()
+    ]
+
+    # Batched UNWIND writes inside a single session. Per-row create_* calls
+    # open a fresh session and round-trip for each node, which for the
+    # CastEngine-sized snapshot (thousands of fns / tens of thousands of UCs)
+    # pushes mirror time into minutes. architecture.md §4 authoritative store
+    # requirement holds — we still route everything through MERGE statements
+    # equivalent to ``Neo4jGraphStore.create_*``; we only change the batching.
+    BATCH = 1000
+
+    def _batched(rows: list[dict[str, Any]]):
+        for i in range(0, len(rows), BATCH):
+            yield rows[i : i + BATCH]
+
     with driver.session() as session:
         session.run(
             "MATCH (n) "
@@ -439,25 +554,69 @@ def mirror_store_to_neo4j(
             "          WHERE l IN ['Function','File','UnresolvedCall','RepairLog']) "
             "DETACH DELETE n"
         ).consume()
-
-    for fn in in_mem._functions.values():
-        neo.create_function(fn)
-    for file_node in in_mem._files.values():
-        neo.create_file(file_node)
-    for edge in in_mem._calls_edges:
-        neo.create_calls_edge(edge.caller_id, edge.callee_id, edge.props)
-    for uc in in_mem._unresolved_calls.values():
-        neo.create_unresolved_call(uc)
-    for repair_log in in_mem._repair_logs.values():
-        neo.create_repair_log(repair_log)
+        for chunk in _batched(fn_rows):
+            session.run(
+                "UNWIND $rows AS row "
+                "MERGE (f:Function {id: row.id}) "
+                "SET f.signature = row.signature, f.name = row.name, "
+                "    f.file_path = row.file_path, f.start_line = row.start_line, "
+                "    f.end_line = row.end_line, f.body_hash = row.body_hash",
+                rows=chunk,
+            ).consume()
+        for chunk in _batched(file_rows):
+            session.run(
+                "UNWIND $rows AS row "
+                "MERGE (f:File {id: row.id}) "
+                "SET f.file_path = row.file_path, f.hash = row.hash, "
+                "    f.primary_language = row.primary_language",
+                rows=chunk,
+            ).consume()
+        for chunk in _batched(call_rows):
+            session.run(
+                "UNWIND $rows AS row "
+                "MATCH (a:Function {id: row.caller_id}) "
+                "MATCH (b:Function {id: row.callee_id}) "
+                "MERGE (a)-[r:CALLS {call_file: row.call_file, call_line: row.call_line}]->(b) "
+                "SET r.resolved_by = row.resolved_by, r.call_type = row.call_type",
+                rows=chunk,
+            ).consume()
+        for chunk in _batched(uc_rows):
+            session.run(
+                "UNWIND $rows AS row "
+                "MERGE (u:UnresolvedCall {id: row.id}) "
+                "SET u.caller_id = row.caller_id, u.call_expression = row.call_expression, "
+                "    u.call_file = row.call_file, u.call_line = row.call_line, "
+                "    u.call_type = row.call_type, u.source_code_snippet = row.source_code_snippet, "
+                "    u.var_name = row.var_name, u.var_type = row.var_type, "
+                "    u.candidates = row.candidates, u.retry_count = row.retry_count, "
+                "    u.status = row.status, "
+                "    u.last_attempt_timestamp = row.last_attempt_timestamp, "
+                "    u.last_attempt_reason = row.last_attempt_reason "
+                "WITH u, row "
+                "MATCH (caller:Function {id: row.caller_id}) "
+                "MERGE (caller)-[:HAS_GAP]->(u)",
+                rows=chunk,
+            ).consume()
+        for chunk in _batched(log_rows):
+            session.run(
+                "UNWIND $rows AS row "
+                "MERGE (r:RepairLog {id: row.id}) "
+                "SET r.caller_id = row.caller_id, r.callee_id = row.callee_id, "
+                "    r.call_location = row.call_location, "
+                "    r.repair_method = row.repair_method, "
+                "    r.llm_response = row.llm_response, "
+                "    r.timestamp = row.timestamp, "
+                "    r.reasoning_summary = row.reasoning_summary",
+                rows=chunk,
+            ).consume()
 
     logger.info(
         "mirrored to Neo4j: %d functions, %d files, %d calls, %d unresolved, %d repair_logs",
-        len(in_mem._functions),
-        len(in_mem._files),
-        len(in_mem._calls_edges),
-        len(in_mem._unresolved_calls),
-        len(in_mem._repair_logs),
+        len(fn_rows),
+        len(file_rows),
+        len(call_rows),
+        len(uc_rows),
+        len(log_rows),
     )
     return neo
 
@@ -886,8 +1045,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--entries",
         nargs="+",
-        default=list(DEFAULT_ENTRY_NAMES),
-        help="Entry-point names to mine GAPs from.",
+        default=[f"{n}@{h}" for (n, h) in DEFAULT_ENTRY_NAMES],
+        help=(
+            "Entry-point names to mine GAPs from. Use ``name@file_hint`` to "
+            "disambiguate forks (e.g. "
+            "``CastSessionImpl::OnEvent@castengine_cast_framework/...``); "
+            "bare names fall back to bare-name matching."
+        ),
     )
     parser.add_argument(
         "--model", default=DEFAULT_MODEL, help="opencode model spec."
@@ -933,7 +1097,14 @@ async def _main_async(args: argparse.Namespace) -> RunReport:
     report.static_stats.update(run_static_analysis(store))
 
     logger.info("stage C: entry-point resolution")
-    entry_points = resolve_entry_points(store, tuple(args.entries))
+    # Split ``name@file_hint`` tokens so ``resolve_entry_points`` sees a tuple
+    # of (qualified_name, hint). A missing hint degrades gracefully to the
+    # legacy bare-name matcher for ad-hoc invocations.
+    entry_specs = tuple(
+        tuple(tok.split("@", 1)) if "@" in tok else (tok, "")
+        for tok in args.entries
+    )
+    entry_points = resolve_entry_points(store, entry_specs)
     report.entries = [asdict(ep) for ep in entry_points]
     if not entry_points:
         raise RuntimeError("no entry points resolved; cannot proceed")
