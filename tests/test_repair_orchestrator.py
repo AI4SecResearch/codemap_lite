@@ -1008,3 +1008,61 @@ async def test_subprocess_timeout_stamps_correct_category(tmp_path):
     assert updated_gap.retry_count == 3
     assert updated_gap.status == "unresolvable"
     assert "subprocess_timeout" in (updated_gap.last_attempt_reason or "")
+
+
+@pytest.mark.asyncio
+async def test_check_gate_real_subprocess_returns_false_on_neo4j_error(tmp_path):
+    """Integration: _check_gate spawns real subprocess with injected files.
+    When Neo4j is unreachable, check-complete exits non-zero → gate returns False.
+    This validates the full orchestrator→subprocess→icsl_tools path."""
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        command="echo",
+        args=["done"],
+        max_concurrency=1,
+        neo4j_uri="bolt://localhost:99999",  # Unreachable
+        neo4j_user="neo4j",
+        neo4j_password="bad",
+    )
+    orchestrator = RepairOrchestrator(config=config)
+
+    # Inject files so .icslpreprocess/icsl_tools.py exists
+    orchestrator._inject_files(
+        target_dir=target_dir,
+        source_id="src_gate_test",
+        counter_examples="",
+    )
+
+    # Call the real _check_gate (not mocked) — it spawns a subprocess
+    result = await orchestrator._check_gate("src_gate_test")
+
+    # Should return False because Neo4j connection fails
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_check_gate_returns_false_when_icsl_tools_missing(tmp_path):
+    """_check_gate must return False (not crash) when .icslpreprocess/
+    icsl_tools.py doesn't exist — e.g. if cleanup ran early."""
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        command="echo",
+        args=["done"],
+        max_concurrency=1,
+        neo4j_uri="bolt://localhost:7687",
+        neo4j_user="neo4j",
+        neo4j_password="test",
+    )
+    orchestrator = RepairOrchestrator(config=config)
+
+    # Don't inject files — icsl_tools.py won't exist
+    result = await orchestrator._check_gate("src_missing")
+    assert result is False
