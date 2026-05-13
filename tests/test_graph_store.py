@@ -945,3 +945,27 @@ def test_create_repair_log_deduplicates_on_logical_key(store):
     # The second call should have updated the content
     assert logs[0].llm_response == "second response"
     assert logs[0].reasoning_summary == "second reasoning"
+
+
+def test_source_point_node_stores_module_field(store):
+    """architecture.md §4: SourcePoint schema includes module field."""
+    from codemap_lite.graph.schema import SourcePointNode
+
+    sp = SourcePointNode(
+        function_id="func_A",
+        entry_point_kind="api",
+        reason="HTTP handler",
+        module="network",
+        status="pending",
+        id="sp_001",
+    )
+    store.create_source_point(sp)
+    retrieved = store.get_source_point("sp_001")
+    assert retrieved is not None
+    assert retrieved.module == "network"
+
+    # Module preserved across status update
+    store.update_source_point_status("sp_001", "running")
+    updated = store.get_source_point("sp_001")
+    assert updated.status == "running"
+    assert updated.module == "network"

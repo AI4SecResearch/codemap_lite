@@ -59,6 +59,7 @@ class SourcePointNode:
     reason: str
     function_id: str
     status: str
+    module: str = ""
     id: str = field(default_factory=lambda: str(uuid4()))
 
 

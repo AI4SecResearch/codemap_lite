@@ -371,6 +371,7 @@ class InMemoryGraphStore:
             entry_point_kind=existing.entry_point_kind,
             reason=existing.reason,
             function_id=existing.function_id,
+            module=existing.module,
             status=status,
         )
 
@@ -1167,6 +1168,7 @@ class Neo4jGraphStore:
             "SET s.entry_point_kind = $entry_point_kind, "
             "    s.reason = $reason, "
             "    s.function_id = $function_id, "
+            "    s.module = $module, "
             "    s.status = $status"
         )
         with self._get_driver().session() as session:
@@ -1176,6 +1178,7 @@ class Neo4jGraphStore:
                 entry_point_kind=node.entry_point_kind,
                 reason=node.reason,
                 function_id=node.function_id,
+                module=node.module,
                 status=node.status,
             )
         return node.id
@@ -1185,7 +1188,8 @@ class Neo4jGraphStore:
         cypher = (
             "MATCH (s:SourcePoint {id: $id}) "
             "RETURN s.id AS id, s.entry_point_kind AS entry_point_kind, "
-            "s.reason AS reason, s.function_id AS function_id, s.status AS status"
+            "s.reason AS reason, s.function_id AS function_id, "
+            "s.module AS module, s.status AS status"
         )
         with self._get_driver().session() as session:
             result = session.run(cypher, id=source_id)
@@ -1197,6 +1201,7 @@ class Neo4jGraphStore:
             entry_point_kind=record["entry_point_kind"],
             reason=record["reason"],
             function_id=record["function_id"],
+            module=record.get("module", ""),
             status=record["status"],
         )
 
