@@ -2234,3 +2234,42 @@ async def test_concurrent_repairs_do_not_race_on_claude_md(tmp_path):
     assert f"Source Point src_B" in observed_claude_md["src_B"], (
         "src_B's subprocess read src_A's CLAUDE.md — race condition!"
     )
+
+
+@pytest.mark.asyncio
+async def test_log_path_follows_architecture_nested_format(tmp_path):
+    """architecture.md §3: subprocess logs must be at
+    logs/repair/{source_id}/attempt_{N}.log (nested per source, underscore prefix).
+    """
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+    log_dir = tmp_path / "logs" / "repair"
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        command="echo",
+        args=["done"],
+        max_concurrency=1,
+        neo4j_uri="bolt://localhost:7687",
+        neo4j_user="neo4j",
+        neo4j_password="test",
+        log_dir=log_dir,
+    )
+    orch = RepairOrchestrator(config=config)
+
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = AsyncMock(return_value=(b"output", b""))
+    mock_proc.kill = MagicMock()
+    mock_proc.wait = AsyncMock()
+
+    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+        await orch.run_repairs(["src_001"])
+
+    # Architecture §3: logs/repair/{source_id}/attempt_{N}.log
+    expected_log = log_dir / "src_001" / "attempt_1.log"
+    assert expected_log.exists(), (
+        f"architecture.md §3: expected log at {expected_log}, "
+        f"found: {list(log_dir.rglob('*.log'))}"
+    )
