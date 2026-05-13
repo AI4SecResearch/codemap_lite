@@ -384,6 +384,42 @@ class TestAnalyzeEndpoint:
         assert sources["src_ok"]["gaps_fixed"] == 1
         assert sources["src_ok"]["gaps_total"] == 2
 
+    def test_analyze_status_extended_progress_fields(self, tmp_path) -> None:
+        """architecture.md §3 + ADR #52: progress.json extended fields
+        (state, attempt, max_attempts, gate_result, edges_written, last_error)
+        must be passed through to the /analyze/status response."""
+        store = InMemoryGraphStore()
+        app = create_app(store=store, target_dir=tmp_path)
+        client = TestClient(app)
+
+        repair_root = tmp_path / "logs" / "repair"
+        (repair_root / "src_001").mkdir(parents=True)
+        (repair_root / "src_001" / "progress.json").write_text(
+            json.dumps({
+                "gaps_fixed": 2,
+                "gaps_total": 5,
+                "current_gap": "gap_003",
+                "state": "running",
+                "attempt": 2,
+                "max_attempts": 3,
+                "gate_result": "failed",
+                "edges_written": 4,
+                "last_error": "gate_failed: 3 pending GAPs remain",
+            }),
+            encoding="utf-8",
+        )
+
+        resp = client.get("/api/v1/analyze/status")
+        assert resp.status_code == 200
+        sources = {s["source_id"]: s for s in resp.json()["sources"]}
+        s = sources["src_001"]
+        assert s["state"] == "running"
+        assert s["attempt"] == 2
+        assert s["max_attempts"] == 3
+        assert s["gate_result"] == "failed"
+        assert s["edges_written"] == 4
+        assert s["last_error"] == "gate_failed: 3 pending GAPs remain"
+
 
 class TestSourcePointsEndpoint:
     def test_get_source_points_empty(self) -> None:
@@ -455,6 +491,59 @@ class TestSourcePointsEndpoint:
         gap_data = data["unresolved"][0]
         assert "caller_id" in gap_data
         assert "call_expression" in gap_data
+
+    def test_source_points_filter_by_module(self) -> None:
+        """architecture.md §5: source points can be filtered by module."""
+        client, _ = get_test_client()
+        client.app.state.source_points = [
+            {"id": "sp1", "kind": "callback_registration", "module": "audio::mixer"},
+            {"id": "sp2", "kind": "entry_point", "module": "video::decoder"},
+            {"id": "sp3", "kind": "callback_registration", "module": "audio::output"},
+        ]
+        # Filter by module substring
+        resp = client.get("/api/v1/source-points?module=audio")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 2
+        ids = {e["id"] for e in data}
+        assert ids == {"sp1", "sp3"}
+
+    def test_source_points_filter_by_kind(self) -> None:
+        """architecture.md §8: source points can be filtered by kind."""
+        client, _ = get_test_client()
+        client.app.state.source_points = [
+            {"id": "sp1", "kind": "callback_registration", "module": "m1"},
+            {"id": "sp2", "kind": "entry_point", "module": "m2"},
+        ]
+        resp = client.get("/api/v1/source-points?kind=entry_point")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["id"] == "sp2"
+
+    def test_source_points_summary(self) -> None:
+        """architecture.md §8: GET /source-points/summary returns total and by_kind."""
+        client, _ = get_test_client()
+        client.app.state.source_points = [
+            {"id": "sp1", "kind": "callback_registration", "module": "m1"},
+            {"id": "sp2", "kind": "entry_point", "module": "m2"},
+            {"id": "sp3", "kind": "callback_registration", "module": "m3"},
+        ]
+        resp = client.get("/api/v1/source-points/summary")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 3
+        assert data["by_kind"]["callback_registration"] == 2
+        assert data["by_kind"]["entry_point"] == 1
+
+    def test_source_points_summary_empty(self) -> None:
+        """Summary with no source points returns total=0 and empty by_kind."""
+        client, _ = get_test_client()
+        resp = client.get("/api/v1/source-points/summary")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 0
+        assert data["by_kind"] == {}
 
 
 class TestReviewEndpoint:
@@ -1559,6 +1648,48 @@ class TestEdgeCreation:
         resp2 = client.post("/api/v1/edges", json=body)
         assert resp2.status_code == 409
 
+    def test_create_edge_deletes_corresponding_unresolved_call(self) -> None:
+        """architecture.md §3: creating a CALLS edge must delete the matching
+        UnresolvedCall (same behavior as icsl_tools.write_edge). When a
+        reviewer manually resolves a GAP via POST /edges, the GAP should
+        disappear from the backlog."""
+        from codemap_lite.graph.schema import UnresolvedCallNode
+
+        client, store = get_test_client()
+        store.create_function(FunctionNode(
+            id="fn_a", name="a", signature="void a()",
+            file_path="x.c", start_line=1, end_line=5, body_hash="h1",
+        ))
+        store.create_function(FunctionNode(
+            id="fn_b", name="b", signature="void b()",
+            file_path="x.c", start_line=10, end_line=15, body_hash="h2",
+        ))
+        # Pre-existing UnresolvedCall for this call site
+        store.create_unresolved_call(UnresolvedCallNode(
+            id="uc1", caller_id="fn_a", call_expression="b()",
+            call_file="x.c", call_line=3, call_type="indirect",
+            source_code_snippet="b();", var_name=None, var_type=None,
+            retry_count=0, status="pending",
+        ))
+        assert len(store.get_unresolved_calls(caller_id="fn_a")) == 1
+
+        # Create edge resolving this GAP
+        resp = client.post("/api/v1/edges", json={
+            "caller_id": "fn_a",
+            "callee_id": "fn_b",
+            "resolved_by": "manual",
+            "call_type": "indirect",
+            "call_file": "x.c",
+            "call_line": 3,
+        })
+        assert resp.status_code == 201
+
+        # UnresolvedCall must be deleted
+        remaining = store.get_unresolved_calls(caller_id="fn_a")
+        assert len(remaining) == 0, (
+            "architecture.md §3: creating edge must delete matching UnresolvedCall"
+        )
+
 
 class TestEdgeDeletion:
     """architecture.md §5 审阅交互: '标记错误时 → 立即删除该 CALLS 边 + 对应
@@ -1806,6 +1937,58 @@ class TestEdgeDeletion:
         assert len(remaining) == 1
         assert remaining[0].caller_id == "c"
         assert remaining[0].callee_id == "a"
+
+    def test_delete_edge_resets_source_point_to_pending(self) -> None:
+        """architecture.md §5: deleting an edge must reset the caller's
+        SourcePoint status to 'pending' so the frontend reflects that the
+        source needs re-processing (same behavior as review verdict=incorrect)."""
+        from codemap_lite.graph.schema import SourcePointNode
+
+        client, store = get_test_client()
+
+        # Setup: caller + callee + LLM edge + SourcePoint=complete
+        store.create_function(FunctionNode(
+            id="src_fn", name="src_fn", signature="void src_fn()",
+            file_path="x.cpp", start_line=1, end_line=10, body_hash="h1",
+        ))
+        store.create_function(FunctionNode(
+            id="tgt_fn", name="tgt_fn", signature="void tgt_fn()",
+            file_path="x.cpp", start_line=20, end_line=30, body_hash="h2",
+        ))
+        store.create_calls_edge("src_fn", "tgt_fn", CallsEdgeProps(
+            resolved_by="llm", call_type="indirect",
+            call_file="x.cpp", call_line=5,
+        ))
+        store.create_source_point(SourcePointNode(
+            id="src_fn", function_id="src_fn",
+            entry_point_kind="callback_registration",
+            reason="test", status="complete",
+        ))
+
+        # Verify initial state
+        sp = store.get_source_point("src_fn")
+        assert sp is not None
+        assert sp.status == "complete"
+
+        # Delete the edge
+        resp = client.request(
+            "DELETE", "/api/v1/edges",
+            json={
+                "caller_id": "src_fn",
+                "callee_id": "tgt_fn",
+                "call_file": "x.cpp",
+                "call_line": 5,
+            },
+        )
+        assert resp.status_code == 204
+
+        # SourcePoint must be reset to "pending"
+        sp_after = store.get_source_point("src_fn")
+        assert sp_after is not None
+        assert sp_after.status == "pending", (
+            "architecture.md §5: DELETE /edges must reset SourcePoint to pending"
+        )
+
     """architecture.md §8: /api/v1/stats must return unresolved_by_category
     with all 5 keys always present, and calls_by_resolved_by with all 5
     resolved_by values."""

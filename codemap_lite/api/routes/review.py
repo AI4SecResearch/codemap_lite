@@ -274,6 +274,9 @@ def create_review_router() -> APIRouter:
             call_line=body.call_line,
         )
         store.create_calls_edge(body.caller_id, body.callee_id, props)
+        # Delete the matching UnresolvedCall if one exists (same behavior as
+        # icsl_tools.write_edge — resolving a GAP removes it from backlog).
+        store.delete_unresolved_call(body.caller_id, body.call_file, body.call_line)
         return {
             "caller_id": body.caller_id,
             "callee_id": body.callee_id,
