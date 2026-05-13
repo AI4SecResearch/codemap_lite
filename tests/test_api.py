@@ -1349,3 +1349,58 @@ class TestEdgeDeletion:
         assert gap.call_type == "indirect"
         assert gap.retry_count == 0
         assert gap.status == "pending"
+
+    def test_delete_edge_triggers_async_repair(self) -> None:
+        """architecture.md §5 line 328: '触发 Agent 重新修复该 source 点（异步）'.
+
+        When settings are available on app.state, deleting an edge must
+        schedule a background repair task for the affected source.
+        """
+        from unittest.mock import patch, MagicMock
+
+        store = InMemoryGraphStore()
+        # Create a minimal settings mock
+        settings = MagicMock()
+        settings.agent.backend = "claudecode"
+        settings.agent.max_concurrency = 1
+        settings.agent.subprocess_timeout_seconds = None
+        settings.project.target_dir = "/tmp/test"
+        settings.neo4j.uri = "bolt://localhost:7687"
+        settings.neo4j.user = "neo4j"
+        settings.neo4j.password = ""
+
+        app = create_app(store=store, settings=settings)
+        client = TestClient(app)
+
+        # Set up an edge to delete
+        fn1 = FunctionNode(
+            signature="void a()", name="a", file_path="f.cpp",
+            start_line=1, end_line=5, body_hash="h1", id="a",
+        )
+        fn2 = FunctionNode(
+            signature="void b()", name="b", file_path="f.cpp",
+            start_line=10, end_line=15, body_hash="h2", id="b",
+        )
+        store.create_function(fn1)
+        store.create_function(fn2)
+        store.create_calls_edge("a", "b", CallsEdgeProps(
+            resolved_by="llm", call_type="indirect",
+            call_file="f.cpp", call_line=3,
+        ))
+
+        # Patch _trigger_repair_for_source to verify it's called
+        with patch(
+            "codemap_lite.api.routes.review._trigger_repair_for_source"
+        ) as mock_trigger:
+            resp = client.request(
+                "DELETE", "/api/v1/edges",
+                json={
+                    "caller_id": "a",
+                    "callee_id": "b",
+                    "call_file": "f.cpp",
+                    "call_line": 3,
+                },
+            )
+            assert resp.status_code == 204
+            # Background task should have been called with settings + caller_id
+            mock_trigger.assert_called_once_with(settings, "a")

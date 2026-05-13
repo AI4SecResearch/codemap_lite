@@ -1,14 +1,19 @@
 """Review and manual edge management endpoints."""
 from __future__ import annotations
 
+import asyncio
+import logging
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
 from pydantic import BaseModel, field_validator
 
 from codemap_lite.graph.schema import CallsEdgeProps
+
+logger = logging.getLogger(__name__)
 
 
 class ReviewCreate(BaseModel):
@@ -64,6 +69,49 @@ class EdgeDelete(BaseModel):
     callee_id: str
     call_file: str
     call_line: int
+
+
+def _trigger_repair_for_source(settings: Any, caller_id: str) -> None:
+    """Spawn a single-source repair in the background.
+
+    architecture.md §5 line 328: "触发 Agent 重新修复该 source 点（异步）"
+    The caller_id is used as the source_id (same convention as cli.py repair
+    which passes sp.function_id to run_repairs).
+    """
+    try:
+        from codemap_lite.analysis.feedback_store import FeedbackStore
+        from codemap_lite.analysis.repair_orchestrator import (
+            RepairConfig,
+            RepairOrchestrator,
+        )
+        from codemap_lite.cli import _backend_subprocess, _build_graph_store
+
+        command, args = _backend_subprocess(settings)
+        target_dir = Path(settings.project.target_dir)
+        feedback_store = FeedbackStore(
+            storage_dir=target_dir / ".codemap_lite" / "feedback"
+        )
+        graph_store = _build_graph_store(settings)
+
+        orch = RepairOrchestrator(
+            RepairConfig(
+                target_dir=target_dir,
+                backend=settings.agent.backend,
+                command=command,
+                args=args,
+                max_concurrency=1,
+                neo4j_uri=settings.neo4j.uri,
+                neo4j_user=settings.neo4j.user,
+                neo4j_password=settings.neo4j.password,
+                feedback_store=feedback_store,
+                graph_store=graph_store,
+                retry_failed_gaps=False,
+                subprocess_timeout_seconds=settings.agent.subprocess_timeout_seconds,
+            )
+        )
+        asyncio.run(orch.run_repairs([caller_id]))
+    except Exception as exc:
+        logger.warning("Background repair trigger failed for %s: %s", caller_id, exc)
 
 
 def create_review_router() -> APIRouter:
@@ -131,12 +179,15 @@ def create_review_router() -> APIRouter:
         }
 
     @router.delete("/edges", status_code=204)
-    def delete_edge(request: Request, body: EdgeDelete) -> Response:
+    def delete_edge(
+        request: Request, body: EdgeDelete, background_tasks: BackgroundTasks
+    ) -> Response:
         """Delete a specific CALLS edge + corresponding RepairLog + regenerate UC.
 
-        architecture.md §5 审阅交互 lines 326-327:
+        architecture.md §5 审阅交互 lines 324-328:
         '标记错误时 → 立即删除该 CALLS 边 + 对应 RepairLog →
-        重新生成 UnresolvedCall 节点（retry_count=0）'.
+        重新生成 UnresolvedCall 节点（retry_count=0） →
+        触发 Agent 重新修复该 source 点（异步）'.
         """
         from codemap_lite.graph.schema import UnresolvedCallNode
 
@@ -187,6 +238,13 @@ def create_review_router() -> APIRouter:
             status="pending",
         )
         store.create_unresolved_call(uc)
+
+        # Step 4: Trigger async repair (architecture.md §5 line 328)
+        settings = getattr(request.app.state, "settings", None)
+        if settings is not None:
+            background_tasks.add_task(
+                _trigger_repair_for_source, settings, body.caller_id
+            )
 
         return Response(status_code=204)
 
