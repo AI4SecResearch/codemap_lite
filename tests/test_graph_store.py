@@ -828,12 +828,12 @@ def test_neo4j_ensure_indexes_runs_on_first_connection(neo4j_store):
     neo4j_store.ensure_indexes()
 
     assert neo4j_store._indexes_ensured is True
-    # Should have run 6 CREATE INDEX statements
+    # Should have run 7 CREATE INDEX statements (architecture.md §4)
     index_calls = [
         c for c in session.calls if "CREATE INDEX" in c[0]
     ]
-    assert len(index_calls) == 6, (
-        f"architecture.md §4: expected 6 index creation statements, got {len(index_calls)}"
+    assert len(index_calls) == 7, (
+        f"architecture.md §4: expected 7 index creation statements, got {len(index_calls)}"
     )
 
     # Verify specific indexes
@@ -842,6 +842,7 @@ def test_neo4j_ensure_indexes_runs_on_first_connection(neo4j_store):
     assert "idx_function_file" in all_cypher
     assert "idx_function_sig" in all_cypher
     assert "idx_source_kind" in all_cypher
+    assert "idx_calls_resolved" in all_cypher
     assert "idx_gap_status" in all_cypher
     assert "idx_gap_caller" in all_cypher
 

@@ -541,6 +541,7 @@ class Neo4jGraphStore:
             "CREATE INDEX idx_function_file IF NOT EXISTS FOR (n:Function) ON (n.file_path)",
             "CREATE INDEX idx_function_sig IF NOT EXISTS FOR (n:Function) ON (n.signature)",
             "CREATE INDEX idx_source_kind IF NOT EXISTS FOR (n:SourcePoint) ON (n.entry_point_kind)",
+            "CREATE INDEX idx_calls_resolved IF NOT EXISTS FOR ()-[r:CALLS]-() ON (r.resolved_by)",
             "CREATE INDEX idx_gap_status IF NOT EXISTS FOR (n:UnresolvedCall) ON (n.status)",
             "CREATE INDEX idx_gap_caller IF NOT EXISTS FOR (n:UnresolvedCall) ON (n.caller_id)",
         ]
