@@ -980,7 +980,7 @@ class TestNoPrivateAttrLeak:
                     "calls_by_resolved_by": {"llm": 1},
                 }
 
-            def get_unresolved_calls(self):
+            def get_unresolved_calls(self, caller_id=None, status=None):
                 return []
 
             def get_callers(self, fid):
@@ -1032,6 +1032,76 @@ class TestNoPrivateAttrLeak:
         resp = client.get("/api/v1/unresolved-calls")
         assert resp.status_code == 200
         assert resp.json()["total"] == 0
+
+
+class TestUnresolvedCallsFiltering:
+    """architecture.md §5 line 371-372: ReviewQueue needs ?caller=, ?status=,
+    ?category= filters on GET /api/v1/unresolved-calls."""
+
+    def test_filter_by_caller(self) -> None:
+        client, store = get_test_client()
+        store.create_unresolved_call(UnresolvedCallNode(
+            caller_id="func_a", call_expression="ptr(x)",
+            call_file="a.cpp", call_line=5, call_type="indirect",
+            source_code_snippet="", var_name=None, var_type=None, id="g1",
+        ))
+        store.create_unresolved_call(UnresolvedCallNode(
+            caller_id="func_b", call_expression="cb(y)",
+            call_file="b.cpp", call_line=10, call_type="indirect",
+            source_code_snippet="", var_name=None, var_type=None, id="g2",
+        ))
+        resp = client.get("/api/v1/unresolved-calls?caller=func_a")
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["items"][0]["caller_id"] == "func_a"
+
+    def test_filter_by_status(self) -> None:
+        client, store = get_test_client()
+        store.create_unresolved_call(UnresolvedCallNode(
+            caller_id="f1", call_expression="x()",
+            call_file="a.cpp", call_line=1, call_type="indirect",
+            source_code_snippet="", var_name=None, var_type=None,
+            id="g1", status="pending",
+        ))
+        store.create_unresolved_call(UnresolvedCallNode(
+            caller_id="f2", call_expression="y()",
+            call_file="b.cpp", call_line=2, call_type="indirect",
+            source_code_snippet="", var_name=None, var_type=None,
+            id="g2", status="unresolvable", retry_count=3,
+        ))
+        resp = client.get("/api/v1/unresolved-calls?status=unresolvable")
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["items"][0]["id"] == "g2"
+
+    def test_filter_by_category(self) -> None:
+        client, store = get_test_client()
+        store.create_unresolved_call(UnresolvedCallNode(
+            caller_id="f1", call_expression="x()",
+            call_file="a.cpp", call_line=1, call_type="indirect",
+            source_code_snippet="", var_name=None, var_type=None,
+            id="g1", last_attempt_reason="gate_failed: remaining GAPs",
+        ))
+        store.create_unresolved_call(UnresolvedCallNode(
+            caller_id="f2", call_expression="y()",
+            call_file="b.cpp", call_line=2, call_type="indirect",
+            source_code_snippet="", var_name=None, var_type=None,
+            id="g2", last_attempt_reason="agent_error: exit 1",
+        ))
+        store.create_unresolved_call(UnresolvedCallNode(
+            caller_id="f3", call_expression="z()",
+            call_file="c.cpp", call_line=3, call_type="indirect",
+            source_code_snippet="", var_name=None, var_type=None,
+            id="g3",  # no last_attempt_reason → "none" category
+        ))
+        # Filter by gate_failed
+        resp = client.get("/api/v1/unresolved-calls?category=gate_failed")
+        assert resp.json()["total"] == 1
+        assert resp.json()["items"][0]["id"] == "g1"
+        # Filter by "none" (no audit stamp)
+        resp = client.get("/api/v1/unresolved-calls?category=none")
+        assert resp.json()["total"] == 1
+        assert resp.json()["items"][0]["id"] == "g3"
 
 
 def _make_repair_log(

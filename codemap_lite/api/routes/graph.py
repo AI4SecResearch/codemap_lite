@@ -75,9 +75,20 @@ def create_graph_router() -> APIRouter:
         request: Request,
         limit: int = Query(default=100, ge=1, le=1000),
         offset: int = Query(default=0, ge=0),
+        caller: str | None = Query(default=None),
+        status: str | None = Query(default=None),
+        category: str | None = Query(default=None),
     ) -> dict[str, Any]:
         store = request.app.state.store
-        all_uc = store.get_unresolved_calls()
+        all_uc = store.get_unresolved_calls(caller_id=caller, status=status)
+        # Filter by category (prefix of last_attempt_reason)
+        # architecture.md §5 line 372: ReviewQueue ?category= filter
+        if category:
+            all_uc = [
+                u for u in all_uc
+                if (u.last_attempt_reason or "").startswith(f"{category}:")
+                or (category == "none" and not u.last_attempt_reason)
+            ]
         total = len(all_uc)
         items = all_uc[offset:offset + limit]
         return {
