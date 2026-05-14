@@ -524,3 +524,289 @@ class TestAPIWithNeo4j:
         assert "nodes" in data
         assert "edges" in data
         assert "unresolved" in data
+
+
+# ─── §5 Review Cascade (Full CRUD against Neo4j) ─────────────────────────────
+
+
+class TestReviewCascadeNeo4j:
+    """Verify the 4-step review cascade against real Neo4j.
+
+    Creates test data (LLM edge + RepairLog + SourcePoint), then exercises
+    the POST /reviews verdict=incorrect flow and verifies all 4 steps:
+    1. CALLS edge deleted
+    2. RepairLog deleted
+    3. UnresolvedCall regenerated (retry_count=0, status=pending)
+    4. SourcePoint status reset to pending
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup_test_data(self):
+        """Create isolated test data for the cascade test."""
+        from codemap_lite.graph.schema import (
+            CallsEdgeProps, RepairLogNode, SourcePointNode,
+        )
+        self.store = _get_store()
+
+        # Pick two real functions from the graph
+        fns = self.store.list_functions()[:3]
+        assert len(fns) >= 2, "Need at least 2 functions in Neo4j"
+        self.caller_id = fns[0].id
+        self.callee_id = fns[1].id
+        self.call_file = "__test_review_cascade.cpp"
+        self.call_line = 42
+
+        # Create a test LLM edge
+        props = CallsEdgeProps(
+            resolved_by="llm",
+            call_type="indirect",
+            call_file=self.call_file,
+            call_line=self.call_line,
+        )
+        self.store.create_calls_edge(self.caller_id, self.callee_id, props)
+
+        # Create a RepairLog for this edge
+        self.store.create_repair_log(RepairLogNode(
+            caller_id=self.caller_id,
+            callee_id=self.callee_id,
+            call_location=f"{self.call_file}:{self.call_line}",
+            repair_method="llm",
+            llm_response="test cascade response",
+            timestamp="2026-05-14T12:00:00Z",
+            reasoning_summary="test cascade reasoning",
+        ))
+
+        # Create a SourcePoint for the caller (status=complete)
+        sp = self.store.get_source_point(self.caller_id)
+        if sp is None:
+            self.store.create_source_point(SourcePointNode(
+                id=self.caller_id,
+                function_id=self.caller_id,
+                entry_point_kind="entry_point",
+                reason="test cascade",
+                module="test",
+                status="complete",
+            ))
+        else:
+            self.store.update_source_point_status(
+                self.caller_id, "complete", force_reset=True
+            )
+
+        yield
+
+        # Cleanup: remove any leftover test data
+        self.store.delete_calls_edge(
+            self.caller_id, self.callee_id, self.call_file, self.call_line
+        )
+        self.store.delete_repair_logs_for_edge(
+            self.caller_id, self.callee_id,
+            f"{self.call_file}:{self.call_line}",
+        )
+        # Delete any UC we created
+        self.store.delete_unresolved_call(
+            self.caller_id, self.call_file, self.call_line
+        )
+
+    def test_review_incorrect_deletes_edge(self):
+        """Step 1: verdict=incorrect must delete the CALLS edge."""
+        from fastapi.testclient import TestClient
+        from codemap_lite.api.app import create_app
+
+        app = create_app(store=self.store)
+        app.state.source_points = []
+        client = TestClient(app)
+
+        resp = client.post("/api/v1/reviews", json={
+            "caller_id": self.caller_id,
+            "callee_id": self.callee_id,
+            "call_file": self.call_file,
+            "call_line": self.call_line,
+            "verdict": "incorrect",
+        })
+        assert resp.status_code == 201, resp.text
+
+        # Verify edge is gone
+        edge = self.store.get_calls_edge(
+            self.caller_id, self.callee_id, self.call_file, self.call_line
+        )
+        assert edge is None, "CALLS edge should be deleted after incorrect verdict"
+
+    def test_review_incorrect_deletes_repair_log(self):
+        """Step 2: verdict=incorrect must delete the RepairLog."""
+        from fastapi.testclient import TestClient
+        from codemap_lite.api.app import create_app
+
+        app = create_app(store=self.store)
+        app.state.source_points = []
+        client = TestClient(app)
+
+        resp = client.post("/api/v1/reviews", json={
+            "caller_id": self.caller_id,
+            "callee_id": self.callee_id,
+            "call_file": self.call_file,
+            "call_line": self.call_line,
+            "verdict": "incorrect",
+        })
+        assert resp.status_code == 201
+
+        # Verify RepairLog is gone
+        logs = self.store.get_repair_logs(
+            caller_id=self.caller_id, callee_id=self.callee_id
+        )
+        cascade_logs = [
+            l for l in logs
+            if l.call_location == f"{self.call_file}:{self.call_line}"
+        ]
+        assert len(cascade_logs) == 0, "RepairLog should be deleted"
+
+    def test_review_incorrect_regenerates_uc(self):
+        """Step 3: verdict=incorrect must regenerate UnresolvedCall."""
+        from fastapi.testclient import TestClient
+        from codemap_lite.api.app import create_app
+
+        app = create_app(store=self.store)
+        app.state.source_points = []
+        client = TestClient(app)
+
+        resp = client.post("/api/v1/reviews", json={
+            "caller_id": self.caller_id,
+            "callee_id": self.callee_id,
+            "call_file": self.call_file,
+            "call_line": self.call_line,
+            "verdict": "incorrect",
+        })
+        assert resp.status_code == 201
+
+        # Verify UC was regenerated
+        ucs = self.store.get_unresolved_calls(caller_id=self.caller_id)
+        cascade_ucs = [
+            u for u in ucs
+            if u.call_file == self.call_file and u.call_line == self.call_line
+        ]
+        assert len(cascade_ucs) == 1, (
+            f"Expected 1 regenerated UC, got {len(cascade_ucs)}"
+        )
+        uc = cascade_ucs[0]
+        assert uc.retry_count == 0, "Regenerated UC must have retry_count=0"
+        assert uc.status == "pending", "Regenerated UC must have status=pending"
+
+    def test_review_incorrect_resets_source_point(self):
+        """Step 4: verdict=incorrect must reset SourcePoint to pending."""
+        from fastapi.testclient import TestClient
+        from codemap_lite.api.app import create_app
+
+        app = create_app(store=self.store)
+        app.state.source_points = []
+        client = TestClient(app)
+
+        # Verify SP starts as complete
+        sp_before = self.store.get_source_point(self.caller_id)
+        assert sp_before is not None
+        assert sp_before.status == "complete"
+
+        resp = client.post("/api/v1/reviews", json={
+            "caller_id": self.caller_id,
+            "callee_id": self.callee_id,
+            "call_file": self.call_file,
+            "call_line": self.call_line,
+            "verdict": "incorrect",
+        })
+        assert resp.status_code == 201
+
+        # Verify SP is reset to pending
+        sp_after = self.store.get_source_point(self.caller_id)
+        assert sp_after is not None
+        assert sp_after.status == "pending", (
+            f"SourcePoint should be reset to pending, got {sp_after.status}"
+        )
+
+    def test_review_incorrect_with_correct_target_creates_feedback(self):
+        """§5: providing correct_target generates a counter-example."""
+        from fastapi.testclient import TestClient
+        from codemap_lite.api.app import create_app
+        from codemap_lite.analysis.feedback_store import FeedbackStore
+        import tempfile
+
+        app = create_app(store=self.store)
+        app.state.source_points = []
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from pathlib import Path
+            fb_store = FeedbackStore(storage_dir=Path(tmpdir))
+            app.state.feedback_store = fb_store
+
+            client = TestClient(app)
+
+            # Pick a third function as the "correct target"
+            fns = self.store.list_functions()[:3]
+            correct_target = fns[2].id if len(fns) >= 3 else "fake_target"
+
+            resp = client.post("/api/v1/reviews", json={
+                "caller_id": self.caller_id,
+                "callee_id": self.callee_id,
+                "call_file": self.call_file,
+                "call_line": self.call_line,
+                "verdict": "incorrect",
+                "correct_target": correct_target,
+            })
+            assert resp.status_code == 201
+
+            # Verify counter-example was created
+            examples = fb_store.list_all()
+            assert len(examples) >= 1, "Counter-example should be created"
+            ex = examples[-1]
+            assert ex.wrong_target == self.callee_id
+            assert ex.correct_target == correct_target
+
+    def test_manual_edge_create_deletes_uc(self):
+        """§5: POST /edges creates edge and deletes matching UC."""
+        from fastapi.testclient import TestClient
+        from codemap_lite.api.app import create_app
+        from codemap_lite.graph.schema import UnresolvedCallNode
+
+        # First create a UC at the test location
+        uc = UnresolvedCallNode(
+            caller_id=self.caller_id,
+            call_expression="test_call()",
+            call_file="__test_manual_edge.cpp",
+            call_line=100,
+            call_type="indirect",
+            source_code_snippet="test_call();",
+            var_name="",
+            var_type="",
+            retry_count=0,
+            status="pending",
+        )
+        self.store.create_unresolved_call(uc)
+
+        # Delete the LLM edge we created in setup (to avoid conflict)
+        self.store.delete_calls_edge(
+            self.caller_id, self.callee_id, self.call_file, self.call_line
+        )
+
+        app = create_app(store=self.store)
+        app.state.source_points = []
+        client = TestClient(app)
+
+        resp = client.post("/api/v1/edges", json={
+            "caller_id": self.caller_id,
+            "callee_id": self.callee_id,
+            "resolved_by": "llm",
+            "call_type": "indirect",
+            "call_file": "__test_manual_edge.cpp",
+            "call_line": 100,
+        })
+        assert resp.status_code == 201, resp.text
+
+        # Verify UC was deleted
+        ucs = self.store.get_unresolved_calls(caller_id=self.caller_id)
+        manual_ucs = [
+            u for u in ucs
+            if u.call_file == "__test_manual_edge.cpp" and u.call_line == 100
+        ]
+        assert len(manual_ucs) == 0, "UC should be deleted after manual edge creation"
+
+        # Cleanup
+        self.store.delete_calls_edge(
+            self.caller_id, self.callee_id, "__test_manual_edge.cpp", 100
+        )
