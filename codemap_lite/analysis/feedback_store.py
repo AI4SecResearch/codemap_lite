@@ -35,8 +35,12 @@ class FeedbackStore:
     def _load_existing(self) -> None:
         json_path = self._json_path()
         if json_path.exists():
-            data = json.loads(json_path.read_text(encoding="utf-8"))
-            self._examples = [CounterExample(**item) for item in data]
+            try:
+                data = json.loads(json_path.read_text(encoding="utf-8"))
+                self._examples = [CounterExample(**item) for item in data]
+            except (json.JSONDecodeError, OSError, TypeError, KeyError):
+                # Corrupted store — start fresh rather than crash
+                self._examples = []
 
     def add(self, example: CounterExample) -> bool:
         """Add a counter example. Merges if same pattern already exists.

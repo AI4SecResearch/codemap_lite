@@ -141,3 +141,19 @@ def test_deduplication_returns_false_for_api_signal():
             call_context="x", wrong_target="y",
             correct_target="z", pattern="same_pattern",
         )) is False  # same pattern → deduplicated
+
+
+def test_corrupted_json_does_not_crash():
+    """FeedbackStore must degrade gracefully if counter_examples.json is corrupted."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        json_path = Path(tmpdir) / "counter_examples.json"
+        json_path.write_text("not valid json {{{", encoding="utf-8")
+        store = FeedbackStore(storage_dir=Path(tmpdir))
+        assert store.list_all() == []
+        # Can still add new examples after recovery
+        ex = CounterExample(
+            call_context="a", wrong_target="b",
+            correct_target="c", pattern="p1",
+        )
+        assert store.add(ex) is True
+        assert len(store.list_all()) == 1
