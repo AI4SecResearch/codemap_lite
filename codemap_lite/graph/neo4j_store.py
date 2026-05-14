@@ -1484,11 +1484,11 @@ def _record_to_function(record) -> FunctionNode:
 def _record_to_unresolved(record) -> UnresolvedCallNode:
     return UnresolvedCallNode(
         caller_id=record["caller_id"],
-        call_expression=record["call_expression"],
-        call_file=record["call_file"],
-        call_line=record["call_line"],
-        call_type=record["call_type"],
-        source_code_snippet=record["source_code_snippet"],
+        call_expression=record["call_expression"] or "",
+        call_file=record["call_file"] or "",
+        call_line=record["call_line"] or 0,
+        call_type=record["call_type"] or "indirect",
+        source_code_snippet=record["source_code_snippet"] or "",
         var_name=record["var_name"],
         var_type=record["var_type"],
         candidates=list(record["candidates"] or []),
@@ -1496,7 +1496,7 @@ def _record_to_unresolved(record) -> UnresolvedCallNode:
         status=record["status"] or "pending",
         last_attempt_timestamp=record["last_attempt_timestamp"],
         last_attempt_reason=record["last_attempt_reason"],
-        id=record["id"],
+        id=record["id"] or "",
     )
 
 
