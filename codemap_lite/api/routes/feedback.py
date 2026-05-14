@@ -33,6 +33,7 @@ class CounterExampleCreate(BaseModel):
     wrong_target: str = Field(..., min_length=1)
     correct_target: str = Field(..., min_length=1)
     pattern: str = Field(..., min_length=1)
+    source_id: str = Field(default="", description="Source point ID for per-source scoping (architecture.md §3)")
 
     @model_validator(mode="after")
     def targets_must_differ(self) -> "CounterExampleCreate":
@@ -105,6 +106,7 @@ def create_feedback_router() -> APIRouter:
             wrong_target=body.wrong_target,
             correct_target=body.correct_target,
             pattern=body.pattern,
+            source_id=body.source_id,
         )
         added = feedback_store.add(example)
         return {
