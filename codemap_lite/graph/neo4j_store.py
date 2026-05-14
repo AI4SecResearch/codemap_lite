@@ -921,6 +921,22 @@ class Neo4jGraphStore:
     def update_unresolved_call_retry_state(
         self, call_id: str, timestamp: str, reason: str
     ) -> None:
+        # Validate reason format (same as InMemoryGraphStore)
+        if len(reason) > 200:
+            raise ValueError(
+                f"last_attempt_reason must be ≤200 chars, got {len(reason)}"
+            )
+        colon_idx = reason.find(": ")
+        if colon_idx == -1:
+            raise ValueError(
+                f"last_attempt_reason must be '<category>: <summary>', got '{reason}'"
+            )
+        category = reason[:colon_idx]
+        if category not in VALID_REASON_CATEGORIES:
+            raise ValueError(
+                f"last_attempt_reason category must be one of "
+                f"{sorted(VALID_REASON_CATEGORIES)}, got '{category}'"
+            )
         # architecture.md §3: retry_count++ per GAP; when >= 3 → status = "unresolvable"
         cypher = (
             "MATCH (u:UnresolvedCall {id: $id}) "
