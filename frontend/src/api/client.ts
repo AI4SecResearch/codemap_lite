@@ -2,7 +2,7 @@
  * API client for codemap-lite backend.
  *
  * Response shapes match the FastAPI routes under codemap_lite/api/routes/.
- * Most list endpoints return arrays directly (not wrapped objects).
+ * List endpoints return {total, items} pagination wrappers (architecture.md §8).
  */
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? '';
@@ -244,17 +244,45 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   // Graph browsing
-  getFiles: () => fetchJson<{ total: number; items: FileNode[] }>('/api/v1/files'),
-  getFunctions: (file?: string) =>
-    fetchJson<{ total: number; items: FunctionNode[] }>(
-      `/api/v1/functions${file ? `?file=${encodeURIComponent(file)}` : ''}`
-    ),
+  getFiles: (params?: { limit?: number; offset?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.limit != null) qs.set('limit', String(params.limit));
+    if (params?.offset != null) qs.set('offset', String(params.offset));
+    const q = qs.toString();
+    return fetchJson<{ total: number; items: FileNode[] }>(
+      `/api/v1/files${q ? `?${q}` : ''}`
+    );
+  },
+  getFunctions: (params?: { file?: string; limit?: number; offset?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.file) qs.set('file', params.file);
+    if (params?.limit != null) qs.set('limit', String(params.limit));
+    if (params?.offset != null) qs.set('offset', String(params.offset));
+    const q = qs.toString();
+    return fetchJson<{ total: number; items: FunctionNode[] }>(
+      `/api/v1/functions${q ? `?${q}` : ''}`
+    );
+  },
   getFunction: (id: string) =>
     fetchJson<FunctionNode>(`/api/v1/functions/${id}`),
-  getCallers: (id: string) =>
-    fetchJson<{ total: number; items: FunctionNode[] }>(`/api/v1/functions/${id}/callers`),
-  getCallees: (id: string) =>
-    fetchJson<{ total: number; items: FunctionNode[] }>(`/api/v1/functions/${id}/callees`),
+  getCallers: (id: string, params?: { limit?: number; offset?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.limit != null) qs.set('limit', String(params.limit));
+    if (params?.offset != null) qs.set('offset', String(params.offset));
+    const q = qs.toString();
+    return fetchJson<{ total: number; items: FunctionNode[] }>(
+      `/api/v1/functions/${id}/callers${q ? `?${q}` : ''}`
+    );
+  },
+  getCallees: (id: string, params?: { limit?: number; offset?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.limit != null) qs.set('limit', String(params.limit));
+    if (params?.offset != null) qs.set('offset', String(params.offset));
+    const q = qs.toString();
+    return fetchJson<{ total: number; items: FunctionNode[] }>(
+      `/api/v1/functions/${id}/callees${q ? `?${q}` : ''}`
+    );
+  },
   getCallChain: (id: string, depth = 5) =>
     fetchJson<Subgraph>(`/api/v1/functions/${id}/call-chain?depth=${depth}`),
   listUnresolved: (params?: {
@@ -278,17 +306,19 @@ export const api = {
   },
 
   // Source points
-  getSourcePoints: (params?: { kind?: string; module?: string }) => {
+  getSourcePoints: (params?: { kind?: string; module?: string; limit?: number; offset?: number }) => {
     const qs = new URLSearchParams();
     if (params?.kind) qs.set('kind', params.kind);
     if (params?.module) qs.set('module', params.module);
+    if (params?.limit != null) qs.set('limit', String(params.limit));
+    if (params?.offset != null) qs.set('offset', String(params.offset));
     const q = qs.toString();
     return fetchJson<{ total: number; items: SourcePoint[] }>(
       `/api/v1/source-points${q ? `?${q}` : ''}`
     );
   },
   getSourcePointSummary: () =>
-    fetchJson<{ total: number; by_kind: Record<string, number> }>(
+    fetchJson<{ total: number; by_kind: Record<string, number>; by_status: Record<string, number> }>(
       '/api/v1/source-points/summary'
     ),
   getReachable: (id: string) =>
@@ -350,13 +380,35 @@ export const api = {
         body: JSON.stringify(edge),
       }
     ),
-  deleteEdges: (functionId: string) =>
+  /** Delete a specific CALLS edge with cascade (architecture.md §5). */
+  deleteEdge: (edge: {
+    caller_id: string;
+    callee_id: string;
+    call_file: string;
+    call_line: number;
+    correct_target?: string;
+  }) =>
+    fetch(`${BASE_URL}/api/v1/edges`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(edge),
+    }),
+  /** Bulk-delete all edges touching a function (incremental invalidation). */
+  deleteEdgesForFunction: (functionId: string) =>
     fetch(`${BASE_URL}/api/v1/edges/${encodeURIComponent(functionId)}`, {
       method: 'DELETE',
     }),
 
   // Feedback
-  getFeedback: () => fetchJson<{ total: number; items: CounterExample[] }>('/api/v1/feedback'),
+  getFeedback: (params?: { limit?: number; offset?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.limit != null) qs.set('limit', String(params.limit));
+    if (params?.offset != null) qs.set('offset', String(params.offset));
+    const q = qs.toString();
+    return fetchJson<{ total: number; items: CounterExample[] }>(
+      `/api/v1/feedback${q ? `?${q}` : ''}`
+    );
+  },
   createFeedback: (example: CounterExample) =>
     fetchJson<CounterExampleCreateResult>('/api/v1/feedback', {
       method: 'POST',
@@ -369,11 +421,15 @@ export const api = {
     caller?: string;
     callee?: string;
     location?: string;
+    limit?: number;
+    offset?: number;
   }) => {
     const qs = new URLSearchParams();
     if (params?.caller) qs.set('caller', params.caller);
     if (params?.callee) qs.set('callee', params.callee);
     if (params?.location) qs.set('location', params.location);
+    if (params?.limit != null) qs.set('limit', String(params.limit));
+    if (params?.offset != null) qs.set('offset', String(params.offset));
     const q = qs.toString();
     return fetchJson<{ total: number; items: RepairLog[] }>(
       `/api/v1/repair-logs${q ? `?${q}` : ''}`

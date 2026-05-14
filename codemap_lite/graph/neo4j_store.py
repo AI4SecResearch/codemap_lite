@@ -39,8 +39,15 @@ class GraphStore(Protocol):
     def get_callees(self, function_id: str) -> list[FunctionNode]: ...
 
     def get_unresolved_calls(
-        self, caller_id: str | None = None, status: str | None = None
+        self, caller_id: str | None = None, status: str | None = None,
+        category: str | None = None,
+        limit: int | None = None, offset: int = 0,
     ) -> list[UnresolvedCallNode]: ...
+
+    def count_unresolved_calls(
+        self, caller_id: str | None = None, status: str | None = None,
+        category: str | None = None,
+    ) -> int: ...
 
     def edge_exists(
         self, caller_id: str, callee_id: str, call_file: str, call_line: int
@@ -195,14 +202,49 @@ class InMemoryGraphStore:
         ]
 
     def get_unresolved_calls(
-        self, caller_id: str | None = None, status: str | None = None
+        self, caller_id: str | None = None, status: str | None = None,
+        category: str | None = None,
+        limit: int | None = None, offset: int = 0,
     ) -> list[UnresolvedCallNode]:
         results = list(self._unresolved_calls.values())
         if caller_id is not None:
             results = [n for n in results if n.caller_id == caller_id]
         if status is not None:
             results = [n for n in results if n.status == status]
+        if category is not None:
+            results = [
+                n for n in results
+                if (
+                    (n.last_attempt_reason or "").startswith(f"{category}:")
+                    or n.last_attempt_reason == category
+                    or (category == "none" and not n.last_attempt_reason)
+                )
+            ]
+        if limit is not None:
+            results = results[offset:offset + limit]
+        elif offset > 0:
+            results = results[offset:]
         return results
+
+    def count_unresolved_calls(
+        self, caller_id: str | None = None, status: str | None = None,
+        category: str | None = None,
+    ) -> int:
+        results = list(self._unresolved_calls.values())
+        if caller_id is not None:
+            results = [n for n in results if n.caller_id == caller_id]
+        if status is not None:
+            results = [n for n in results if n.status == status]
+        if category is not None:
+            results = [
+                n for n in results
+                if (
+                    (n.last_attempt_reason or "").startswith(f"{category}:")
+                    or n.last_attempt_reason == category
+                    or (category == "none" and not n.last_attempt_reason)
+                )
+            ]
+        return len(results)
 
     def edge_exists(
         self, caller_id: str, callee_id: str, call_file: str, call_line: int
@@ -883,7 +925,9 @@ class Neo4jGraphStore:
         return [_record_to_function(r) for r in records]
 
     def get_unresolved_calls(
-        self, caller_id: str | None = None, status: str | None = None
+        self, caller_id: str | None = None, status: str | None = None,
+        category: str | None = None,
+        limit: int | None = None, offset: int = 0,
     ) -> list[UnresolvedCallNode]:
         clauses = []
         params: dict = {}
@@ -893,6 +937,16 @@ class Neo4jGraphStore:
         if status is not None:
             clauses.append("u.status = $status")
             params["status"] = status
+        if category is not None:
+            if category == "none":
+                clauses.append("(u.last_attempt_reason IS NULL OR u.last_attempt_reason = '')")
+            else:
+                clauses.append(
+                    "(u.last_attempt_reason STARTS WITH $cat_prefix "
+                    "OR u.last_attempt_reason = $category)"
+                )
+                params["cat_prefix"] = f"{category}:"
+                params["category"] = category
         where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
         cypher = (
             f"MATCH (u:UnresolvedCall) {where}"
@@ -906,9 +960,42 @@ class Neo4jGraphStore:
             "u.last_attempt_timestamp AS last_attempt_timestamp, "
             "u.last_attempt_reason AS last_attempt_reason"
         )
+        if offset > 0:
+            cypher += f" SKIP {offset}"
+        if limit is not None:
+            cypher += f" LIMIT {limit}"
+
         with self._get_driver().session() as session:
             records = list(session.run(cypher, **params))
         return [_record_to_unresolved(r) for r in records]
+
+    def count_unresolved_calls(
+        self, caller_id: str | None = None, status: str | None = None,
+        category: str | None = None,
+    ) -> int:
+        clauses = []
+        params: dict = {}
+        if caller_id is not None:
+            clauses.append("u.caller_id = $caller_id")
+            params["caller_id"] = caller_id
+        if status is not None:
+            clauses.append("u.status = $status")
+            params["status"] = status
+        if category is not None:
+            if category == "none":
+                clauses.append("(u.last_attempt_reason IS NULL OR u.last_attempt_reason = '')")
+            else:
+                clauses.append(
+                    "(u.last_attempt_reason STARTS WITH $cat_prefix "
+                    "OR u.last_attempt_reason = $category)"
+                )
+                params["cat_prefix"] = f"{category}:"
+                params["category"] = category
+        where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
+        cypher = f"MATCH (u:UnresolvedCall) {where}RETURN count(u) AS total"
+        with self._get_driver().session() as session:
+            record = session.run(cypher, **params).single()
+        return record["total"] if record else 0
 
     def edge_exists(
         self, caller_id: str, callee_id: str, call_file: str, call_line: int

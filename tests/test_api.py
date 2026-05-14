@@ -1633,8 +1633,11 @@ class TestNoPrivateAttrLeak:
                     "calls_by_resolved_by": {"llm": 1},
                 }
 
-            def get_unresolved_calls(self, caller_id=None, status=None):
+            def get_unresolved_calls(self, caller_id=None, status=None, category=None, limit=None, offset=0):
                 return []
+
+            def count_unresolved_calls(self, caller_id=None, status=None, category=None):
+                return 0
 
             def get_callers(self, fid):
                 return []

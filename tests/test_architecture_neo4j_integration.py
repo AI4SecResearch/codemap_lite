@@ -4106,4 +4106,444 @@ class TestSection5_EdgesLifecycle:
         assert r.status_code == 404
 
 
+class TestSection8_PaginationContract:
+    """§8 REST API: all list endpoints support limit/offset pagination.
+
+    architecture.md §8 specifies that list endpoints return {total, items}
+    and accept limit/offset query parameters. This test class verifies
+    pagination works correctly across all list endpoints.
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup(self, neo4j_store):
+        from codemap_lite.graph.schema import (
+            CallsEdgeProps,
+            FileNode,
+            FunctionNode,
+            SourcePointNode,
+            UnresolvedCallNode,
+        )
+        from codemap_lite.api.app import create_app
+        from fastapi.testclient import TestClient
+
+        self.store = neo4j_store
+
+        for i in range(1, 3):
+            neo4j_store.create_file(FileNode(
+                id=f"pg_file_{i}", file_path=f"/test/pg{i}.cpp",
+                hash=f"h{i}", primary_language="cpp"
+            ))
+        for i in range(1, 6):
+            neo4j_store.create_function(FunctionNode(
+                id=f"pg_fn_{i}", name=f"pgFunc{i}", signature=f"void pgFunc{i}()",
+                file_path=f"/test/pg{1 if i <= 3 else 2}.cpp",
+                start_line=i * 10, end_line=i * 10 + 5, body_hash=f"bh{i}"
+            ))
+        # Create edges: fn_1 calls fn_2..fn_5
+        for i in range(2, 6):
+            neo4j_store.create_calls_edge(
+                "pg_fn_1", f"pg_fn_{i}",
+                CallsEdgeProps(resolved_by="symbol_table", call_type="direct",
+                               call_file="/test/pg1.cpp", call_line=10 + i)
+            )
+        # fn_2 calls fn_1 (so fn_1 has callers)
+        neo4j_store.create_calls_edge(
+            "pg_fn_2", "pg_fn_1",
+            CallsEdgeProps(resolved_by="signature", call_type="indirect",
+                           call_file="/test/pg1.cpp", call_line=30)
+        )
+        # Create UCs
+        for i in range(1, 4):
+            neo4j_store.create_unresolved_call(UnresolvedCallNode(
+                caller_id="pg_fn_1", call_expression=f"uc_expr_{i}",
+                call_file="/test/pg1.cpp", call_line=100 + i,
+                call_type="indirect", source_code_snippet="",
+                var_name=None, var_type=None, retry_count=0, status="pending"
+            ))
+        # Create source points
+        neo4j_store.create_source_point(SourcePointNode(
+            id="pg_sp_1", entry_point_kind="api_handler", reason="test",
+            function_id="pg_fn_1", module="mod_a", status="pending"
+        ))
+        neo4j_store.create_source_point(SourcePointNode(
+            id="pg_sp_2", entry_point_kind="callback", reason="test",
+            function_id="pg_fn_2", module="mod_b", status="complete"
+        ))
+
+        app = create_app(store=neo4j_store)
+        app.state.source_points = [
+            {"id": "pg_sp_1", "function_id": "pg_fn_1",
+             "entry_point_kind": "api_handler", "reason": "test", "module": "mod_a"},
+            {"id": "pg_sp_2", "function_id": "pg_fn_2",
+             "entry_point_kind": "callback", "reason": "test", "module": "mod_b"},
+        ]
+        self.client = TestClient(app)
+
+    def test_files_pagination(self):
+        """GET /files respects limit and offset."""
+        # Get all
+        r = self.client.get("/api/v1/files")
+        assert r.status_code == 200
+        data = r.json()
+        assert "total" in data
+        assert "items" in data
+        total = data["total"]
+        assert total >= 2
+
+        # Limit=1
+        r = self.client.get("/api/v1/files?limit=1&offset=0")
+        data = r.json()
+        assert len(data["items"]) == 1
+        assert data["total"] == total  # total unchanged
+
+        # Offset past end
+        r = self.client.get(f"/api/v1/files?limit=10&offset={total + 100}")
+        data = r.json()
+        assert len(data["items"]) == 0
+        assert data["total"] == total
+
+    def test_functions_pagination(self):
+        """GET /functions respects limit and offset."""
+        r = self.client.get("/api/v1/functions?limit=2&offset=0")
+        assert r.status_code == 200
+        data = r.json()
+        assert len(data["items"]) <= 2
+        assert data["total"] >= 5
+
+    def test_callers_pagination(self):
+        """GET /functions/{id}/callers respects limit and offset."""
+        r = self.client.get("/api/v1/functions/pg_fn_1/callers?limit=1&offset=0")
+        assert r.status_code == 200
+        data = r.json()
+        assert "total" in data
+        assert "items" in data
+        assert len(data["items"]) <= 1
+
+    def test_callees_pagination(self):
+        """GET /functions/{id}/callees respects limit and offset."""
+        r = self.client.get("/api/v1/functions/pg_fn_1/callees?limit=2&offset=0")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["total"] >= 4  # fn_1 calls fn_2..fn_5
+        assert len(data["items"]) <= 2
+
+        # Offset=2 should give next page
+        r2 = self.client.get("/api/v1/functions/pg_fn_1/callees?limit=2&offset=2")
+        data2 = r2.json()
+        assert data2["total"] == data["total"]
+        # Items should be different from first page
+        ids_page1 = {item["id"] for item in data["items"]}
+        ids_page2 = {item["id"] for item in data2["items"]}
+        assert ids_page1.isdisjoint(ids_page2)
+
+    def test_unresolved_calls_pagination(self):
+        """GET /unresolved-calls respects limit and offset."""
+        r = self.client.get("/api/v1/unresolved-calls?limit=1&offset=0")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["total"] >= 3
+        assert len(data["items"]) == 1
+
+    def test_source_points_pagination(self):
+        """GET /source-points respects limit and offset."""
+        r = self.client.get("/api/v1/source-points?limit=1&offset=0")
+        assert r.status_code == 200
+        data = r.json()
+        assert "total" in data
+        assert "items" in data
+        assert len(data["items"]) <= 1
+
+    def test_reviews_pagination(self):
+        """GET /reviews respects limit and offset."""
+        r = self.client.get("/api/v1/reviews?limit=1&offset=0")
+        assert r.status_code == 200
+        data = r.json()
+        assert "total" in data
+        assert "items" in data
+
+    def test_feedback_pagination(self):
+        """GET /feedback respects limit and offset."""
+        r = self.client.get("/api/v1/feedback?limit=1&offset=0")
+        assert r.status_code == 200
+        data = r.json()
+        assert "total" in data
+        assert "items" in data
+
+    def test_repair_logs_pagination(self):
+        """GET /repair-logs respects limit and offset."""
+        r = self.client.get("/api/v1/repair-logs?limit=1&offset=0")
+        assert r.status_code == 200
+        data = r.json()
+        assert "total" in data
+        assert "items" in data
+
+
+class TestSection8_SourcePointsSummaryContract:
+    """§8 REST API: /source-points/summary returns {total, by_kind, by_status}.
+
+    The frontend must receive by_status to render the SourcePoint status
+    breakdown. This test verifies the backend contract.
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup(self, neo4j_store):
+        from codemap_lite.graph.schema import SourcePointNode
+        from codemap_lite.api.app import create_app
+        from fastapi.testclient import TestClient
+
+        self.store = neo4j_store
+
+        neo4j_store.create_source_point(SourcePointNode(
+            id="ssc_sp_1", entry_point_kind="api_handler", reason="test",
+            function_id="ssc_fn_1", module="mod_a", status="pending"
+        ))
+        neo4j_store.create_source_point(SourcePointNode(
+            id="ssc_sp_2", entry_point_kind="callback", reason="test",
+            function_id="ssc_fn_2", module="mod_a", status="complete"
+        ))
+        neo4j_store.create_source_point(SourcePointNode(
+            id="ssc_sp_3", entry_point_kind="api_handler", reason="test",
+            function_id="ssc_fn_3", module="mod_b", status="pending"
+        ))
+
+        app = create_app(store=neo4j_store)
+        app.state.source_points = [
+            {"id": "ssc_sp_1", "function_id": "ssc_fn_1",
+             "entry_point_kind": "api_handler", "reason": "test", "module": "mod_a"},
+            {"id": "ssc_sp_2", "function_id": "ssc_fn_2",
+             "entry_point_kind": "callback", "reason": "test", "module": "mod_a"},
+            {"id": "ssc_sp_3", "function_id": "ssc_fn_3",
+             "entry_point_kind": "api_handler", "reason": "test", "module": "mod_b"},
+        ]
+        self.client = TestClient(app)
+
+    def test_summary_has_by_status(self):
+        """§8: /source-points/summary must include by_status field."""
+        r = self.client.get("/api/v1/source-points/summary")
+        assert r.status_code == 200
+        data = r.json()
+        assert "total" in data
+        assert "by_kind" in data
+        assert "by_status" in data, (
+            "Backend must return by_status — frontend needs it for status breakdown"
+        )
+
+    def test_summary_by_kind_counts(self):
+        """§8: by_kind counts match seeded data."""
+        r = self.client.get("/api/v1/source-points/summary")
+        data = r.json()
+        # At minimum our seeded data should appear
+        assert data["by_kind"].get("api_handler", 0) >= 2
+        assert data["by_kind"].get("callback", 0) >= 1
+
+    def test_summary_by_status_counts(self):
+        """§8: by_status counts match seeded data."""
+        r = self.client.get("/api/v1/source-points/summary")
+        data = r.json()
+        assert data["by_status"].get("pending", 0) >= 2
+        assert data["by_status"].get("complete", 0) >= 1
+
+    def test_summary_total_matches_sum(self):
+        """§8: total == sum of by_kind values == sum of by_status values."""
+        r = self.client.get("/api/v1/source-points/summary")
+        data = r.json()
+        total = data["total"]
+        assert total == sum(data["by_kind"].values())
+        assert total == sum(data["by_status"].values())
+
+
+class TestSection8_FrontendContractAlignment:
+    """Verify backend responses match the TypeScript interfaces in client.ts.
+
+    These tests ensure the backend returns all fields the frontend expects,
+    catching contract drift before it becomes a runtime error.
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup(self, neo4j_store):
+        from codemap_lite.graph.schema import (
+            CallsEdgeProps,
+            FileNode,
+            FunctionNode,
+            RepairLogNode,
+            SourcePointNode,
+            UnresolvedCallNode,
+        )
+        from codemap_lite.api.app import create_app
+        from fastapi.testclient import TestClient
+
+        self.store = neo4j_store
+
+        neo4j_store.create_file(FileNode(
+            id="fc_file_1", file_path="/test/fc.cpp",
+            hash="fch1", primary_language="cpp"
+        ))
+        neo4j_store.create_function(FunctionNode(
+            id="fc_fn_1", name="fcFunc1", signature="void fcFunc1()",
+            file_path="/test/fc.cpp", start_line=1, end_line=10, body_hash="fcbh1"
+        ))
+        neo4j_store.create_function(FunctionNode(
+            id="fc_fn_2", name="fcFunc2", signature="void fcFunc2()",
+            file_path="/test/fc.cpp", start_line=20, end_line=30, body_hash="fcbh2"
+        ))
+        neo4j_store.create_calls_edge(
+            "fc_fn_1", "fc_fn_2",
+            CallsEdgeProps(resolved_by="llm", call_type="indirect",
+                           call_file="/test/fc.cpp", call_line=5)
+        )
+        neo4j_store.create_unresolved_call(UnresolvedCallNode(
+            caller_id="fc_fn_1", call_expression="fc_expr()",
+            call_file="/test/fc.cpp", call_line=7,
+            call_type="indirect", source_code_snippet="// snippet",
+            var_name="obj", var_type="FcType", retry_count=1,
+            status="pending"
+        ))
+        neo4j_store.create_source_point(SourcePointNode(
+            id="fc_sp_1", entry_point_kind="api_handler", reason="test",
+            function_id="fc_fn_1", module="fc_mod", status="running"
+        ))
+        neo4j_store.create_repair_log(RepairLogNode(
+            id="fc_rl_1", caller_id="fc_fn_1", callee_id="fc_fn_2",
+            call_location="/test/fc.cpp:5", repair_method="llm",
+            llm_response="resolved via vtable", timestamp="2026-05-15T00:00:00Z",
+            reasoning_summary="Matched vtable dispatch pattern"
+        ))
+
+        app = create_app(store=neo4j_store)
+        app.state.source_points = [
+            {"id": "fc_sp_1", "function_id": "fc_fn_1",
+             "entry_point_kind": "api_handler", "reason": "test", "module": "fc_mod"},
+        ]
+        self.client = TestClient(app)
+
+    def test_file_node_shape(self):
+        """FileNode must have: id, file_path, hash, primary_language."""
+        # Use the function detail endpoint to verify file_path, then check
+        # the /files endpoint returns proper shape
+        r = self.client.get("/api/v1/files?limit=1")
+        data = r.json()
+        assert data["total"] >= 1
+        assert len(data["items"]) == 1
+        f = data["items"][0]
+        # All FileNode fields must be present
+        assert "id" in f
+        assert "file_path" in f
+        assert "hash" in f
+        assert "primary_language" in f
+
+    def test_function_node_shape(self):
+        """FunctionNode must have: id, name, signature, file_path, start_line, end_line."""
+        r = self.client.get("/api/v1/functions/fc_fn_1")
+        assert r.status_code == 200
+        fn = r.json()
+        assert fn["id"] == "fc_fn_1"
+        assert fn["name"] == "fcFunc1"
+        assert fn["signature"] == "void fcFunc1()"
+        assert fn["file_path"] == "/test/fc.cpp"
+        assert fn["start_line"] == 1
+        assert fn["end_line"] == 10
+
+    def test_call_chain_subgraph_shape(self):
+        """Subgraph must have: nodes, edges, unresolved."""
+        r = self.client.get("/api/v1/functions/fc_fn_1/call-chain?depth=3")
+        assert r.status_code == 200
+        data = r.json()
+        assert "nodes" in data
+        assert "edges" in data
+        assert "unresolved" in data
+        # Edges should have caller_id, callee_id, props
+        if data["edges"]:
+            edge = data["edges"][0]
+            assert "caller_id" in edge
+            assert "callee_id" in edge
+            assert "props" in edge
+            props = edge["props"]
+            assert "resolved_by" in props
+            assert "call_type" in props
+            assert "call_file" in props
+            assert "call_line" in props
+
+    def test_unresolved_call_shape(self):
+        """UnresolvedCall must have all fields the frontend expects."""
+        r = self.client.get("/api/v1/unresolved-calls?caller=fc_fn_1&limit=100")
+        data = r.json()
+        assert data["total"] >= 1, "Expected at least 1 UC for fc_fn_1"
+        uc = data["items"][0]
+        # Required fields
+        assert "caller_id" in uc
+        assert "call_expression" in uc
+        assert "call_file" in uc
+        assert "call_line" in uc
+        assert "call_type" in uc
+        # Optional fields should be present (even if null)
+        assert "retry_count" in uc
+        assert "status" in uc
+        assert "id" in uc
+
+    def test_stats_shape(self):
+        """Stats must have all fields the frontend Stats interface expects."""
+        r = self.client.get("/api/v1/stats")
+        assert r.status_code == 200
+        data = r.json()
+        # Required fields
+        assert "total_functions" in data
+        assert "total_files" in data
+        assert "total_calls" in data
+        assert "total_unresolved" in data
+        assert "total_source_points" in data
+        # Optional but expected fields
+        assert "calls_by_resolved_by" in data
+        assert "unresolved_by_status" in data
+        assert "unresolved_by_category" in data
+        # calls_by_resolved_by should have valid keys
+        cbr = data["calls_by_resolved_by"]
+        valid_keys = {"symbol_table", "signature", "dataflow", "context", "llm"}
+        for key in cbr:
+            assert key in valid_keys, f"Unexpected resolved_by key: {key}"
+
+    def test_repair_log_shape(self):
+        """RepairLog must have all fields the frontend RepairLog interface expects."""
+        r = self.client.get("/api/v1/repair-logs")
+        assert r.status_code == 200
+        data = r.json()
+        fc_logs = [l for l in data["items"] if l.get("id") == "fc_rl_1"]
+        assert len(fc_logs) == 1
+        log = fc_logs[0]
+        assert log["id"] == "fc_rl_1"
+        assert log["caller_id"] == "fc_fn_1"
+        assert log["callee_id"] == "fc_fn_2"
+        assert log["call_location"] == "/test/fc.cpp:5"
+        assert log["repair_method"] == "llm"
+        assert log["llm_response"] == "resolved via vtable"
+        assert log["timestamp"] == "2026-05-15T00:00:00Z"
+        assert log["reasoning_summary"] == "Matched vtable dispatch pattern"
+
+    def test_analyze_status_shape(self):
+        """AnalyzeStatus must have: state, progress."""
+        r = self.client.get("/api/v1/analyze/status")
+        assert r.status_code == 200
+        data = r.json()
+        assert "state" in data
+        assert "progress" in data
+        # sources key should be present (may be empty list)
+        assert "sources" in data
+
+    def test_review_create_and_shape(self):
+        """Review must have: id, caller_id, callee_id, call_file, call_line, verdict."""
+        r = self.client.post("/api/v1/reviews", json={
+            "caller_id": "fc_fn_1",
+            "callee_id": "fc_fn_2",
+            "call_file": "/test/fc.cpp",
+            "call_line": 5,
+            "verdict": "correct",
+        })
+        assert r.status_code == 201
+        review = r.json()
+        assert "id" in review
+        assert review["caller_id"] == "fc_fn_1"
+        assert review["callee_id"] == "fc_fn_2"
+        assert review["call_file"] == "/test/fc.cpp"
+        assert review["call_line"] == 5
+        assert review["verdict"] == "correct"
+
 
