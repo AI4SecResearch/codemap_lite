@@ -345,6 +345,7 @@ def serve(
         for sp in sp_list:
             if graph_store.get_source_point(sp.function_id) is None:
                 graph_store.create_source_point(SourcePointNode(
+                    id=sp.function_id,
                     function_id=sp.function_id,
                     entry_point_kind=sp.entry_point_kind,
                     reason=sp.reason,

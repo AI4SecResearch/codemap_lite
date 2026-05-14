@@ -127,6 +127,7 @@ class PipelineOrchestrator:
                     from codemap_lite.graph.schema import SourcePointNode
 
                     node = SourcePointNode(
+                        id=sp.function_id,
                         function_id=sp.function_id,
                         entry_point_kind=sp.entry_point_kind,
                         reason=sp.reason,
