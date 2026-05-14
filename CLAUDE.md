@@ -219,6 +219,8 @@ codemap-lite serve    [--config PATH] [--port 8000]     # 启 FastAPI
 - **35 LLM 边 vs 34 RepairLog 的 1 条差值**（2026-05-13，7-entry run 观察到）：`65cecfa5cf3a→f41875af7db5 @line132` 与 `94a77ea67585→1ccd8bba9eab @line1189` 两条 CALLS 边在 Neo4j 里没有 `(caller_id, callee_id, call_location)` 三元组精确匹配的 RepairLog。怀疑 `create_repair_log` 的 `MERGE` 键与 `write_edge` 时拼出的 `call_location` 格式不一致，或 RepairLog 的 `MERGE` 键太粗导致同一 agent 调用内第二次 `write-edge` 覆盖了前一条。未深究、未定位根因。
 - **门禁机制尚未真 pass 过**（2026-05-13）：`check-complete` TypeError 修复前每次必 False；修复后的 7-entry run 所有 source 都有剩余 pending GAP（0-edge 放弃 + counter-example 全覆盖），没跑出过 `complete=True` 的实际路径。下一次 E2E 会是第一次真门禁验证——需要挑一个 agent 能真正解全 GAP 的 source 或构造用例。
 - 仓库根目录没有 check-in 的 `config.yaml`，4 个 CLI 子命令默认 `--config config.yaml` 找当前工作目录——首次跑前要么 `cp codemap_lite/config/default_config.yaml config.yaml`，要么显式 `--config codemap_lite/config/default_config.yaml`。
+- **FeedbackStore 反例泛化去重（architecture.md §3 反馈机制 step 4 "相似 → 总结合并"）** 当前实现是**精确 pattern 字串匹配**（`FeedbackStore.add()` 按 `pattern` 精确比对决定是否 dedup），而架构要求**LLM 语义相似度判断**后合并+泛化。当前行为：相同 pattern 的第二次提交会被标记为 `deduplicated=True` 但泛化摘要（如"所有 dispatcher vtable resolution 必须匹配 signature"）不会自动生成——只在 pattern 文本完全一致时才"合并"。缺失的部分：调用 LLM 判断两个反例是否语义相似；相似时生成泛化摘要替换原始 pattern；pattern 中包含具体行号的反例应自动去掉行号泛化为模式级规则。此 gap 影响反例库的实际威力——精确匹配无法捕获"同一 bug 模式在不同位置"的情况。
+- ~~REST API 7 个列表端点返回裸列表而非 `{total, items}` 分页格式。~~ **已完成（2026-05-14）**：`/files`, `/functions`, `/functions/{id}/callers`, `/functions/{id}/callees`, `/source-points`, `/reviews`, `/feedback` 全部改为 `{total, items}` + `limit/offset` 参数，对齐 architecture.md §8 REST API 契约。492 tests 全绿。
 - gap-analysis 历史：`docs/adr/0001-gap-analysis-corrections.md` / `0002-gap-analysis-round2.md` / `0003-gap-analysis-round3.md`。
 
 ---

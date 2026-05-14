@@ -79,12 +79,17 @@ class EdgeCreate(BaseModel):
 
 
 class EdgeDelete(BaseModel):
-    """Request body for deleting a specific edge (architecture.md §5)."""
+    """Request body for deleting a specific edge (architecture.md §5).
+
+    Supports optional correct_target for counter-example generation
+    (§5: '可填写正确目标 → 触发反例生成').
+    """
 
     caller_id: str
     callee_id: str
     call_file: str
     call_line: int
+    correct_target: str | None = None  # §5: counter-example on edge deletion
 
 
 def _trigger_repair_for_source(settings: Any, caller_id: str) -> None:
@@ -224,13 +229,15 @@ def create_review_router() -> APIRouter:
                     was_new = feedback_store.add(example)
                     review["counter_example_deduplicated"] = not was_new
 
-            # Reset SourcePoint status to "pending" BEFORE triggering repair
-            # so the frontend immediately reflects re-processing state and the
-            # repair agent sees the correct status on startup.
-            # architecture.md §5 step 4: "触发 Agent 重新修复该 source 点（异步）"
+            # Reset SourcePoint status to "pending" (architecture.md §5:
+            # every CALLS edge has a caller that IS a SourcePoint, so this
+            # should always succeed). If caller_id is not a SourcePoint,
+            # that means the edge was on a non-source function — no reset
+            # needed, no repair triggered.
             sp = store.get_source_point(body.caller_id)
-            if sp is not None and sp.status != "pending":
-                store.update_source_point_status(body.caller_id, "pending", force_reset=True)
+            if sp is not None:
+                if sp.status != "pending":
+                    store.update_source_point_status(body.caller_id, "pending", force_reset=True)
 
             # Step 4: Trigger async repair
             settings = getattr(request.app.state, "settings", None)
@@ -307,11 +314,15 @@ def create_review_router() -> APIRouter:
 
         store = request.app.state.store
 
-        # Capture edge call_type before deletion (needed for UC regeneration)
+        # Validate edge exists BEFORE capturing call_type (Bug #4 fix:
+        # previously captured call_type with fallback "indirect" before
+        # checking existence, which would produce wrong UC call_type).
         edge_props = store.get_calls_edge(
             body.caller_id, body.callee_id, body.call_file, body.call_line
         )
-        call_type = edge_props.call_type if edge_props else "indirect"
+        if edge_props is None:
+            raise HTTPException(status_code=404, detail="Edge not found")
+        call_type = edge_props.call_type
 
         # Step 1: Delete the CALLS edge
         deleted = store.delete_calls_edge(
@@ -346,11 +357,28 @@ def create_review_router() -> APIRouter:
         )
         store.create_unresolved_call(uc)
 
-        # Reset SourcePoint status to "pending" BEFORE triggering repair
-        # (same ordering as review verdict=incorrect).
+        # §5: if correct_target provided, create counter-example in
+        # FeedbackStore (反例生成), same logic as review verdict=incorrect.
+        if body.correct_target:
+            feedback_store = getattr(request.app.state, "feedback_store", None)
+            if feedback_store is not None:
+                from codemap_lite.analysis.feedback_store import CounterExample
+
+                example = CounterExample(
+                    call_context=f"{body.call_file}:{body.call_line}",
+                    wrong_target=body.callee_id,
+                    correct_target=body.correct_target,
+                    pattern=f"{body.caller_id} -> {body.callee_id} at {body.call_file}:{body.call_line}",
+                )
+                feedback_store.add(example)
+
+        # Reset SourcePoint status to "pending" (same as review
+        # verdict=incorrect). If caller_id is not a SourcePoint, no
+        # reset needed, no repair triggered.
         sp = store.get_source_point(body.caller_id)
-        if sp is not None and sp.status != "pending":
-            store.update_source_point_status(body.caller_id, "pending", force_reset=True)
+        if sp is not None:
+            if sp.status != "pending":
+                store.update_source_point_status(body.caller_id, "pending", force_reset=True)
 
         # Step 4: Trigger async repair (architecture.md §5 line 328)
         settings = getattr(request.app.state, "settings", None)

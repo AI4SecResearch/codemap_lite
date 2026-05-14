@@ -2546,6 +2546,99 @@ class TestEdgeCreateResolvedByValidation:
         assert resp.status_code == 422
 
 
+class TestEdgeDeletionBugFixes:
+    """Tests for §5 HIGH-severity bugs: call_type order + EdgeDelete correct_target."""
+
+    def test_delete_edge_preserves_original_call_type(self) -> None:
+        """§5 Bug #4: delete_edge must validate edge exists BEFORE capturing
+        call_type, then use the edge's actual call_type (not fallback 'indirect')
+        when regenerating the UnresolvedCall."""
+        client, store = get_test_client()
+        fn1 = FunctionNode(
+            signature="void a()", name="a", file_path="f.cpp",
+            start_line=1, end_line=5, body_hash="h1", id="a",
+        )
+        fn2 = FunctionNode(
+            signature="void b()", name="b", file_path="f.cpp",
+            start_line=10, end_line=15, body_hash="h2", id="b",
+        )
+        store.create_function(fn1)
+        store.create_function(fn2)
+        # Create edge with call_type="virtual" (not "indirect")
+        store.create_calls_edge("a", "b", CallsEdgeProps(
+            resolved_by="llm", call_type="virtual",
+            call_file="f.cpp", call_line=3,
+        ))
+
+        resp = client.request(
+            "DELETE", "/api/v1/edges",
+            json={
+                "caller_id": "a",
+                "callee_id": "b",
+                "call_file": "f.cpp",
+                "call_line": 3,
+            },
+        )
+        assert resp.status_code == 204
+
+        gaps = store.get_unresolved_calls(caller_id="a")
+        assert len(gaps) == 1
+        # Must preserve the original call_type="virtual", not fallback "indirect"
+        assert gaps[0].call_type == "virtual", (
+            "regenerated UC must preserve original call_type from deleted edge"
+        )
+
+    def test_delete_edge_with_correct_target_creates_counter_example(self) -> None:
+        """§5 Bug #7: DELETE /edges with correct_target must create a
+        counter-example in FeedbackStore (same as review verdict=incorrect
+        with correct_target per architecture.md §5)."""
+        from codemap_lite.analysis.feedback_store import FeedbackStore
+        import tempfile
+
+        store = InMemoryGraphStore()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from pathlib import Path
+            feedback_store = FeedbackStore(storage_dir=Path(tmpdir))
+            app = create_app(store=store, feedback_store=feedback_store)
+            client = TestClient(app)
+
+            fn1 = FunctionNode(
+                signature="void src()", name="src", file_path="x.cpp",
+                start_line=1, end_line=10, body_hash="h1", id="fn_src",
+            )
+            fn2 = FunctionNode(
+                signature="void wrong()", name="wrong", file_path="x.cpp",
+                start_line=20, end_line=30, body_hash="h2", id="fn_wrong",
+            )
+            store.create_function(fn1)
+            store.create_function(fn2)
+            store.create_calls_edge("fn_src", "fn_wrong", CallsEdgeProps(
+                resolved_by="llm", call_type="indirect",
+                call_file="x.cpp", call_line=5,
+            ))
+
+            # Delete edge WITH correct_target
+            resp = client.request(
+                "DELETE", "/api/v1/edges",
+                json={
+                    "caller_id": "fn_src",
+                    "callee_id": "fn_wrong",
+                    "call_file": "x.cpp",
+                    "call_line": 5,
+                    "correct_target": "fn_real_target",
+                },
+            )
+            assert resp.status_code == 204
+
+            # Counter-example must have been created
+            examples = feedback_store.list_all()
+            assert len(examples) == 1, (
+                "§5: DELETE /edges with correct_target must create counter-example"
+            )
+            assert examples[0].wrong_target == "fn_wrong"
+            assert examples[0].correct_target == "fn_real_target"
+
+
 class TestReviewIdempotency:
     """architecture.md §5: review operations should handle edge-already-deleted
     gracefully (idempotent delete semantics)."""

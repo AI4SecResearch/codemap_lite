@@ -1355,9 +1355,20 @@ class Neo4jGraphStore:
                 f"SourcePoint.status must be one of {sorted(VALID_SOURCE_POINT_STATUSES)}, "
                 f"got '{status}'"
             )
-        # Note: Neo4j implementation does not enforce transitions server-side
-        # (would require a read-before-write round trip). Validation is best-effort
-        # at the application layer; the InMemoryGraphStore enforces strictly.
+        # Read-before-write to enforce transition validation (same as InMemoryGraphStore).
+        sp = self.get_source_point(source_id)
+        if sp is None:
+            return  # SourcePoint doesn't exist — nothing to update
+        if not force_reset:
+            # Same-state is idempotent (no-op)
+            if status == sp.status:
+                return
+            allowed = _SOURCE_POINT_TRANSITIONS.get(sp.status, frozenset())
+            if status not in allowed:
+                raise ValueError(
+                    f"Invalid SourcePoint transition: '{sp.status}' → '{status}'. "
+                    f"Allowed next states: {sorted(allowed)}"
+                )
         cypher = (
             "MATCH (s:SourcePoint {id: $id}) "
             "SET s.status = $status"
