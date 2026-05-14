@@ -1046,6 +1046,18 @@ async def test_check_gate_returns_false_on_malformed_json(orchestrator):
 
 
 @pytest.mark.asyncio
+async def test_check_gate_returns_false_on_non_dict_json(orchestrator):
+    """Valid JSON that is not a dict (e.g. list) must not crash with AttributeError."""
+    fake_proc = MagicMock()
+    fake_proc.returncode = 0
+    fake_proc.communicate = AsyncMock(return_value=(b'[1, 2, 3]', b""))
+    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=fake_proc)):
+        passed = await orchestrator._check_gate("src_001")
+
+    assert passed is False
+
+
+@pytest.mark.asyncio
 async def test_check_gate_returns_false_on_spawn_failure(orchestrator):
     """Missing python interpreter / icsl_tools.py file ⇒ gate fails."""
     with patch(

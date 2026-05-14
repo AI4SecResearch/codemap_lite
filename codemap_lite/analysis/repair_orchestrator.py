@@ -619,6 +619,8 @@ class RepairOrchestrator:
             payload = json.loads(stdout_bytes.decode("utf-8", errors="replace"))
         except (ValueError, json.JSONDecodeError):
             return False
+        if not isinstance(payload, dict):
+            return False
         return bool(payload.get("complete", False))
 
     def _record_retry_attempt(self, source_id: str, reason: str) -> None:
