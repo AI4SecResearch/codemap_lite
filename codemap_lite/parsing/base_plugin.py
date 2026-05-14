@@ -58,3 +58,7 @@ class LanguagePlugin(Protocol):
             List of extensions including the dot (e.g. [".cpp", ".h"]).
         """
         ...
+
+    # Optional extension point (not required for protocol conformance):
+    # def build_hierarchy(self, file_paths: list[Path]) -> None:
+    #     """Build class/type hierarchy between parse passes (C++ only)."""

@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from codemap_lite.graph.incremental import IncrementalUpdater
 from codemap_lite.graph.neo4j_store import InMemoryGraphStore, GraphStore
@@ -194,7 +195,7 @@ class PipelineOrchestrator:
 
     def _parse_and_store(self, scanned_files: list, result: PipelineResult) -> None:
         """Parse scanned files and store results in graph."""
-        all_symbols: dict[str, any] = {}
+        all_symbols: dict[str, Any] = {}
 
         # First pass: extract all function definitions
         for sf in scanned_files:
@@ -249,6 +250,7 @@ class PipelineOrchestrator:
             all_file_paths.append(fp)
 
         # Call build_hierarchy on the cpp plugin if available
+        # (C++-specific extension, not part of core LanguagePlugin protocol).
         cpp_plugin = self._registry.lookup_by_extension(".cpp")
         if cpp_plugin and hasattr(cpp_plugin, "build_hierarchy"):
             cpp_plugin.build_hierarchy(all_file_paths)

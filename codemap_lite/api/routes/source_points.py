@@ -38,20 +38,46 @@ def create_source_points_router() -> APIRouter:
             pass  # Graceful fallback if store doesn't support it
 
         entries = getattr(request.app.state, "source_points", [])
+
+        # Build function lookup for enrichment (signature, file, line).
+        # Source points reference functions by function_id which is the
+        # graph store's FunctionNode.id (architecture.md §4).
+        fn_lookup: dict[str, Any] = {}
+        try:
+            for fn in store.list_functions():
+                fn_lookup[fn.id] = fn
+        except Exception:
+            pass  # Graceful fallback if store is empty
+
         # Enrich each entry with status from graph store
         enriched = []
         for e in entries:
             item = dict(e)
             # Try matching by id first, then function_id
             sp_id = item.get("id", "")
+            func_id = item.get("function_id", "")
             resolved_status = sp_status_map.get(sp_id) or sp_status_map.get(
-                item.get("function_id", ""), "pending"
+                func_id, "pending"
             )
             item.setdefault("status", resolved_status)
             # Frontend uses "kind" but backend stores "entry_point_kind" —
             # expose both for compatibility (architecture.md §8).
             if "kind" not in item and "entry_point_kind" in item:
                 item["kind"] = item["entry_point_kind"]
+            # Enrich with FunctionNode data so frontend can display
+            # signature, file, and line (architecture.md §8 source-points
+            # response contract).
+            fn = fn_lookup.get(func_id) or fn_lookup.get(sp_id)
+            if fn is not None:
+                item.setdefault("signature", fn.signature or fn.name)
+                item.setdefault("file", fn.file_path)
+                item.setdefault("line", fn.start_line)
+            else:
+                item.setdefault("signature", func_id.split("::")[-1] if "::" in func_id else func_id)
+                item.setdefault("file", "")
+                item.setdefault("line", 0)
+            # Ensure id is set for frontend keying
+            item.setdefault("id", func_id)
             enriched.append(item)
 
         if kind:
