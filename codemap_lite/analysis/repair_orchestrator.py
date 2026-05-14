@@ -263,6 +263,9 @@ class RepairOrchestrator:
                 existing = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 pass
+        # Always persist the original source_id so /api/v1/analyze/status
+        # can map safe-dirname directories back to real source IDs.
+        existing.setdefault("source_id", source_id)
         existing.update(fields)
         path.write_text(
             json.dumps(existing, ensure_ascii=False), encoding="utf-8"

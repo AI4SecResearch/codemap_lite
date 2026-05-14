@@ -69,7 +69,7 @@ def _read_source_progress(target_dir: Path | None) -> list[dict[str, Any]]:
             continue
         rows.append(
             {
-                "source_id": pf.parent.name,
+                "source_id": data.get("source_id", pf.parent.name),
                 "gaps_fixed": gaps_fixed,
                 "gaps_total": gaps_total,
                 "current_gap": data.get("current_gap"),
@@ -110,6 +110,7 @@ def _run_analysis_background(app: Any, settings: Any, mode: str) -> None:
             "state": "idle",
             "progress": 1.0,
             "mode": mode,
+            "started_at": app.state.analyze_state.get("started_at"),
             "completed_at": datetime.now(timezone.utc).isoformat(),
             "result": {
                 "files_scanned": result.files_scanned,
@@ -125,6 +126,7 @@ def _run_analysis_background(app: Any, settings: Any, mode: str) -> None:
         app.state.analyze_state = {
             "state": "idle",
             "progress": 0.0,
+            "started_at": app.state.analyze_state.get("started_at"),
             "error": str(exc),
         }
 
