@@ -44,15 +44,49 @@ class SourcePointClient:
         data = json.loads(path.read_text(encoding="utf-8"))
         return self._parse_response(data)
 
-    async def fetch(self) -> list[SourcePointInfo]:
+    async def fetch(self, modules: list[str] | None = None) -> list[SourcePointInfo]:
         """Fetch source points from the codewiki_lite REST API.
+
+        Queries ``/modules`` to discover modules, then
+        ``/modules/{name}/entries`` for each leaf module to collect
+        entry-point functions.
 
         architecture.md §3 Source 点获取: timeout prevents indefinite hang
         when codewiki_lite is unreachable.
         """
         import httpx
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(f"{self._base_url}/api/v1/source-points")
+        async with httpx.AsyncClient(timeout=30.0, proxy=None) as client:
+            # Discover modules
+            resp = await client.get(f"{self._base_url}/modules")
             resp.raise_for_status()
-            return self._parse_response(resp.json())
+            all_modules = resp.json()
+
+            # Filter to requested modules, or use all leaf modules
+            if modules:
+                target_modules = [m for m in all_modules if m["name"] in modules]
+            else:
+                target_modules = [m for m in all_modules if m.get("is_leaf")]
+
+            # Collect entries from each module
+            results: list[SourcePointInfo] = []
+            for mod in target_modules:
+                mod_name = mod["name"]
+                try:
+                    entries_resp = await client.get(
+                        f"{self._base_url}/modules/{mod_name}/entries"
+                    )
+                    entries_resp.raise_for_status()
+                    entries = entries_resp.json()
+                except Exception:
+                    continue
+
+                for entry in entries:
+                    results.append(SourcePointInfo(
+                        function_id=entry["id"],
+                        entry_point_kind=entry.get("classification") or "entry_point",
+                        reason="archdoc-detected",
+                        module=mod_name,
+                    ))
+
+            return results

@@ -27,13 +27,15 @@ def create_repair_logs_router() -> APIRouter:
         location: str | None = Query(default=None),
         limit: int = Query(default=100, ge=1, le=1000),
         offset: int = Query(default=0, ge=0),
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any]:
         store = request.app.state.store
         logs = store.get_repair_logs(
             caller_id=caller,
             callee_id=callee,
             call_location=location,
         )
-        return [asdict(log) for log in logs[offset:offset + limit]]
+        total = len(logs)
+        items = [asdict(log) for log in logs[offset:offset + limit]]
+        return {"total": total, "items": items}
 
     return router

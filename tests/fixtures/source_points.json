@@ -1,0 +1,44 @@
+[
+  {
+    "function_id": "castengine_cast_framework/client/include/cast_service_listener_impl_stub.h::OHOS::CastEngine::CastEngineClient::CastServiceListenerImplStub::OnRemoteRequest",
+    "entry_point_kind": "likely_dead",
+    "reason": "archdoc-detected",
+    "module": "client_ipc"
+  },
+  {
+    "function_id": "castengine_cast_framework/client/include/cast_session_listener_impl_stub.h::OHOS::CastEngine::CastEngineClient::CastSessionListenerImplStub::OnRemoteRequest",
+    "entry_point_kind": "likely_dead",
+    "reason": "archdoc-detected",
+    "module": "client_ipc"
+  },
+  {
+    "function_id": "castengine_cast_framework/client/include/stream_player_listener_impl_stub.h::OHOS::CastEngine::CastEngineClient::StreamPlayerListenerImplStub::OnRemoteRequest",
+    "entry_point_kind": "likely_dead",
+    "reason": "archdoc-detected",
+    "module": "client_ipc"
+  },
+  {
+    "function_id": "castengine_cast_framework/service/include/cast_session_manager_service.h::OHOS::CastEngine::CastEngineService::CastEngineClientDeathRecipient::OnRemoteDied",
+    "entry_point_kind": "callback_or_fp",
+    "reason": "archdoc-detected",
+    "module": "client_ipc"
+  },
+  {
+    "function_id": "castengine_cast_framework/service/include/cast_session_manager_service.h::OHOS::CastEngine::CastEngineService::CastSessionManagerService::OnStart",
+    "entry_point_kind": "likely_dead",
+    "reason": "archdoc-detected",
+    "module": "client_ipc"
+  },
+  {
+    "function_id": "castengine_cast_framework/service/include/cast_session_manager_service_stub.h::OHOS::CastEngine::CastEngineService::CastSessionManagerServiceStub::OnRemoteRequest",
+    "entry_point_kind": "likely_dead",
+    "reason": "archdoc-detected",
+    "module": "client_ipc"
+  },
+  {
+    "function_id": "castengine_wifi_display/services/interaction/domain/rpc/domain_rpc_client.h::OHOS::Sharing::DomainRpcClient::OnRemoteDied",
+    "entry_point_kind": "entry_point",
+    "reason": "archdoc-detected",
+    "module": "domain_rpc"
+  }
+]

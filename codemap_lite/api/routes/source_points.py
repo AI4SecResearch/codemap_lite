@@ -19,7 +19,7 @@ def create_source_points_router() -> APIRouter:
     ) -> list[dict[str, Any]]:
         entries = getattr(request.app.state, "source_points", [])
         if kind:
-            entries = [e for e in entries if e.get("kind") == kind]
+            entries = [e for e in entries if e.get("entry_point_kind") == kind]
         if module:
             entries = [e for e in entries if module in e.get("module", "")]
         return entries
@@ -29,7 +29,7 @@ def create_source_points_router() -> APIRouter:
         entries = getattr(request.app.state, "source_points", [])
         by_kind: dict[str, int] = {}
         for e in entries:
-            k = e.get("kind", "unknown")
+            k = e.get("entry_point_kind", "unknown")
             by_kind[k] = by_kind.get(k, 0) + 1
         return {"total": len(entries), "by_kind": by_kind}
 

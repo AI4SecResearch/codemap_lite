@@ -534,9 +534,9 @@ class TestSourcePointsEndpoint:
         """architecture.md §5: source points can be filtered by module."""
         client, _ = get_test_client()
         client.app.state.source_points = [
-            {"id": "sp1", "kind": "callback_registration", "module": "audio::mixer"},
-            {"id": "sp2", "kind": "entry_point", "module": "video::decoder"},
-            {"id": "sp3", "kind": "callback_registration", "module": "audio::output"},
+            {"id": "sp1", "entry_point_kind": "callback_registration", "module": "audio::mixer"},
+            {"id": "sp2", "entry_point_kind": "entry_point", "module": "video::decoder"},
+            {"id": "sp3", "entry_point_kind": "callback_registration", "module": "audio::output"},
         ]
         # Filter by module substring
         resp = client.get("/api/v1/source-points?module=audio")
@@ -550,8 +550,8 @@ class TestSourcePointsEndpoint:
         """architecture.md §8: source points can be filtered by kind."""
         client, _ = get_test_client()
         client.app.state.source_points = [
-            {"id": "sp1", "kind": "callback_registration", "module": "m1"},
-            {"id": "sp2", "kind": "entry_point", "module": "m2"},
+            {"id": "sp1", "entry_point_kind": "callback_registration", "module": "m1"},
+            {"id": "sp2", "entry_point_kind": "entry_point", "module": "m2"},
         ]
         resp = client.get("/api/v1/source-points?kind=entry_point")
         assert resp.status_code == 200
@@ -563,9 +563,9 @@ class TestSourcePointsEndpoint:
         """architecture.md §8: GET /source-points/summary returns total and by_kind."""
         client, _ = get_test_client()
         client.app.state.source_points = [
-            {"id": "sp1", "kind": "callback_registration", "module": "m1"},
-            {"id": "sp2", "kind": "entry_point", "module": "m2"},
-            {"id": "sp3", "kind": "callback_registration", "module": "m3"},
+            {"id": "sp1", "entry_point_kind": "callback_registration", "module": "m1"},
+            {"id": "sp2", "entry_point_kind": "entry_point", "module": "m2"},
+            {"id": "sp3", "entry_point_kind": "callback_registration", "module": "m3"},
         ]
         resp = client.get("/api/v1/source-points/summary")
         assert resp.status_code == 200
@@ -1278,8 +1278,8 @@ class TestFeedbackEndpoint:
         """/stats reports total_source_points from app.state.source_points."""
         client, _ = get_test_client()
         client.app.state.source_points = [
-            {"id": "sp1", "kind": "callback_registration", "module": "m1"},
-            {"id": "sp2", "kind": "entry_point", "module": "m2"},
+            {"id": "sp1", "entry_point_kind": "callback_registration", "module": "m1"},
+            {"id": "sp2", "entry_point_kind": "entry_point", "module": "m2"},
         ]
         resp = client.get("/api/v1/stats")
         assert resp.status_code == 200
@@ -1697,7 +1697,8 @@ class TestRepairLogsEndpoint:
         client, _ = get_test_client()
         resp = client.get("/api/v1/repair-logs")
         assert resp.status_code == 200
-        assert resp.json() == []
+        body = resp.json()
+        assert body == {"total": 0, "items": []}
 
     def test_list_returns_persisted_logs(self) -> None:
         client, store = get_test_client()
@@ -1706,13 +1707,14 @@ class TestRepairLogsEndpoint:
         resp = client.get("/api/v1/repair-logs")
         assert resp.status_code == 200
         body = resp.json()
-        assert len(body) == 1
-        assert body[0]["id"] == "r1"
-        assert body[0]["caller_id"] == "func_a"
-        assert body[0]["callee_id"] == "func_b"
-        assert body[0]["call_location"] == "foo.cpp:42"
-        assert body[0]["repair_method"] == "llm"
-        assert body[0]["reasoning_summary"].startswith("vtable")
+        assert body["total"] == 1
+        assert len(body["items"]) == 1
+        assert body["items"][0]["id"] == "r1"
+        assert body["items"][0]["caller_id"] == "func_a"
+        assert body["items"][0]["callee_id"] == "func_b"
+        assert body["items"][0]["call_location"] == "foo.cpp:42"
+        assert body["items"][0]["repair_method"] == "llm"
+        assert body["items"][0]["reasoning_summary"].startswith("vtable")
 
     def test_filter_by_triple_locates_single_log(self) -> None:
         client, store = get_test_client()
@@ -1732,8 +1734,9 @@ class TestRepairLogsEndpoint:
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert len(body) == 1
-        assert body[0]["id"] == "r1"
+        assert body["total"] == 1
+        assert len(body["items"]) == 1
+        assert body["items"][0]["id"] == "r1"
 
     def test_filter_by_caller_only(self) -> None:
         client, store = get_test_client()
@@ -1742,8 +1745,8 @@ class TestRepairLogsEndpoint:
         resp = client.get("/api/v1/repair-logs", params={"caller": "func_a"})
         assert resp.status_code == 200
         body = resp.json()
-        assert len(body) == 1
-        assert body[0]["id"] == "r1"
+        assert body["total"] == 1
+        assert body["items"][0]["id"] == "r1"
 
     def test_pagination_limit_and_offset(self) -> None:
         """architecture.md §8: GET /repair-logs supports limit/offset pagination."""
@@ -1754,19 +1757,26 @@ class TestRepairLogsEndpoint:
             )
         # Default returns all (limit=100)
         resp = client.get("/api/v1/repair-logs")
-        assert len(resp.json()) == 5
+        assert resp.json()["total"] == 5
+        assert len(resp.json()["items"]) == 5
 
         # limit=2 returns first 2
         resp = client.get("/api/v1/repair-logs", params={"limit": 2})
-        assert len(resp.json()) == 2
+        body = resp.json()
+        assert body["total"] == 5
+        assert len(body["items"]) == 2
 
         # offset=3 skips first 3
         resp = client.get("/api/v1/repair-logs", params={"offset": 3})
-        assert len(resp.json()) == 2
+        body = resp.json()
+        assert body["total"] == 5
+        assert len(body["items"]) == 2
 
         # limit + offset
         resp = client.get("/api/v1/repair-logs", params={"limit": 2, "offset": 1})
-        assert len(resp.json()) == 2
+        body = resp.json()
+        assert body["total"] == 5
+        assert len(body["items"]) == 2
 
         # Invalid: negative offset → 422
         resp = client.get("/api/v1/repair-logs", params={"offset": -1})
