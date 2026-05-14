@@ -48,6 +48,10 @@ def create_source_points_router() -> APIRouter:
                 item.get("function_id", ""), "pending"
             )
             item.setdefault("status", resolved_status)
+            # Frontend uses "kind" but backend stores "entry_point_kind" —
+            # expose both for compatibility (architecture.md §8).
+            if "kind" not in item and "entry_point_kind" in item:
+                item["kind"] = item["entry_point_kind"]
             enriched.append(item)
 
         if kind:

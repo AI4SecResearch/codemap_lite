@@ -212,7 +212,7 @@ class TestAnalyzeEndpoint:
     def test_analyze_trigger_conflict_returns_409(self) -> None:
         """architecture.md §8: double-spawn of analysis must return 409."""
         client, _ = get_test_client()
-        # First POST sets state to "analyzing"
+        # First POST sets state to "running"
         resp1 = client.post("/api/v1/analyze", json={"mode": "full"})
         assert resp1.status_code == 202
         # Second POST should detect conflict via real state transition
@@ -2799,3 +2799,34 @@ class TestReviewIdempotency:
             "call_line": 3,
         })
         assert resp2.status_code == 404
+
+
+class TestSourcePointKindAlias:
+    """architecture.md §8: source-points response must include 'kind' alias."""
+
+    def test_source_points_response_includes_kind_field(self) -> None:
+        """Frontend uses p.kind but backend stores entry_point_kind."""
+        store = InMemoryGraphStore()
+        app = create_app(store=store)
+        app.state.source_points = [
+            {"id": "sp1", "function_id": "fn1", "entry_point_kind": "callback", "module": "mod", "reason": "test"},
+        ]
+        client = TestClient(app)
+        resp = client.get("/api/v1/source-points")
+        assert resp.status_code == 200
+        items = resp.json()["items"]
+        assert len(items) == 1
+        assert items[0]["kind"] == "callback"
+        assert items[0]["entry_point_kind"] == "callback"
+
+
+class TestAnalyzeStateNaming:
+    """architecture.md §8: analyze state must use 'running' not 'analyzing'."""
+
+    def test_analyze_trigger_sets_running_state(self) -> None:
+        """Frontend checks status?.state === 'running' to disable buttons."""
+        client, _ = get_test_client()
+        resp = client.post("/api/v1/analyze", json={"mode": "full"})
+        assert resp.status_code == 202
+        status_resp = client.get("/api/v1/analyze/status")
+        assert status_resp.json()["state"] == "running"

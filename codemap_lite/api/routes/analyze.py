@@ -145,14 +145,14 @@ def create_analyze_router() -> APIRouter:
         """
         # Prevent double-spawn
         current = request.app.state.analyze_state
-        if current.get("state") in ("running", "analyzing"):
+        if current.get("state") in ("running", "repairing"):
             raise HTTPException(
                 status_code=409,
                 detail="Analysis is already running",
             )
 
         request.app.state.analyze_state = {
-            "state": "analyzing",
+            "state": "running",
             "mode": body.mode.value,
             "progress": 0.0,
             "started_at": datetime.now(timezone.utc).isoformat(),

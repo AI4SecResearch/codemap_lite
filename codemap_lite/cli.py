@@ -325,5 +325,21 @@ def serve(
         feedback_store=feedback_store,
         settings=settings,
     )
+
+    # Populate app.state.source_points so GET /api/v1/source-points returns
+    # data (architecture.md §8). Without this, the SourcePointList page is
+    # always empty because create_app initializes source_points = [].
+    from codemap_lite.analysis.source_point_client import SourcePointClient
+    from dataclasses import asdict
+
+    sp_client = SourcePointClient(base_url=settings.codewiki_lite.base_url)
+    try:
+        sp_list = asyncio.run(sp_client.fetch())
+        app_instance.state.source_points = [asdict(sp) for sp in sp_list]
+    except Exception:
+        # Graceful fallback — source points are optional for the serve path.
+        # The endpoint will return [] until the next analyze/repair populates them.
+        pass
+
     uvicorn.run(app_instance, host=host, port=port)
 

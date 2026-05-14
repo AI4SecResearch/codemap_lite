@@ -78,17 +78,15 @@ class IncrementalUpdater:
         # in this file. Capture edge details before deletion so we can
         # regenerate UnresolvedCalls (architecture.md §7 step 3).
         invalidated_llm_edges: list[tuple[str, str, Any]] = []
+        affected_caller_set: set[str] = set()
         for edge in self._store.list_calls_edges():
             if edge.callee_id in function_ids and edge.caller_id not in function_ids:
+                affected_caller_set.add(edge.caller_id)
                 if edge.props.resolved_by == "llm":
-                    result.affected_callers.append(edge.caller_id)
                     invalidated_llm_edges.append(
                         (edge.caller_id, edge.callee_id, edge.props)
                     )
-                else:
-                    # Non-LLM edges: the caller's file needs re-parsing
-                    # to re-discover the edge via static analysis.
-                    result.affected_callers.append(edge.caller_id)
+        result.affected_callers = list(affected_caller_set)
 
         # Step 3: Delete functions, their edges, and associated UnresolvedCalls
         # architecture.md §7: "删除旧 Function 节点及关联 CALLS 边 + UnresolvedCall"
