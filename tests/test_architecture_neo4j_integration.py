@@ -1683,3 +1683,1001 @@ class TestSection5_ReviewCascade:
                 session.run("MATCH (s:SourcePoint {id: $id}) DETACH DELETE s", id="test_rv_caller_001")
 
 
+# ---------------------------------------------------------------------------
+# §8 REST API — Deep field validation (architecture.md §8 REST API 契约)
+# ---------------------------------------------------------------------------
+
+
+class TestSection8_DeepFieldValidation:
+    """Validate every field in API responses matches architecture.md §8 contract."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, neo4j_store):
+        from codemap_lite.api.app import create_app
+        from fastapi.testclient import TestClient
+
+        app = create_app(store=neo4j_store)
+        self.client = TestClient(app)
+        self.store = neo4j_store
+
+    def test_stats_has_all_required_keys(self):
+        """§8: stats must contain all architecture-mandated keys."""
+        r = self.client.get("/api/v1/stats")
+        assert r.status_code == 200
+        stats = r.json()
+        # architecture.md §8 line 494: required top-level keys
+        required = {
+            "total_functions", "total_files", "total_calls", "total_unresolved",
+            "total_repair_logs", "total_llm_edges", "total_source_points",
+            "total_feedback", "unresolved_by_status", "unresolved_by_category",
+            "calls_by_resolved_by", "source_points_by_status",
+        }
+        missing = required - set(stats.keys())
+        assert not missing, f"Stats missing required keys: {missing}"
+
+    def test_stats_calls_by_resolved_by_has_all_buckets(self):
+        """§8: calls_by_resolved_by must have all 5 resolution methods."""
+        r = self.client.get("/api/v1/stats")
+        by_rb = r.json()["calls_by_resolved_by"]
+        required_buckets = {"symbol_table", "signature", "dataflow", "context", "llm"}
+        missing = required_buckets - set(by_rb.keys())
+        assert not missing, f"calls_by_resolved_by missing buckets: {missing}"
+
+    def test_stats_unresolved_by_category_has_none_bucket(self):
+        """§8: unresolved_by_category must include 'none' for unattempted UCs."""
+        r = self.client.get("/api/v1/stats")
+        by_cat = r.json()["unresolved_by_category"]
+        assert "none" in by_cat, "unresolved_by_category missing 'none' bucket"
+        # All 5 valid categories + none
+        required = {"gate_failed", "agent_error", "subprocess_crash",
+                    "subprocess_timeout", "agent_exited_without_edge", "none"}
+        missing = required - set(by_cat.keys())
+        assert not missing, f"unresolved_by_category missing: {missing}"
+
+    def test_stats_consistency_total_calls_equals_resolved_by_sum(self):
+        """§8: total_calls must equal sum of calls_by_resolved_by values."""
+        r = self.client.get("/api/v1/stats")
+        stats = r.json()
+        total = stats["total_calls"]
+        rb_sum = sum(stats["calls_by_resolved_by"].values())
+        assert total == rb_sum, (
+            f"total_calls={total} != sum(calls_by_resolved_by)={rb_sum}. "
+            f"Some edges have invalid resolved_by values."
+        )
+
+    def test_stats_consistency_total_unresolved_equals_status_sum(self):
+        """§8: total_unresolved must equal sum of unresolved_by_status values."""
+        r = self.client.get("/api/v1/stats")
+        stats = r.json()
+        total = stats["total_unresolved"]
+        status_sum = sum(stats["unresolved_by_status"].values())
+        assert total == status_sum, (
+            f"total_unresolved={total} != sum(unresolved_by_status)={status_sum}"
+        )
+
+    def test_stats_consistency_total_unresolved_equals_category_sum(self):
+        """§8: total_unresolved must equal sum of unresolved_by_category values."""
+        r = self.client.get("/api/v1/stats")
+        stats = r.json()
+        total = stats["total_unresolved"]
+        cat_sum = sum(stats["unresolved_by_category"].values())
+        assert total == cat_sum, (
+            f"total_unresolved={total} != sum(unresolved_by_category)={cat_sum}"
+        )
+
+    def test_unresolved_calls_item_has_all_fields(self):
+        """§4+§8: each UnresolvedCall item must have all schema fields."""
+        r = self.client.get("/api/v1/unresolved-calls?limit=3")
+        assert r.status_code == 200
+        items = r.json()["items"]
+        assert len(items) > 0
+        required_fields = {
+            "id", "caller_id", "call_expression", "call_file", "call_line",
+            "call_type", "source_code_snippet", "var_name", "var_type",
+            "candidates", "retry_count", "status",
+            "last_attempt_timestamp", "last_attempt_reason",
+        }
+        for uc in items:
+            missing = required_fields - set(uc.keys())
+            assert not missing, f"UC item missing fields: {missing}"
+
+    def test_call_chain_response_format(self):
+        """§8: call-chain must return {nodes, edges, unresolved}."""
+        # Get a function with callees for a meaningful test
+        from neo4j import GraphDatabase
+        driver = GraphDatabase.driver(
+            "bolt://localhost:7687", auth=("neo4j", NEO4J_PASSWORD)
+        )
+        with driver.session() as s:
+            rec = s.run(
+                "MATCH (a:Function)-[:CALLS]->(b:Function) "
+                "RETURN a.id AS id LIMIT 1"
+            ).single()
+        driver.close()
+        if rec is None:
+            pytest.skip("No function with callees")
+
+        fn_id = rec["id"]
+        r = self.client.get(f"/api/v1/functions/{fn_id}/call-chain?depth=3")
+        assert r.status_code == 200
+        data = r.json()
+        # Must have all three keys
+        assert "nodes" in data
+        assert "edges" in data
+        assert "unresolved" in data
+        # Nodes must have Function schema fields
+        assert len(data["nodes"]) >= 1
+        for node in data["nodes"][:3]:
+            assert "id" in node
+            assert "name" in node
+            assert "file_path" in node
+            assert "start_line" in node
+        # Edges must have caller_id, callee_id, props
+        if data["edges"]:
+            edge = data["edges"][0]
+            assert "caller_id" in edge
+            assert "callee_id" in edge
+            assert "props" in edge
+            props = edge["props"]
+            assert "resolved_by" in props
+            assert "call_type" in props
+            assert "call_file" in props
+            assert "call_line" in props
+            # §4: resolved_by must be valid
+            assert props["resolved_by"] in {
+                "symbol_table", "signature", "dataflow", "context", "llm"
+            }
+            # §4: call_type must be valid
+            assert props["call_type"] in {"direct", "indirect", "virtual"}
+
+    def test_unresolved_calls_filter_by_caller(self):
+        """§8: ?caller= filter must return only UCs for that caller."""
+        # Get a caller that has UCs
+        r = self.client.get("/api/v1/unresolved-calls?limit=1")
+        items = r.json()["items"]
+        if not items:
+            pytest.skip("No UCs in database")
+        caller_id = items[0]["caller_id"]
+
+        r = self.client.get(f"/api/v1/unresolved-calls?caller={caller_id}&limit=50")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["total"] > 0
+        for uc in data["items"]:
+            assert uc["caller_id"] == caller_id
+
+    def test_functions_item_has_all_schema_fields(self):
+        """§4: each Function item must have all schema fields."""
+        r = self.client.get("/api/v1/functions?limit=3")
+        assert r.status_code == 200
+        items = r.json()["items"]
+        required_fields = {
+            "id", "name", "signature", "file_path",
+            "start_line", "end_line", "body_hash",
+        }
+        for fn in items:
+            missing = required_fields - set(fn.keys())
+            assert not missing, f"Function item missing fields: {missing}"
+
+    def test_callers_items_are_deduplicated(self):
+        """§4: callers list must not contain duplicates (DISTINCT)."""
+        from neo4j import GraphDatabase
+        driver = GraphDatabase.driver(
+            "bolt://localhost:7687", auth=("neo4j", NEO4J_PASSWORD)
+        )
+        with driver.session() as s:
+            # Find a function with multiple incoming edges
+            rec = s.run(
+                "MATCH (a:Function)-[:CALLS]->(b:Function) "
+                "WITH b, count(a) AS cnt WHERE cnt > 1 "
+                "RETURN b.id AS id LIMIT 1"
+            ).single()
+        driver.close()
+        if rec is None:
+            pytest.skip("No function with multiple callers")
+
+        fn_id = rec["id"]
+        r = self.client.get(f"/api/v1/functions/{fn_id}/callers?limit=100")
+        assert r.status_code == 200
+        items = r.json()["items"]
+        ids = [item["id"] for item in items]
+        assert len(ids) == len(set(ids)), "Callers list contains duplicates"
+
+    def test_pagination_offset_beyond_total_returns_empty(self):
+        """§8: offset beyond total should return empty items with correct total."""
+        r = self.client.get("/api/v1/functions?limit=1&offset=999999")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["total"] > 0  # Total still reflects full count
+        assert data["items"] == []  # But items are empty
+
+    def test_source_points_endpoint_returns_status(self):
+        """§8: source-points items must include status field."""
+        r = self.client.get("/api/v1/source-points")
+        assert r.status_code == 200
+        data = r.json()
+        assert "total" in data
+        assert "items" in data
+        # If there are items, each must have status
+        for item in data["items"][:5]:
+            assert "status" in item
+            assert item["status"] in {"pending", "running", "complete", "partial_complete"}
+
+
+# ---------------------------------------------------------------------------
+# §5 DELETE /edges API — Full cascade via HTTP endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestSection5_DeleteEdgesAPI:
+    """Test DELETE /edges endpoint cascade via HTTP (architecture.md §5).
+
+    Verifies the full 4-step cascade through the REST API:
+    1. Edge deleted
+    2. RepairLog deleted
+    3. UC regenerated (retry_count=0, status=pending)
+    4. SourcePoint reset to pending
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup(self, neo4j_store):
+        import tempfile
+        from pathlib import Path
+        from codemap_lite.api.app import create_app
+        from codemap_lite.analysis.feedback_store import FeedbackStore
+        from codemap_lite.graph.schema import (
+            CallsEdgeProps, FunctionNode, RepairLogNode, SourcePointNode,
+        )
+        from fastapi.testclient import TestClient
+
+        self.store = neo4j_store
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.fb_store = FeedbackStore(storage_dir=self.tmpdir)
+        app = create_app(store=neo4j_store, feedback_store=self.fb_store)
+        self.client = TestClient(app)
+
+        # Create isolated test data
+        self.caller_id = "del_edge_caller_001"
+        self.callee_id = "del_edge_callee_001"
+        self.call_file = "__test_del_edge__.cpp"
+        self.call_line = 7777
+
+        fn_caller = FunctionNode(
+            id=self.caller_id, name="del_caller", signature="void del_caller()",
+            file_path="del_test.cpp", start_line=1, end_line=10, body_hash="dc1",
+        )
+        fn_callee = FunctionNode(
+            id=self.callee_id, name="del_callee", signature="void del_callee()",
+            file_path="del_test.cpp", start_line=20, end_line=30, body_hash="dc2",
+        )
+        neo4j_store.create_function(fn_caller)
+        neo4j_store.create_function(fn_callee)
+
+        # Create SourcePoint for caller
+        sp = SourcePointNode(
+            id=self.caller_id, function_id=self.caller_id,
+            entry_point_kind="entry_point", reason="test",
+            status="complete",
+        )
+        neo4j_store.create_source_point(sp)
+
+        # Create LLM edge
+        props = CallsEdgeProps(
+            resolved_by="llm", call_type="indirect",
+            call_file=self.call_file, call_line=self.call_line,
+        )
+        neo4j_store.create_calls_edge(self.caller_id, self.callee_id, props)
+
+        # Create RepairLog
+        log = RepairLogNode(
+            caller_id=self.caller_id, callee_id=self.callee_id,
+            call_location=f"{self.call_file}:{self.call_line}",
+            repair_method="llm", llm_response="test response",
+            timestamp="2026-05-15T00:00:00Z",
+            reasoning_summary="test reasoning",
+        )
+        neo4j_store.create_repair_log(log)
+
+        yield
+
+        # Cleanup
+        from neo4j import GraphDatabase
+        driver = GraphDatabase.driver(
+            "bolt://localhost:7687", auth=("neo4j", NEO4J_PASSWORD)
+        )
+        with driver.session() as s:
+            s.run("MATCH (n) WHERE n.id IN $ids DETACH DELETE n",
+                  ids=[self.caller_id, self.callee_id])
+            s.run("MATCH (r:RepairLog) WHERE r.caller_id = $cid DELETE r",
+                  cid=self.caller_id)
+            s.run("MATCH (s:SourcePoint {id: $id}) DETACH DELETE s",
+                  id=self.caller_id)
+            s.run(
+                "MATCH (u:UnresolvedCall) WHERE u.caller_id = $cid "
+                "AND u.call_file = $cf AND u.call_line = $cl DETACH DELETE u",
+                cid=self.caller_id, cf=self.call_file, cl=self.call_line,
+            )
+        driver.close()
+
+    def test_delete_edge_returns_204(self):
+        """DELETE /edges returns 204 on success."""
+        r = self.client.request("DELETE", "/api/v1/edges", json={
+            "caller_id": self.caller_id,
+            "callee_id": self.callee_id,
+            "call_file": self.call_file,
+            "call_line": self.call_line,
+        })
+        assert r.status_code == 204
+
+    def test_delete_edge_removes_calls_edge(self):
+        """DELETE /edges step 1: CALLS edge is deleted."""
+        self.client.request("DELETE", "/api/v1/edges", json={
+            "caller_id": self.caller_id,
+            "callee_id": self.callee_id,
+            "call_file": self.call_file,
+            "call_line": self.call_line,
+        })
+        assert not self.store.edge_exists(
+            self.caller_id, self.callee_id, self.call_file, self.call_line
+        )
+
+    def test_delete_edge_removes_repair_log(self):
+        """DELETE /edges step 2: RepairLog is deleted."""
+        self.client.request("DELETE", "/api/v1/edges", json={
+            "caller_id": self.caller_id,
+            "callee_id": self.callee_id,
+            "call_file": self.call_file,
+            "call_line": self.call_line,
+        })
+        logs = self.store.get_repair_logs(
+            caller_id=self.caller_id, callee_id=self.callee_id,
+            call_location=f"{self.call_file}:{self.call_line}",
+        )
+        assert len(logs) == 0
+
+    def test_delete_edge_regenerates_uc(self):
+        """DELETE /edges step 3: UC regenerated with retry_count=0."""
+        self.client.request("DELETE", "/api/v1/edges", json={
+            "caller_id": self.caller_id,
+            "callee_id": self.callee_id,
+            "call_file": self.call_file,
+            "call_line": self.call_line,
+        })
+        ucs = self.store.get_unresolved_calls(caller_id=self.caller_id)
+        matching = [
+            u for u in ucs
+            if u.call_file == self.call_file and u.call_line == self.call_line
+        ]
+        assert len(matching) == 1
+        assert matching[0].status == "pending"
+        assert matching[0].retry_count == 0
+        assert matching[0].call_type == "indirect"  # Preserved from edge
+
+    def test_delete_edge_resets_source_point(self):
+        """DELETE /edges step 4: SourcePoint reset to pending."""
+        self.client.request("DELETE", "/api/v1/edges", json={
+            "caller_id": self.caller_id,
+            "callee_id": self.callee_id,
+            "call_file": self.call_file,
+            "call_line": self.call_line,
+        })
+        sp = self.store.get_source_point(self.caller_id)
+        assert sp is not None
+        assert sp.status == "pending"
+
+    def test_delete_edge_with_correct_target_creates_counter_example(self):
+        """DELETE /edges + correct_target → counter-example in FeedbackStore."""
+        r = self.client.request("DELETE", "/api/v1/edges", json={
+            "caller_id": self.caller_id,
+            "callee_id": self.callee_id,
+            "call_file": self.call_file,
+            "call_line": self.call_line,
+            "correct_target": "real_target_func",
+        })
+        assert r.status_code == 204
+        examples = self.fb_store.list_all()
+        assert len(examples) >= 1
+        ex = examples[-1]
+        assert ex.wrong_target == self.callee_id
+        assert ex.correct_target == "real_target_func"
+        assert ex.source_id == self.caller_id
+
+    def test_delete_nonexistent_edge_returns_404(self):
+        """DELETE /edges on nonexistent edge returns 404."""
+        r = self.client.request("DELETE", "/api/v1/edges", json={
+            "caller_id": "nonexistent_xyz",
+            "callee_id": "nonexistent_abc",
+            "call_file": "no.cpp",
+            "call_line": 1,
+        })
+        assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# §8 Repair-Logs Filtering — ?caller=, ?callee=, ?location=
+# ---------------------------------------------------------------------------
+
+
+class TestSection8_RepairLogsFiltering:
+    """Test repair-logs endpoint filtering (architecture.md §8)."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, neo4j_store):
+        from codemap_lite.api.app import create_app
+        from codemap_lite.graph.schema import RepairLogNode
+        from fastapi.testclient import TestClient
+
+        self.store = neo4j_store
+        app = create_app(store=neo4j_store)
+        self.client = TestClient(app)
+
+        # Create test RepairLogs
+        self.logs_data = [
+            RepairLogNode(
+                caller_id="rl_filter_caller_A", callee_id="rl_filter_callee_X",
+                call_location="filter_test.cpp:10", repair_method="llm",
+                llm_response="resp1", timestamp="2026-05-15T01:00:00Z",
+                reasoning_summary="reason1",
+            ),
+            RepairLogNode(
+                caller_id="rl_filter_caller_A", callee_id="rl_filter_callee_Y",
+                call_location="filter_test.cpp:20", repair_method="llm",
+                llm_response="resp2", timestamp="2026-05-15T02:00:00Z",
+                reasoning_summary="reason2",
+            ),
+            RepairLogNode(
+                caller_id="rl_filter_caller_B", callee_id="rl_filter_callee_X",
+                call_location="other_file.cpp:5", repair_method="llm",
+                llm_response="resp3", timestamp="2026-05-15T03:00:00Z",
+                reasoning_summary="reason3",
+            ),
+        ]
+        for log in self.logs_data:
+            neo4j_store.create_repair_log(log)
+
+        yield
+
+        # Cleanup
+        from neo4j import GraphDatabase
+        driver = GraphDatabase.driver(
+            "bolt://localhost:7687", auth=("neo4j", NEO4J_PASSWORD)
+        )
+        with driver.session() as s:
+            s.run(
+                "MATCH (r:RepairLog) WHERE r.caller_id STARTS WITH 'rl_filter_' "
+                "DELETE r"
+            )
+        driver.close()
+
+    def test_filter_by_caller(self):
+        """?caller= returns only logs for that caller."""
+        r = self.client.get("/api/v1/repair-logs?caller=rl_filter_caller_A")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["total"] == 2
+        for item in data["items"]:
+            assert item["caller_id"] == "rl_filter_caller_A"
+
+    def test_filter_by_callee(self):
+        """?callee= returns only logs for that callee."""
+        r = self.client.get("/api/v1/repair-logs?callee=rl_filter_callee_X")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["total"] == 2
+        for item in data["items"]:
+            assert item["callee_id"] == "rl_filter_callee_X"
+
+    def test_filter_by_location(self):
+        """?location= returns only logs at that call_location."""
+        r = self.client.get("/api/v1/repair-logs?location=filter_test.cpp:10")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["total"] == 1
+        assert data["items"][0]["call_location"] == "filter_test.cpp:10"
+
+    def test_filter_combined_caller_and_callee(self):
+        """?caller=&callee= returns intersection."""
+        r = self.client.get(
+            "/api/v1/repair-logs?caller=rl_filter_caller_A&callee=rl_filter_callee_X"
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["total"] == 1
+        assert data["items"][0]["caller_id"] == "rl_filter_caller_A"
+        assert data["items"][0]["callee_id"] == "rl_filter_callee_X"
+
+    def test_filter_no_match_returns_empty(self):
+        """Filters with no match return total=0, items=[]."""
+        r = self.client.get("/api/v1/repair-logs?caller=nonexistent_xyz")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["total"] == 0
+        assert data["items"] == []
+
+    def test_repair_log_item_has_all_fields(self):
+        """§4: each RepairLog item must have all schema fields."""
+        r = self.client.get("/api/v1/repair-logs?caller=rl_filter_caller_A&limit=1")
+        assert r.status_code == 200
+        items = r.json()["items"]
+        assert len(items) == 1
+        required_fields = {
+            "id", "caller_id", "callee_id", "call_location",
+            "repair_method", "llm_response", "timestamp", "reasoning_summary",
+        }
+        missing = required_fields - set(items[0].keys())
+        assert not missing, f"RepairLog item missing fields: {missing}"
+
+
+# ---------------------------------------------------------------------------
+# §8 Unresolved-Calls Category Filter — ?category=
+# ---------------------------------------------------------------------------
+
+
+class TestSection8_UnresolvedCallsCategoryFilter:
+    """Test unresolved-calls ?category= filter (architecture.md §8)."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, neo4j_store):
+        from codemap_lite.api.app import create_app
+        from codemap_lite.graph.schema import FunctionNode, UnresolvedCallNode
+        from fastapi.testclient import TestClient
+
+        self.store = neo4j_store
+        app = create_app(store=neo4j_store)
+        self.client = TestClient(app)
+
+        # Create a test function to host UCs
+        fn = FunctionNode(
+            id="cat_filter_fn_001", name="cat_fn", signature="void cat_fn()",
+            file_path="cat_test.cpp", start_line=1, end_line=10, body_hash="cf1",
+        )
+        neo4j_store.create_function(fn)
+
+        # Create UCs with different categories
+        self.uc_none = UnresolvedCallNode(
+            caller_id="cat_filter_fn_001", call_expression="a()",
+            call_file="cat_test.cpp", call_line=2, call_type="indirect",
+            source_code_snippet="a();", var_name=None, var_type=None,
+            retry_count=0, status="pending",
+            # No last_attempt_reason → category "none"
+        )
+        self.uc_gate_failed = UnresolvedCallNode(
+            caller_id="cat_filter_fn_001", call_expression="b()",
+            call_file="cat_test.cpp", call_line=3, call_type="indirect",
+            source_code_snippet="b();", var_name=None, var_type=None,
+            retry_count=1, status="pending",
+            last_attempt_reason="gate_failed: 2 gaps remain",
+            last_attempt_timestamp="2026-05-15T00:00:00Z",
+        )
+        self.uc_agent_error = UnresolvedCallNode(
+            caller_id="cat_filter_fn_001", call_expression="c()",
+            call_file="cat_test.cpp", call_line=4, call_type="indirect",
+            source_code_snippet="c();", var_name=None, var_type=None,
+            retry_count=2, status="pending",
+            last_attempt_reason="agent_error: timeout",
+            last_attempt_timestamp="2026-05-15T00:01:00Z",
+        )
+        neo4j_store.create_unresolved_call(self.uc_none)
+        neo4j_store.create_unresolved_call(self.uc_gate_failed)
+        neo4j_store.create_unresolved_call(self.uc_agent_error)
+
+        yield
+
+        # Cleanup
+        from neo4j import GraphDatabase
+        driver = GraphDatabase.driver(
+            "bolt://localhost:7687", auth=("neo4j", NEO4J_PASSWORD)
+        )
+        with driver.session() as s:
+            s.run("MATCH (n) WHERE n.id = 'cat_filter_fn_001' DETACH DELETE n")
+            s.run(
+                "MATCH (u:UnresolvedCall) WHERE u.caller_id = 'cat_filter_fn_001' "
+                "DETACH DELETE u"
+            )
+        driver.close()
+
+    def test_category_none_returns_unattempted(self):
+        """?category=none returns UCs with no last_attempt_reason."""
+        r = self.client.get(
+            "/api/v1/unresolved-calls?caller=cat_filter_fn_001&category=none"
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["total"] >= 1
+        for uc in data["items"]:
+            assert uc["last_attempt_reason"] is None or uc["last_attempt_reason"] == ""
+
+    def test_category_gate_failed_returns_matching(self):
+        """?category=gate_failed returns UCs with gate_failed prefix."""
+        r = self.client.get(
+            "/api/v1/unresolved-calls?caller=cat_filter_fn_001&category=gate_failed"
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["total"] >= 1
+        for uc in data["items"]:
+            reason = uc["last_attempt_reason"]
+            assert reason.startswith("gate_failed") or reason == "gate_failed"
+
+    def test_category_agent_error_returns_matching(self):
+        """?category=agent_error returns UCs with agent_error prefix."""
+        r = self.client.get(
+            "/api/v1/unresolved-calls?caller=cat_filter_fn_001&category=agent_error"
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["total"] >= 1
+        for uc in data["items"]:
+            reason = uc["last_attempt_reason"]
+            assert reason.startswith("agent_error") or reason == "agent_error"
+
+    def test_category_filter_excludes_non_matching(self):
+        """?category=subprocess_crash returns 0 for our test data."""
+        r = self.client.get(
+            "/api/v1/unresolved-calls?caller=cat_filter_fn_001&category=subprocess_crash"
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["total"] == 0
+        assert data["items"] == []
+
+    def test_category_filter_total_reflects_filtered_count(self):
+        """§8: total in response must reflect filtered count, not all UCs."""
+        # Get total without category filter
+        r_all = self.client.get(
+            "/api/v1/unresolved-calls?caller=cat_filter_fn_001"
+        )
+        total_all = r_all.json()["total"]
+
+        # Get with category filter
+        r_filtered = self.client.get(
+            "/api/v1/unresolved-calls?caller=cat_filter_fn_001&category=none"
+        )
+        total_filtered = r_filtered.json()["total"]
+
+        # Filtered total must be less than or equal to unfiltered
+        assert total_filtered <= total_all
+        assert total_filtered >= 1
+
+
+# ---------------------------------------------------------------------------
+# §8 Edge Cases — Error handling in REST API
+# ---------------------------------------------------------------------------
+
+
+class TestSection8_EdgeCases:
+    """Test REST API error handling edge cases."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, neo4j_store):
+        from codemap_lite.api.app import create_app
+        from fastapi.testclient import TestClient
+
+        app = create_app(store=neo4j_store)
+        self.client = TestClient(app)
+        self.store = neo4j_store
+
+    def test_create_edge_nonexistent_caller_returns_404(self):
+        """POST /edges with nonexistent caller returns 404."""
+        r = self.client.post("/api/v1/edges", json={
+            "caller_id": "nonexistent_caller_xyz",
+            "callee_id": "nonexistent_callee_xyz",
+            "call_file": "test.cpp",
+            "call_line": 1,
+            "resolved_by": "llm",
+            "call_type": "indirect",
+        })
+        assert r.status_code == 404
+        assert "caller" in r.json()["detail"].lower()
+
+    def test_create_edge_nonexistent_callee_returns_404(self):
+        """POST /edges with valid caller but nonexistent callee returns 404."""
+        # Use a real function as caller
+        fns = self.store.list_functions()[:1]
+        if not fns:
+            pytest.skip("No functions in database")
+        r = self.client.post("/api/v1/edges", json={
+            "caller_id": fns[0].id,
+            "callee_id": "nonexistent_callee_xyz",
+            "call_file": "test.cpp",
+            "call_line": 1,
+            "resolved_by": "llm",
+            "call_type": "indirect",
+        })
+        assert r.status_code == 404
+        assert "callee" in r.json()["detail"].lower()
+
+    def test_create_edge_invalid_resolved_by_returns_422(self):
+        """POST /edges with invalid resolved_by returns 422."""
+        r = self.client.post("/api/v1/edges", json={
+            "caller_id": "a",
+            "callee_id": "b",
+            "call_file": "test.cpp",
+            "call_line": 1,
+            "resolved_by": "invalid_method",
+            "call_type": "indirect",
+        })
+        assert r.status_code == 422
+
+    def test_create_edge_invalid_call_type_returns_422(self):
+        """POST /edges with invalid call_type returns 422."""
+        r = self.client.post("/api/v1/edges", json={
+            "caller_id": "a",
+            "callee_id": "b",
+            "call_file": "test.cpp",
+            "call_line": 1,
+            "resolved_by": "llm",
+            "call_type": "invalid_type",
+        })
+        assert r.status_code == 422
+
+    def test_review_nonexistent_edge_returns_404(self):
+        """POST /reviews on nonexistent edge returns 404."""
+        r = self.client.post("/api/v1/reviews", json={
+            "caller_id": "nonexistent_xyz",
+            "callee_id": "nonexistent_abc",
+            "call_file": "no.cpp",
+            "call_line": 1,
+            "verdict": "correct",
+        })
+        assert r.status_code == 404
+
+    def test_review_invalid_verdict_returns_422(self):
+        """POST /reviews with invalid verdict returns 422."""
+        r = self.client.post("/api/v1/reviews", json={
+            "caller_id": "a",
+            "callee_id": "b",
+            "call_file": "test.cpp",
+            "call_line": 1,
+            "verdict": "maybe",
+        })
+        assert r.status_code == 422
+
+    def test_function_detail_nonexistent_returns_404(self):
+        """GET /functions/{id} with nonexistent ID returns 404."""
+        r = self.client.get("/api/v1/functions/nonexistent_function_xyz_123")
+        assert r.status_code == 404
+
+    def test_delete_review_nonexistent_returns_404(self):
+        """DELETE /reviews/{id} with nonexistent ID returns 404."""
+        r = self.client.delete("/api/v1/reviews/nonexistent_review_id")
+        assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# §4 Neo4j Indexes and Constraints — Regression guard
+# ---------------------------------------------------------------------------
+
+
+class TestSection4_IndexesAndConstraints:
+    """Verify all architecture.md §4 indexes and constraints exist in Neo4j."""
+
+    def test_required_indexes_exist(self, neo4j_store):
+        """§4: All required indexes must be present."""
+        from neo4j import GraphDatabase
+        driver = GraphDatabase.driver(
+            "bolt://localhost:7687", auth=("neo4j", NEO4J_PASSWORD)
+        )
+        with driver.session() as s:
+            indexes = {r["name"] for r in s.run("SHOW INDEXES")}
+        driver.close()
+
+        required_indexes = {
+            "idx_file_hash",
+            "idx_function_file",
+            "idx_function_sig",
+            "idx_source_kind",
+            "idx_calls_resolved",
+            "idx_gap_status",
+            "idx_gap_caller",
+            "idx_repairlog_caller",
+        }
+        missing = required_indexes - indexes
+        assert not missing, f"Missing required indexes: {missing}"
+
+    def test_required_constraints_exist(self, neo4j_store):
+        """§4: All required uniqueness constraints must be present."""
+        from neo4j import GraphDatabase
+        driver = GraphDatabase.driver(
+            "bolt://localhost:7687", auth=("neo4j", NEO4J_PASSWORD)
+        )
+        with driver.session() as s:
+            constraints = {r["name"] for r in s.run("SHOW CONSTRAINTS")}
+        driver.close()
+
+        required_constraints = {
+            "uniq_function_id",
+            "uniq_file_path",
+            "uniq_repairlog_key",
+            "uniq_uc_key",
+        }
+        missing = required_constraints - constraints
+        assert not missing, f"Missing required constraints: {missing}"
+
+    def test_uc_uniqueness_constraint_enforced(self, neo4j_store):
+        """§4: Creating duplicate UC (same caller_id, call_file, call_line) must fail."""
+        from codemap_lite.graph.schema import UnresolvedCallNode, FunctionNode
+
+        fn = FunctionNode(
+            id="uc_uniq_test_fn", signature="void uniq()", name="uniq",
+            file_path="uniq_test.cpp", start_line=1, end_line=5, body_hash="uq",
+        )
+        neo4j_store.create_function(fn)
+        uc = UnresolvedCallNode(
+            caller_id="uc_uniq_test_fn", call_expression="x()",
+            call_file="uniq_test.cpp", call_line=1, call_type="indirect",
+            source_code_snippet="x();", var_name=None, var_type=None,
+        )
+        neo4j_store.create_unresolved_call(uc)
+
+        try:
+            # Second UC with same (caller_id, call_file, call_line) should
+            # either be merged (MERGE semantics) or raise. Our implementation
+            # uses MERGE, so it should not create a duplicate.
+            uc2 = UnresolvedCallNode(
+                caller_id="uc_uniq_test_fn", call_expression="y()",
+                call_file="uniq_test.cpp", call_line=1, call_type="direct",
+                source_code_snippet="y();", var_name=None, var_type=None,
+            )
+            neo4j_store.create_unresolved_call(uc2)
+
+            # Verify only one UC exists at this location
+            ucs = neo4j_store.get_unresolved_calls(caller_id="uc_uniq_test_fn")
+            at_line1 = [u for u in ucs if u.call_file == "uniq_test.cpp" and u.call_line == 1]
+            assert len(at_line1) == 1, "MERGE should prevent duplicate UCs"
+        finally:
+            from neo4j import GraphDatabase
+            driver = GraphDatabase.driver(
+                "bolt://localhost:7687", auth=("neo4j", NEO4J_PASSWORD)
+            )
+            with driver.session() as s:
+                s.run("MATCH (n) WHERE n.id = 'uc_uniq_test_fn' DETACH DELETE n")
+                s.run(
+                    "MATCH (u:UnresolvedCall) WHERE u.caller_id = 'uc_uniq_test_fn' "
+                    "DETACH DELETE u"
+                )
+            driver.close()
+
+
+# ---------------------------------------------------------------------------
+# §8 Source-Points Reachable — GET /source-points/{id}/reachable
+# ---------------------------------------------------------------------------
+
+
+class TestSection8_SourcePointsReachable:
+    """Test GET /source-points/{id}/reachable endpoint (architecture.md §8)."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, neo4j_store):
+        from codemap_lite.api.app import create_app
+        from fastapi.testclient import TestClient
+
+        app = create_app(store=neo4j_store)
+        self.client = TestClient(app)
+        self.store = neo4j_store
+
+    def test_reachable_returns_subgraph_format(self):
+        """§8: /source-points/{id}/reachable returns {nodes, edges, unresolved}."""
+        # Use a real function that has outgoing CALLS edges
+        from neo4j import GraphDatabase
+        driver = GraphDatabase.driver(
+            "bolt://localhost:7687", auth=("neo4j", NEO4J_PASSWORD)
+        )
+        with driver.session() as s:
+            rec = s.run(
+                "MATCH (a:Function)-[:CALLS]->(b:Function) "
+                "RETURN a.id AS id LIMIT 1"
+            ).single()
+        driver.close()
+        if rec is None:
+            pytest.skip("No function with callees")
+
+        fn_id = rec["id"]
+        r = self.client.get(f"/api/v1/source-points/{fn_id}/reachable")
+        assert r.status_code == 200
+        data = r.json()
+        assert "nodes" in data
+        assert "edges" in data
+        assert "unresolved" in data
+        # Should have at least the source node + one callee
+        assert len(data["nodes"]) >= 2
+        assert len(data["edges"]) >= 1
+
+    def test_reachable_nodes_have_function_schema(self):
+        """§8: nodes in reachable subgraph must have Function schema fields."""
+        from neo4j import GraphDatabase
+        driver = GraphDatabase.driver(
+            "bolt://localhost:7687", auth=("neo4j", NEO4J_PASSWORD)
+        )
+        with driver.session() as s:
+            rec = s.run(
+                "MATCH (a:Function)-[:CALLS]->(b:Function) "
+                "RETURN a.id AS id LIMIT 1"
+            ).single()
+        driver.close()
+        if rec is None:
+            pytest.skip("No function with callees")
+
+        fn_id = rec["id"]
+        r = self.client.get(f"/api/v1/source-points/{fn_id}/reachable")
+        data = r.json()
+        for node in data["nodes"][:5]:
+            assert "id" in node
+            assert "name" in node
+            assert "file_path" in node
+            assert "signature" in node
+
+    def test_reachable_edges_have_props(self):
+        """§8: edges in reachable subgraph must have caller_id, callee_id, props."""
+        from neo4j import GraphDatabase
+        driver = GraphDatabase.driver(
+            "bolt://localhost:7687", auth=("neo4j", NEO4J_PASSWORD)
+        )
+        with driver.session() as s:
+            rec = s.run(
+                "MATCH (a:Function)-[:CALLS]->(b:Function) "
+                "RETURN a.id AS id LIMIT 1"
+            ).single()
+        driver.close()
+        if rec is None:
+            pytest.skip("No function with callees")
+
+        fn_id = rec["id"]
+        r = self.client.get(f"/api/v1/source-points/{fn_id}/reachable")
+        data = r.json()
+        for edge in data["edges"][:5]:
+            assert "caller_id" in edge
+            assert "callee_id" in edge
+            assert "props" in edge
+            props = edge["props"]
+            assert props["resolved_by"] in {
+                "symbol_table", "signature", "dataflow", "context", "llm"
+            }
+            assert props["call_type"] in {"direct", "indirect", "virtual"}
+
+    def test_reachable_nonexistent_source_returns_empty(self):
+        """§8: nonexistent source_id returns empty subgraph."""
+        r = self.client.get("/api/v1/source-points/nonexistent_xyz_123/reachable")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["nodes"] == []
+        assert data["edges"] == []
+        assert data["unresolved"] == []
+
+
+# ---------------------------------------------------------------------------
+# §8 Analyze Status — GET /analyze/status
+# ---------------------------------------------------------------------------
+
+
+class TestSection8_AnalyzeStatus:
+    """Test GET /analyze/status endpoint (architecture.md §8)."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, neo4j_store):
+        from codemap_lite.api.app import create_app
+        from fastapi.testclient import TestClient
+
+        app = create_app(store=neo4j_store)
+        self.client = TestClient(app)
+
+    def test_analyze_status_returns_state(self):
+        """§8: /analyze/status returns current analysis state."""
+        r = self.client.get("/api/v1/analyze/status")
+        assert r.status_code == 200
+        data = r.json()
+        assert "state" in data
+        assert data["state"] in {"idle", "running", "repairing", "completed", "failed"}
+
+    def test_analyze_double_trigger_returns_409(self):
+        """§8: POST /analyze while already running returns 409."""
+        # First trigger
+        r1 = self.client.post("/api/v1/analyze", json={"mode": "full"})
+        assert r1.status_code == 202
+
+        # Second trigger should be rejected
+        r2 = self.client.post("/api/v1/analyze", json={"mode": "full"})
+        assert r2.status_code == 409
+
+
+
