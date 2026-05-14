@@ -57,8 +57,10 @@ def analyze(
     except Exception:
         pass  # non-critical: proceed without SP re-fetch
 
+    graph_store = _build_graph_store(settings)
     orch = PipelineOrchestrator(
         target_dir=target_dir,
+        store=graph_store,
         source_point_client=sp_client,
     )
 
@@ -94,6 +96,7 @@ def analyze(
                         neo4j_password=settings.neo4j.password,
                         feedback_store=feedback_store,
                         graph_store=graph_store,
+                        retry_failed_gaps=settings.agent.retry_failed_gaps,
                         subprocess_timeout_seconds=settings.agent.subprocess_timeout_seconds,
                     )
                 )
