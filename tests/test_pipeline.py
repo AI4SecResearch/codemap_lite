@@ -257,3 +257,112 @@ def test_pipeline_stores_only_canonical_call_types(tmp_path):
         assert uc.call_type in canonical_types, (
             f"UnresolvedCall has non-canonical call_type={uc.call_type!r}"
         )
+
+
+def test_pipeline_ambiguous_callee_creates_unresolved_call(tmp_path):
+    """architecture.md §2 + orchestrator _resolve_id: when multiple functions
+    share the same name (ambiguous resolution), the pipeline must NOT pick
+    one arbitrarily. Instead it must create an UnresolvedCall with the
+    candidates list so the repair agent can resolve it.
+
+    This prevents the cross-module pollution bug where e.g. `Clear` in
+    data_buffer.h was incorrectly linked to `Clear` in preferences_util.cpp.
+    """
+    import hashlib
+
+    class AmbiguousPlugin:
+        """Plugin that produces two functions with the same bare name
+        and a direct call to that name."""
+
+        def supported_extensions(self):
+            return [".cpp"]
+
+        def parse_file(self, file_path):
+            # Two files: one has caller + callee_A, other has callee_B
+            name = file_path.name
+            if name == "module_a.cpp":
+                return [
+                    FunctionDef(
+                        name="caller",
+                        signature="void caller()",
+                        file_path=file_path,
+                        start_line=1,
+                        end_line=5,
+                        body_hash=hashlib.sha256(b"caller").hexdigest()[:16],
+                    ),
+                    FunctionDef(
+                        name="ModuleA::Clear",
+                        signature="void ModuleA::Clear()",
+                        file_path=file_path,
+                        start_line=10,
+                        end_line=15,
+                        body_hash=hashlib.sha256(b"clearA").hexdigest()[:16],
+                    ),
+                ]
+            elif name == "module_b.cpp":
+                return [
+                    FunctionDef(
+                        name="ModuleB::Clear",
+                        signature="void ModuleB::Clear()",
+                        file_path=file_path,
+                        start_line=1,
+                        end_line=5,
+                        body_hash=hashlib.sha256(b"clearB").hexdigest()[:16],
+                    ),
+                ]
+            return []
+
+        def build_calls(self, file_path, all_symbols):
+            name = file_path.name
+            if name == "module_a.cpp":
+                # caller calls "Clear" — ambiguous (could be A or B)
+                return [
+                    CallEdge(
+                        caller_name="caller",
+                        callee_name="Clear",
+                        call_file=file_path,
+                        call_line=3,
+                        call_type=CallType.DIRECT,
+                        resolved_by="symbol_table",
+                    ),
+                ], []
+            return [], []
+
+        def build_hierarchy(self, file_paths):
+            pass
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "module_a.cpp").write_text(
+        "void caller() { Clear(); }\nvoid ModuleA::Clear() {}\n"
+    )
+    (src / "module_b.cpp").write_text("void ModuleB::Clear() {}\n")
+
+    reg = PluginRegistry()
+    reg.register("cpp", AmbiguousPlugin())
+
+    orch = PipelineOrchestrator(target_dir=tmp_path, registry=reg)
+    result = orch.run_full_analysis()
+
+    # The call to "Clear" is ambiguous (two candidates: ModuleA::Clear, ModuleB::Clear)
+    # It must NOT create a CALLS edge (would be arbitrary cross-module link)
+    # Instead it must create an UnresolvedCall
+    edges = orch._store.list_calls_edges()
+    # No direct edge from caller to either Clear
+    caller_edges = [e for e in edges if e.caller_id != e.callee_id]
+    # The caller should NOT have a CALLS edge to either Clear
+    # (because "Clear" bare name resolves to 2 candidates → ambiguous)
+
+    unresolved = orch._store.get_unresolved_calls()
+    # Must have at least one UC for the ambiguous "Clear" call
+    clear_ucs = [uc for uc in unresolved if "Clear" in uc.call_expression]
+    assert len(clear_ucs) >= 1, (
+        "architecture.md §2: ambiguous callee (multiple candidates) must "
+        "create UnresolvedCall, not pick one arbitrarily. "
+        f"Got {len(clear_ucs)} UCs for 'Clear', edges={len(caller_edges)}"
+    )
+    # The UC should have candidates listing both options
+    uc = clear_ucs[0]
+    assert len(uc.candidates) >= 2, (
+        f"UC candidates should list both Clear variants, got {uc.candidates}"
+    )
