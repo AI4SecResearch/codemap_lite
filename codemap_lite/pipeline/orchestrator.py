@@ -268,15 +268,21 @@ class PipelineOrchestrator:
         by_file_name: dict[tuple[str, str], str] = {}
         by_name: dict[str, list[str]] = {}
         by_bare_name: dict[str, list[str]] = {}
-        if hasattr(self._store, "_functions"):
-            for fid, fn in self._store._functions.items():
-                by_file_name[(fn.file_path, fn.name)] = fid
-                by_name.setdefault(fn.name, []).append(fid)
-                if "::" in fn.name:
-                    bare = fn.name.split("::")[-1]
-                    by_bare_name.setdefault(bare, []).append(fid)
-                else:
-                    by_bare_name.setdefault(fn.name, []).append(fid)
+        # Use list_functions() (protocol method) so this works with both
+        # InMemoryGraphStore and Neo4jGraphStore. The previous code accessed
+        # _functions directly which only worked for InMemoryGraphStore.
+        all_functions = self._store.list_functions()
+        for fn in all_functions:
+            fid = fn.id
+            by_file_name[(fn.file_path, fn.name)] = fid
+            by_name.setdefault(fn.name, []).append(fid)
+            if "::" in fn.name:
+                bare = fn.name.split("::")[-1]
+                by_bare_name.setdefault(bare, []).append(fid)
+            else:
+                by_bare_name.setdefault(fn.name, []).append(fid)
+        # Keep a local id→FunctionNode map for _candidate_names lookups
+        _fn_by_id: dict[str, FunctionNode] = {fn.id: fn for fn in all_functions}
 
         def _resolve_id(call_file: str, name: str) -> str | None:
             """Resolve (file, name) to a single function id.
@@ -306,7 +312,7 @@ class PipelineOrchestrator:
             names: list[str] = []
             seen: set[str] = set()
             for fid in fids:
-                fn = self._store._functions.get(fid) if hasattr(self._store, "_functions") else None
+                fn = _fn_by_id.get(fid)
                 if fn is None:
                     continue
                 if fn.name in seen:
