@@ -276,12 +276,12 @@ def status(
 
     typer.echo(f"Repair progress: {len(progress_files)} source points tracked")
     for pf in progress_files:
-        source_id = pf.parent.name
         try:
             data = json.loads(pf.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            typer.echo(f"  {source_id}: <unreadable>")
+            typer.echo(f"  {pf.parent.name}: <unreadable>")
             continue
+        source_id = data.get("source_id", pf.parent.name)
         fixed = data.get("gaps_fixed", 0)
         total = data.get("gaps_total", 0)
         current = data.get("current_gap", "-")
