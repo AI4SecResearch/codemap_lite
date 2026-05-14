@@ -551,7 +551,7 @@ def mirror_store_to_neo4j(
         session.run(
             "MATCH (n) "
             "WHERE any(l IN labels(n) "
-            "          WHERE l IN ['Function','File','UnresolvedCall','RepairLog']) "
+            "          WHERE l IN ['Function','File','UnresolvedCall','RepairLog','SourcePoint']) "
             "DETACH DELETE n"
         ).consume()
         for chunk in _batched(fn_rows):
@@ -609,14 +609,47 @@ def mirror_store_to_neo4j(
                 "    r.reasoning_summary = row.reasoning_summary",
                 rows=chunk,
             ).consume()
+        # DEFINES relationships (File → Function) — architecture.md §4
+        session.run(
+            "MATCH (file:File) "
+            "MATCH (fn:Function) "
+            "WHERE fn.file_path = file.file_path "
+            "   OR fn.file_path ENDS WITH '/' + file.file_path "
+            "   OR file.file_path ENDS WITH '/' + fn.file_path "
+            "MERGE (file)-[:DEFINES]->(fn)"
+        ).consume()
+        # SourcePoint nodes + IS_SOURCE relationships — architecture.md §4
+        sp_rows = [
+            {
+                "id": sp.id,
+                "function_id": sp.function_id,
+                "entry_point_kind": sp.entry_point_kind,
+                "reason": sp.reason,
+                "status": sp.status,
+            }
+            for sp in in_mem._source_points.values()
+        ] if hasattr(in_mem, "_source_points") else []
+        for chunk in _batched(sp_rows):
+            session.run(
+                "UNWIND $rows AS row "
+                "MERGE (sp:SourcePoint {id: row.id}) "
+                "SET sp.function_id = row.function_id, "
+                "    sp.entry_point_kind = row.entry_point_kind, "
+                "    sp.reason = row.reason, sp.status = row.status "
+                "WITH sp, row "
+                "MATCH (fn:Function {id: row.function_id}) "
+                "MERGE (fn)-[:IS_SOURCE]->(sp)",
+                rows=chunk,
+            ).consume()
 
     logger.info(
-        "mirrored to Neo4j: %d functions, %d files, %d calls, %d unresolved, %d repair_logs",
+        "mirrored to Neo4j: %d functions, %d files, %d calls, %d unresolved, %d repair_logs, %d source_points",
         len(fn_rows),
         len(file_rows),
         len(call_rows),
         len(uc_rows),
         len(log_rows),
+        len(sp_rows),
     )
     return neo
 
