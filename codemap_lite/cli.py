@@ -336,6 +336,21 @@ def serve(
     try:
         sp_list = asyncio.run(sp_client.fetch())
         app_instance.state.source_points = [asdict(sp) for sp in sp_list]
+        # Also persist to graph store so source_points_by_status in /stats
+        # reflects the actual source points (architecture.md §4: SourcePoint
+        # nodes track lifecycle). Without this, stats shows 0 source points
+        # until the first repair run creates them via _ensure_source_point.
+        from codemap_lite.graph.schema import SourcePointNode
+
+        for sp in sp_list:
+            if graph_store.get_source_point(sp.function_id) is None:
+                graph_store.create_source_point(SourcePointNode(
+                    function_id=sp.function_id,
+                    entry_point_kind=sp.entry_point_kind,
+                    reason=sp.reason,
+                    module=sp.module,
+                    status="pending",
+                ))
     except Exception:
         # Graceful fallback — source points are optional for the serve path.
         # The endpoint will return [] until the next analyze/repair populates them.
