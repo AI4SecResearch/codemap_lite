@@ -715,13 +715,20 @@ class Neo4jGraphStore:
     def create_function(self, node: FunctionNode) -> str:
         # architecture.md §4: DEFINES relationship from File to Function.
         # MERGE the Function node, then link to its parent File if it exists.
+        # Note: File nodes may use relative paths while Function nodes use
+        # absolute paths. Use OPTIONAL MATCH to avoid silent failures, and
+        # try matching on both the exact file_path and the basename suffix.
         cypher = (
             "MERGE (f:Function {id: $id}) "
             "SET f.signature = $signature, f.name = $name, "
             "    f.file_path = $file_path, f.start_line = $start_line, "
             "    f.end_line = $end_line, f.body_hash = $body_hash "
             "WITH f "
-            "MATCH (file:File {file_path: $file_path}) "
+            "OPTIONAL MATCH (file:File) "
+            "WHERE file.file_path = $file_path "
+            "   OR $file_path ENDS WITH '/' + file.file_path "
+            "   OR file.file_path ENDS WITH '/' + $file_path "
+            "WITH f, file WHERE file IS NOT NULL "
             "MERGE (file)-[:DEFINES]->(f) "
             "RETURN f.id AS id"
         )
