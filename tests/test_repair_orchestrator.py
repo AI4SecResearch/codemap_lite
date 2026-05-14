@@ -2584,3 +2584,119 @@ async def test_progress_json_tracks_gaps_fixed(tmp_path):
         "architecture.md §3: progress.json must include 'gaps_fixed'"
     )
     assert data["gaps_fixed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_source_point_lifecycle_pending_to_complete(tmp_path):
+    """architecture.md §4 SourcePoint 状态: pending → running → complete.
+
+    When the orchestrator starts repair for a source, it must:
+    1. Create SourcePoint if not exists (_ensure_source_point)
+    2. Transition to "running" before agent launch
+    3. Transition to "complete" when gate passes
+    """
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import FunctionNode, SourcePointNode
+
+    store = InMemoryGraphStore()
+    store.create_function(FunctionNode(
+        id="src_lifecycle", signature="void src()", name="src",
+        file_path="a.cpp", start_line=1, end_line=10, body_hash="h1",
+    ))
+    # No SourcePoint pre-created — orchestrator must create it
+
+    target_dir = tmp_path / "target_lifecycle"
+    target_dir.mkdir()
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        command="echo",
+        args=["done"],
+        max_concurrency=1,
+        graph_store=store,
+    )
+    orchestrator = RepairOrchestrator(config=config)
+    # No pending gaps → gate passes immediately (source already complete)
+    orchestrator._check_gate = AsyncMock(return_value=True)
+
+    # Before repair: no SourcePoint exists
+    assert store.get_source_point("src_lifecycle") is None
+
+    results = await orchestrator.run_repairs(["src_lifecycle"])
+
+    # After repair: SourcePoint must exist and be "complete"
+    sp = store.get_source_point("src_lifecycle")
+    assert sp is not None, (
+        "architecture.md §4: orchestrator must create SourcePoint if not exists"
+    )
+    assert sp.status == "complete", (
+        f"Expected status='complete' after gate pass, got '{sp.status}'"
+    )
+    assert results[0].success is True
+
+
+@pytest.mark.asyncio
+async def test_source_point_lifecycle_pending_to_partial_complete(tmp_path):
+    """architecture.md §4 SourcePoint 状态: pending → running → partial_complete.
+
+    When all GAPs exhaust their retry budget, SourcePoint must transition
+    to "partial_complete" (not stay in "running").
+    """
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import (
+        FunctionNode, UnresolvedCallNode, SourcePointNode,
+    )
+
+    store = InMemoryGraphStore()
+    store.create_function(FunctionNode(
+        id="src_partial", signature="void src()", name="src",
+        file_path="a.cpp", start_line=1, end_line=10, body_hash="h1",
+    ))
+    # Pre-create SourcePoint with "pending" status
+    store.create_source_point(SourcePointNode(
+        id="src_partial", function_id="src_partial",
+        entry_point_kind="rpc", reason="test", status="pending",
+    ))
+    # One gap that will exhaust retries
+    store.create_unresolved_call(UnresolvedCallNode(
+        id="gap_lifecycle",
+        caller_id="src_partial",
+        call_expression="ptr->call()",
+        call_file="a.cpp",
+        call_line=5,
+        call_type="indirect",
+        source_code_snippet="ptr->call();",
+        var_name="ptr",
+        var_type="Base*",
+        candidates=["Derived::call"],
+        retry_count=0,
+        status="pending",
+    ))
+
+    target_dir = tmp_path / "target_partial"
+    target_dir.mkdir()
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        command="echo",
+        args=["done"],
+        max_concurrency=1,
+        graph_store=store,
+    )
+    orchestrator = RepairOrchestrator(config=config)
+    orchestrator._check_gate = AsyncMock(return_value=False)
+
+    # Verify initial state
+    sp_before = store.get_source_point("src_partial")
+    assert sp_before.status == "pending"
+
+    results = await orchestrator.run_repairs(["src_partial"])
+
+    # After exhausting retries: must be "partial_complete"
+    sp_after = store.get_source_point("src_partial")
+    assert sp_after.status == "partial_complete", (
+        f"Expected 'partial_complete' after retry exhaustion, got '{sp_after.status}'"
+    )
+    assert results[0].success is False
