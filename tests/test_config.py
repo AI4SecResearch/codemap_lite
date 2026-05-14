@@ -114,6 +114,35 @@ class TestAgentConfigBackendEnum:
             Settings.from_yaml(config_file)
 
 
+class TestAgentConfigConstraints:
+    """architecture.md §10: agent config field constraints."""
+
+    def test_max_concurrency_must_be_positive(self):
+        """architecture.md §10: max_concurrency must be a positive integer (≥1)."""
+        with pytest.raises(ValidationError):
+            AgentConfig(max_concurrency=0)
+        with pytest.raises(ValidationError):
+            AgentConfig(max_concurrency=-1)
+
+    def test_max_concurrency_accepts_valid_values(self):
+        assert AgentConfig(max_concurrency=1).max_concurrency == 1
+        assert AgentConfig(max_concurrency=10).max_concurrency == 10
+
+    def test_subprocess_timeout_must_be_positive_if_set(self):
+        """architecture.md §3 超时护栏: subprocess_timeout_seconds must be > 0 if set."""
+        with pytest.raises(ValidationError):
+            AgentConfig(subprocess_timeout_seconds=0)
+        with pytest.raises(ValidationError):
+            AgentConfig(subprocess_timeout_seconds=-5.0)
+
+    def test_subprocess_timeout_none_is_valid(self):
+        """None means no timeout (architecture.md §3: Agent 自然完成)."""
+        assert AgentConfig(subprocess_timeout_seconds=None).subprocess_timeout_seconds is None
+
+    def test_subprocess_timeout_positive_is_valid(self):
+        assert AgentConfig(subprocess_timeout_seconds=120.5).subprocess_timeout_seconds == 120.5
+
+
 def test_default_config_yaml_matches_architecture_spec():
     """architecture.md §10: default_config.yaml must produce settings that
     match the architecture specification exactly.

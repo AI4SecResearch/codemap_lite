@@ -531,6 +531,92 @@ def test_invalidate_file_resets_source_point_status_for_non_llm_callers():
     assert "src_fn" in result.affected_source_ids
 
 
+def test_cascade_only_regenerates_uc_for_llm_edges_not_static():
+    """architecture.md §7 step 3: when a callee's file changes, BOTH LLM and
+    static edges to that callee are deleted (because the callee node is removed).
+    However, only the LLM caller gets a regenerated UnresolvedCall — the static
+    caller does NOT get a UC because its edge will be re-discovered by re-parsing.
+
+    This is the critical distinction: LLM edges cannot be re-discovered by
+    static analysis, so they need a UC for the repair agent. Static edges
+    will be re-created when the caller's file is re-parsed."""
+    store = InMemoryGraphStore()
+
+    # Target function in file_b.c (will be invalidated)
+    store.create_function(FunctionNode(
+        id="target", name="target", signature="void target()",
+        file_path="file_b.c", start_line=1, end_line=10, body_hash="ht",
+    ))
+    # LLM caller in file_a.c
+    store.create_function(FunctionNode(
+        id="llm_caller", name="llm_caller", signature="void llm_caller()",
+        file_path="file_a.c", start_line=1, end_line=10, body_hash="ha",
+    ))
+    # Static caller in file_c.c
+    store.create_function(FunctionNode(
+        id="static_caller", name="static_caller", signature="void static_caller()",
+        file_path="file_c.c", start_line=1, end_line=10, body_hash="hc",
+    ))
+
+    # LLM edge: llm_caller → target
+    store.create_calls_edge("llm_caller", "target", CallsEdgeProps(
+        resolved_by="llm", call_type="indirect",
+        call_file="file_a.c", call_line=5,
+    ))
+    # Static edge: static_caller → target
+    store.create_calls_edge("static_caller", "target", CallsEdgeProps(
+        resolved_by="symbol_table", call_type="direct",
+        call_file="file_c.c", call_line=3,
+    ))
+
+    # RepairLog for the LLM edge
+    store.create_repair_log(RepairLogNode(
+        id="rl_llm",
+        caller_id="llm_caller",
+        callee_id="target",
+        call_location="file_a.c:5",
+        repair_method="llm",
+        llm_response="target is called via function pointer",
+        timestamp="2026-05-14T00:00:00Z",
+        reasoning_summary="function pointer analysis",
+    ))
+
+    updater = IncrementalUpdater(store=store)
+    result = updater.invalidate_file("file_b.c")
+
+    # Both callers should be affected
+    assert "llm_caller" in result.affected_callers
+    assert "static_caller" in result.affected_callers
+
+    # Both edges should be deleted (target node is gone)
+    assert len(store.list_calls_edges()) == 0
+
+    # Only LLM caller gets a regenerated UnresolvedCall
+    llm_gaps = store.get_unresolved_calls(caller_id="llm_caller")
+    assert len(llm_gaps) == 1, (
+        "architecture.md §7: LLM caller must get regenerated UC"
+    )
+    assert llm_gaps[0].call_file == "file_a.c"
+    assert llm_gaps[0].call_line == 5
+    assert llm_gaps[0].retry_count == 0
+
+    # Static caller does NOT get a UC (will be re-discovered by re-parsing)
+    static_gaps = store.get_unresolved_calls(caller_id="static_caller")
+    assert len(static_gaps) == 0, (
+        "architecture.md §7: static caller must NOT get regenerated UC — "
+        "its edge will be re-discovered by re-parsing the caller's file"
+    )
+
+    # RepairLog for LLM edge must be deleted
+    logs = store.get_repair_logs(caller_id="llm_caller", callee_id="target")
+    assert len(logs) == 0, (
+        "architecture.md §7: RepairLog for invalidated LLM edge must be deleted"
+    )
+
+    # Only LLM caller should have regenerated UC in result
+    assert len(result.regenerated_unresolved_calls) == 1
+
+
 def test_pipeline_incremental_exposes_affected_source_ids_in_result():
     """architecture.md §7 step 5: PipelineResult must expose affected_source_ids
     so the caller (CLI / orchestrator) can trigger re-repair for sources whose

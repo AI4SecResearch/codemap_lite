@@ -34,9 +34,9 @@ class OpenCodeConfig(BaseModel):
 
 class AgentConfig(BaseModel):
     backend: Literal["claudecode", "opencode"] = "claudecode"
-    max_concurrency: int = 5
+    max_concurrency: int = Field(default=5, ge=1)
     retry_failed_gaps: bool = True
-    subprocess_timeout_seconds: float | None = None
+    subprocess_timeout_seconds: float | None = Field(default=None, gt=0)
     claudecode: ClaudeCodeConfig = Field(default_factory=ClaudeCodeConfig)
     opencode: OpenCodeConfig = Field(default_factory=OpenCodeConfig)
 
