@@ -4,7 +4,10 @@ from __future__ import annotations
 
 def build_repair_prompt(source_id: str) -> str:
     """Build the prompt passed to the CLI agent for repairing a specific source point."""
-    icsl_dir = f".icslpreprocess_{source_id}"
+    from codemap_lite.analysis.repair_orchestrator import _safe_dirname
+
+    safe_id = _safe_dirname(source_id)
+    icsl_dir = f".icslpreprocess_{safe_id}"
     return f"""You are repairing indirect calls for source point {source_id}.
 
 Follow these steps:

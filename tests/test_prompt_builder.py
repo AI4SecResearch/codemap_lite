@@ -94,3 +94,24 @@ def test_generate_claude_md_enforces_counter_example_checking():
     assert "do NOT write" in result or "do not write" in result.lower(), (
         "must instruct agent to skip edges matching counter-example patterns"
     )
+
+
+def test_build_repair_prompt_uses_safe_dirname_for_path():
+    """Prompt must use _safe_dirname for .icslpreprocess path when source_id
+    contains path-unsafe characters (/, ::)."""
+    prompt = build_repair_prompt(source_id="module/sub::func")
+    # The raw source_id should NOT appear in the path portion
+    assert ".icslpreprocess_module/sub::func" not in prompt
+    # But the safe version should be used (:: and / become _)
+    assert ".icslpreprocess_module_sub_func" in prompt
+    # The raw source_id should still appear in the --source argument
+    assert "--source module/sub::func" in prompt
+
+
+def test_generate_claude_md_defaults_use_safe_dirname():
+    """Default paths in CLAUDE.md must use _safe_dirname for source_id."""
+    result = generate_claude_md(source_id="path/to::func")
+    # Should NOT contain the raw source_id in paths
+    assert ".icslpreprocess_path/to::func" not in result
+    # Should contain the sanitized version
+    assert "path_to_func" in result
