@@ -189,13 +189,21 @@ class RepairOrchestrator:
         # Write source_id so hooks can identify which source they serve.
         (icsl_dir / "source_id.txt").write_text(source_id, encoding="utf-8")
 
-        # config.yaml for Neo4j connection
-        config_yaml = f"""neo4j:
-  uri: "{self._config.neo4j_uri}"
-  user: "{self._config.neo4j_user}"
-  password: "{self._config.neo4j_password}"
-"""
-        (icsl_dir / "config.yaml").write_text(config_yaml, encoding="utf-8")
+        # config.yaml for Neo4j connection — use yaml.dump to avoid
+        # injection from special characters in password (architecture.md §3).
+        import yaml
+
+        config_data = {
+            "neo4j": {
+                "uri": self._config.neo4j_uri,
+                "user": self._config.neo4j_user,
+                "password": self._config.neo4j_password,
+            }
+        }
+        (icsl_dir / "config.yaml").write_text(
+            yaml.dump(config_data, default_flow_style=False, allow_unicode=True),
+            encoding="utf-8",
+        )
 
         # Counter examples
         (icsl_dir / "counter_examples.md").write_text(
