@@ -80,6 +80,13 @@ class SourcePointNode:
     module: str = ""
     id: str = field(default_factory=lambda: str(uuid4()))
 
+    def __post_init__(self) -> None:
+        if self.status not in VALID_SOURCE_POINT_STATUSES:
+            raise ValueError(
+                f"SourcePoint.status must be one of {sorted(VALID_SOURCE_POINT_STATUSES)}, "
+                f"got '{self.status}'"
+            )
+
 
 @dataclass(frozen=True)
 class UnresolvedCallNode:
