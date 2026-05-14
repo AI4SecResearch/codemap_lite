@@ -2700,3 +2700,145 @@ async def test_source_point_lifecycle_pending_to_partial_complete(tmp_path):
         f"Expected 'partial_complete' after retry exhaustion, got '{sp_after.status}'"
     )
     assert results[0].success is False
+
+
+@pytest.mark.asyncio
+async def test_ensure_source_point_creates_if_missing(tmp_path):
+    """architecture.md §4: orchestrator must ensure SourcePoint node exists
+    before attempting status transitions. Without this, update_source_point_status
+    is a silent no-op and the frontend never sees state changes."""
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import FunctionNode
+
+    store = InMemoryGraphStore()
+    store.create_function(FunctionNode(
+        id="src_new", name="entry", signature="void entry()",
+        file_path="f.cpp", start_line=1, end_line=10, body_hash="h1",
+    ))
+
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        command="echo",
+        args=["done"],
+        max_concurrency=1,
+        graph_store=store,
+    )
+    orchestrator = RepairOrchestrator(config=config)
+    orchestrator._check_gate = AsyncMock(return_value=True)
+
+    # No SourcePoint exists yet
+    assert store.get_source_point("src_new") is None
+
+    await orchestrator.run_repairs(["src_new"])
+
+    # SourcePoint must have been created
+    sp = store.get_source_point("src_new")
+    assert sp is not None, (
+        "architecture.md §4: orchestrator must create SourcePoint if missing"
+    )
+    assert sp.function_id == "src_new"
+
+
+@pytest.mark.asyncio
+async def test_ensure_source_point_does_not_overwrite_existing(tmp_path):
+    """architecture.md §4: if SourcePoint already exists (e.g. from a previous
+    run or from codewiki_lite import), _ensure_source_point must NOT overwrite it."""
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import FunctionNode, SourcePointNode
+
+    store = InMemoryGraphStore()
+    store.create_function(FunctionNode(
+        id="src_existing", name="entry", signature="void entry()",
+        file_path="f.cpp", start_line=1, end_line=10, body_hash="h1",
+    ))
+    # Pre-existing SourcePoint with specific entry_point_kind
+    store.create_source_point(SourcePointNode(
+        id="src_existing",
+        function_id="src_existing",
+        entry_point_kind="callback_registration",
+        reason="registered via codewiki_lite",
+        status="pending",
+    ))
+
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        command="echo",
+        args=["done"],
+        max_concurrency=1,
+        graph_store=store,
+    )
+    orchestrator = RepairOrchestrator(config=config)
+    orchestrator._check_gate = AsyncMock(return_value=True)
+
+    await orchestrator.run_repairs(["src_existing"])
+
+    # SourcePoint must retain its original entry_point_kind
+    sp = store.get_source_point("src_existing")
+    assert sp.entry_point_kind == "callback_registration", (
+        "architecture.md §4: _ensure_source_point must not overwrite existing SourcePoint"
+    )
+    assert sp.reason == "registered via codewiki_lite"
+
+
+@pytest.mark.asyncio
+async def test_count_edges_written_counts_only_llm_edges(tmp_path):
+    """architecture.md §3 progress.json: edges_written must count only
+    LLM-resolved edges in the source's reachable subgraph, not static edges."""
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import CallsEdgeProps, FunctionNode
+
+    store = InMemoryGraphStore()
+    # Source → A (llm) → B (symbol_table) → C (llm)
+    store.create_function(FunctionNode(
+        id="src", name="src", signature="void src()",
+        file_path="f.cpp", start_line=1, end_line=5, body_hash="hs",
+    ))
+    store.create_function(FunctionNode(
+        id="A", name="A", signature="void A()",
+        file_path="f.cpp", start_line=10, end_line=15, body_hash="hA",
+    ))
+    store.create_function(FunctionNode(
+        id="B", name="B", signature="void B()",
+        file_path="f.cpp", start_line=20, end_line=25, body_hash="hB",
+    ))
+    store.create_function(FunctionNode(
+        id="C", name="C", signature="void C()",
+        file_path="f.cpp", start_line=30, end_line=35, body_hash="hC",
+    ))
+    store.create_calls_edge("src", "A", CallsEdgeProps(
+        resolved_by="llm", call_type="indirect", call_file="f.cpp", call_line=3,
+    ))
+    store.create_calls_edge("A", "B", CallsEdgeProps(
+        resolved_by="symbol_table", call_type="direct", call_file="f.cpp", call_line=12,
+    ))
+    store.create_calls_edge("B", "C", CallsEdgeProps(
+        resolved_by="llm", call_type="indirect", call_file="f.cpp", call_line=22,
+    ))
+
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        command="echo",
+        args=["done"],
+        max_concurrency=1,
+        graph_store=store,
+    )
+    orchestrator = RepairOrchestrator(config=config)
+
+    # _count_edges_written should count only LLM edges (src→A and B→C)
+    count = orchestrator._count_edges_written("src")
+    assert count == 2, (
+        f"Expected 2 LLM edges (src→A, B→C), got {count}. "
+        "Must count only resolved_by='llm' edges in reachable subgraph."
+    )
