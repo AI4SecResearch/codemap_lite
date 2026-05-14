@@ -57,10 +57,11 @@ export interface UnresolvedCall {
    */
   last_attempt_timestamp?: string | null;
   /**
-   * Human-readable reason (≤200 chars, `<category>: <summary>`) for the
-   * last failed attempt. `<category>` ∈ `{gate_failed, agent_error,
-   * subprocess_timeout, subprocess_crash}`. Surfaced in ReviewQueue
-   * GapDetail so reviewers don't need to read JSONL logs.
+   * Human-readable reason (≤200 chars, `<category>: <summary>` or standalone
+   * category) for the last failed attempt. `<category>` ∈ `{gate_failed,
+   * agent_error, subprocess_timeout, subprocess_crash,
+   * agent_exited_without_edge}`. Surfaced in ReviewQueue GapDetail so
+   * reviewers don't need to read JSONL logs.
    */
   last_attempt_reason?: string | null;
   id?: string;
@@ -102,12 +103,12 @@ export interface Stats {
   /**
    * Breakdown of `total_unresolved` by the `<category>:` prefix of
    * `UnresolvedCall.last_attempt_reason` (architecture.md §3 Retry
-   * 审计字段 4 档: `gate_failed` / `agent_error` / `subprocess_crash`
-   * / `subprocess_timeout`). GAPs without an audit stamp (never retried
-   * or legacy format) bucket to `"none"`. Drives the Dashboard
-   * "Retry reasons" chip row per architecture.md §5 drill-down 契约;
-   * chip tones mirror GapDetail last-attempt 分色. Optional for
-   * backward compat with older stubs.
+   * 审计字段 5 档: `gate_failed` / `agent_error` / `subprocess_crash`
+   * / `subprocess_timeout` / `agent_exited_without_edge`). GAPs without
+   * an audit stamp (never retried or legacy format) bucket to `"none"`.
+   * Drives the Dashboard "Retry reasons" chip row per architecture.md §5
+   * drill-down 契约; chip tones mirror GapDetail last-attempt 分色.
+   * Optional for backward compat with older stubs.
    */
   unresolved_by_category?: Record<string, number>;
   /**

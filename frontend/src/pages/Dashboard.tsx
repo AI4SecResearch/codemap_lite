@@ -270,10 +270,10 @@ export default function Dashboard() {
   // row consumes `/api/v1/stats` unresolved_by_category bucket.
   // Chip tones mirror GapDetail last-attempt 分色 (§3 Retry 审计字段):
   // gate_failed=amber, agent_error=red, subprocess_crash=fuchsia,
-  // subprocess_timeout=orange, none=gray. Each chip is a drill-down
-  // link to `/review?category=<cat>` so reviewers can go from
-  // "25 of 30 unresolvable are subprocess_timeout" to the pre-filtered
-  // list in one click (北极星指标 #1 + #5).
+  // subprocess_timeout=orange, agent_exited_without_edge=sky, none=gray.
+  // Each chip is a drill-down link to `/review?category=<cat>` so reviewers
+  // can go from "25 of 30 unresolvable are subprocess_timeout" to the
+  // pre-filtered list in one click (北极星指标 #1 + #5).
   const byCategory = stats?.unresolved_by_category ?? {};
   const CATEGORY_ROW: {
     key: string;
@@ -304,6 +304,12 @@ export default function Dashboard() {
       label: 'subprocess_timeout',
       tone: 'bg-orange-100 text-orange-800 hover:bg-orange-200',
       title: 'Agent hung past subprocess_timeout_seconds — ops (LLM / net)',
+    },
+    {
+      key: 'agent_exited_without_edge',
+      label: 'no_edge',
+      tone: 'bg-sky-100 text-sky-800 hover:bg-sky-200',
+      title: 'Agent exited cleanly but wrote zero edges — likely gave up or hit dead end',
     },
     {
       key: 'none',

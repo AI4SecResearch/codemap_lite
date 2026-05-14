@@ -24,7 +24,8 @@ type CategoryFilter =
   | 'gate_failed'
   | 'agent_error'
   | 'subprocess_crash'
-  | 'subprocess_timeout';
+  | 'subprocess_timeout'
+  | 'agent_exited_without_edge';
 
 const CATEGORY_FILTERS: readonly CategoryFilter[] = [
   'all',
@@ -32,6 +33,7 @@ const CATEGORY_FILTERS: readonly CategoryFilter[] = [
   'agent_error',
   'subprocess_crash',
   'subprocess_timeout',
+  'agent_exited_without_edge',
 ];
 
 function isCategoryFilter(v: string | null): v is CategoryFilter {
@@ -39,11 +41,18 @@ function isCategoryFilter(v: string | null): v is CategoryFilter {
 }
 
 // Extract the <category> prefix from a last_attempt_reason (format
-// `<category>: <summary>`, architecture.md §3). Returns null if
+// `<category>: <summary>`, architecture.md §3). Also handles standalone
+// categories like "agent_exited_without_edge" (no colon). Returns null if
 // the reason is missing / malformed so "no audit stamp yet" GAPs
 // aren't miscategorized into any bucket.
+const KNOWN_CATEGORIES = new Set([
+  'gate_failed', 'agent_error', 'subprocess_crash',
+  'subprocess_timeout', 'agent_exited_without_edge',
+]);
 function extractCategory(reason: string | null | undefined): string | null {
   if (!reason) return null;
+  // Standalone category (no colon) — e.g. "agent_exited_without_edge"
+  if (KNOWN_CATEGORIES.has(reason)) return reason;
   const idx = reason.indexOf(':');
   if (idx < 0) return null;
   const prefix = reason.slice(0, idx).trim();
@@ -312,6 +321,7 @@ export default function ReviewQueue() {
       agent_error: 0,
       subprocess_crash: 0,
       subprocess_timeout: 0,
+      agent_exited_without_edge: 0,
     };
     for (const g of gaps) {
       const cat = extractCategory(g.last_attempt_reason);
@@ -319,6 +329,7 @@ export default function ReviewQueue() {
       else if (cat === 'agent_error') counts.agent_error += 1;
       else if (cat === 'subprocess_crash') counts.subprocess_crash += 1;
       else if (cat === 'subprocess_timeout') counts.subprocess_timeout += 1;
+      else if (cat === 'agent_exited_without_edge') counts.agent_exited_without_edge += 1;
     }
     return counts;
   }, [gaps]);
@@ -646,6 +657,7 @@ export default function ReviewQueue() {
                 { key: 'agent_error', label: 'agent_error', count: categoryCounts.agent_error, tone: 'bg-red-50 text-red-800 border-red-300' },
                 { key: 'subprocess_crash', label: 'subprocess_crash', count: categoryCounts.subprocess_crash, tone: 'bg-fuchsia-50 text-fuchsia-800 border-fuchsia-300' },
                 { key: 'subprocess_timeout', label: 'subprocess_timeout', count: categoryCounts.subprocess_timeout, tone: 'bg-orange-50 text-orange-800 border-orange-300' },
+                { key: 'agent_exited_without_edge', label: 'no_edge', count: categoryCounts.agent_exited_without_edge, tone: 'bg-sky-50 text-sky-800 border-sky-300' },
               ] as const
             ).map((opt) => {
               const active = categoryFilter === opt.key;
@@ -1122,11 +1134,11 @@ function GapDetail({ gap }: { gap: UnresolvedCall }) {
   const lastReason = gap.last_attempt_reason?.trim();
   const lastTimestamp = gap.last_attempt_timestamp?.trim();
   const hasLastAttempt = Boolean(lastReason || lastTimestamp);
-  // architecture.md §5 GapDetail last-attempt 分色: 4 categories → 4 distinct
+  // architecture.md §5 GapDetail last-attempt 分色: 5 categories → 5 distinct
   // tones so reviewers can read the failure class at a glance
   // (gate_failed=amber soft retry-more, agent_error=red agent logic failure,
   // subprocess_crash=fuchsia spawn failure/ops config, subprocess_timeout=
-  // orange ops stall). Unknown/legacy → gray fallback.
+  // orange ops stall, agent_exited_without_edge=sky no progress). Unknown/legacy → gray fallback.
   const category = lastReason?.split(':', 1)[0].trim();
   const categoryTone =
     category === 'gate_failed'
@@ -1137,6 +1149,8 @@ function GapDetail({ gap }: { gap: UnresolvedCall }) {
       ? 'bg-fuchsia-50 border-fuchsia-200 text-fuchsia-800'
       : category === 'subprocess_timeout'
       ? 'bg-orange-50 border-orange-200 text-orange-800'
+      : category === 'agent_exited_without_edge'
+      ? 'bg-sky-50 border-sky-200 text-sky-800'
       : 'bg-gray-50 border-gray-200 text-gray-800';
   const humanTimestamp = lastTimestamp
     ? (() => {
