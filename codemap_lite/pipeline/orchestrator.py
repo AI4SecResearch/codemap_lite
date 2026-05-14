@@ -221,12 +221,17 @@ class PipelineOrchestrator:
 
                 functions = plugin.parse_file(file_path)
                 for func in functions:
-                    # Store function node (short hash ID, URL-safe)
+                    # Store function node (short hash ID, URL-safe).
+                    # Use the scanner's relative path (sf.file_path) for
+                    # consistency with FileNode — both should use the same
+                    # path format so DEFINES relationships match correctly.
+                    # The absolute path is still used for the function ID hash
+                    # (preserving existing IDs) and for by_file_name index.
                     func_node = FunctionNode(
                         id=_make_function_id(str(func.file_path), func.name, func.start_line),
                         signature=func.signature,
                         name=func.name,
-                        file_path=str(func.file_path),
+                        file_path=sf.file_path,
                         start_line=func.start_line,
                         end_line=func.end_line,
                         body_hash=func.body_hash,
@@ -277,7 +282,13 @@ class PipelineOrchestrator:
         all_functions = self._store.list_functions()
         for fn in all_functions:
             fid = fn.id
+            # Index by stored (relative) path
             by_file_name[(fn.file_path, fn.name)] = fid
+            # Also index by absolute path so the second pass (which uses
+            # absolute paths from the parser) can resolve callers/callees.
+            if not Path(fn.file_path).is_absolute():
+                abs_path = str(self._target_dir / fn.file_path)
+                by_file_name[(abs_path, fn.name)] = fid
             by_name.setdefault(fn.name, []).append(fid)
             if "::" in fn.name:
                 bare = fn.name.split("::")[-1]
