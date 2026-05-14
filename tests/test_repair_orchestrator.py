@@ -39,6 +39,49 @@ def test_repair_config_creation(repair_config):
     assert repair_config.max_concurrency == 2
 
 
+def test_safe_dirname_handles_path_unsafe_source_ids():
+    """Source IDs from codewiki_lite contain / and :: which must be sanitized."""
+    from codemap_lite.analysis.repair_orchestrator import _safe_dirname
+
+    # Typical codewiki_lite source ID with slashes and colons
+    unsafe_id = "castengine_cast_framework/client/include/stub.h::OHOS::CastEngine::OnRemoteRequest"
+    safe = _safe_dirname(unsafe_id)
+    assert "/" not in safe
+    assert "\\" not in safe
+    assert "::" not in safe
+    # Must be deterministic
+    assert _safe_dirname(unsafe_id) == safe
+    # Short IDs pass through (with colon replacement)
+    assert _safe_dirname("abc123") == "abc123"
+    # Different IDs produce different results
+    assert _safe_dirname("a/b") != _safe_dirname("c/d")
+
+
+def test_orchestrator_injection_with_path_unsafe_source_id(orchestrator, tmp_path):
+    """Injection must work even when source_id contains / and :: characters."""
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    unsafe_id = "path/to/file.h::Namespace::Class::Method"
+    orchestrator._inject_files(
+        target_dir=target_dir,
+        source_id=unsafe_id,
+        counter_examples="# test",
+    )
+
+    # Should create a flat directory, not nested path/to/...
+    from codemap_lite.analysis.repair_orchestrator import _safe_dirname
+    safe = _safe_dirname(unsafe_id)
+    icsl_dir = target_dir / f".icslpreprocess_{safe}"
+    assert icsl_dir.exists()
+    assert (icsl_dir / "icsl_tools.py").exists()
+    assert (icsl_dir / "config.yaml").exists()
+
+    # Cleanup should also work
+    orchestrator._cleanup_injection(target_dir, unsafe_id)
+    assert not icsl_dir.exists()
+
+
 def test_orchestrator_creates_injection_files(orchestrator, tmp_path):
     target_dir = tmp_path / "target_code"
     target_dir.mkdir()

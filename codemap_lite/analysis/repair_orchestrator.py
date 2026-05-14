@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 from dataclasses import dataclass, field
@@ -24,6 +26,24 @@ def _truncate_reason(reason: str) -> str:
     if len(reason) <= _MAX_REASON_LEN:
         return reason
     return reason[: _MAX_REASON_LEN - 1] + "…"
+
+
+def _safe_dirname(source_id: str) -> str:
+    """Convert a source_id to a filesystem-safe directory name.
+
+    Source IDs from codewiki_lite may contain '/', '::', and other
+    path-unsafe characters. We use a short hash suffix to guarantee
+    uniqueness while keeping the name human-readable.
+    """
+    # Replace path separators and colons with underscores
+    safe = re.sub(r"[/\\:]+", "_", source_id)
+    # Collapse multiple underscores
+    safe = re.sub(r"_+", "_", safe).strip("_")
+    # Truncate to 60 chars + append 8-char hash for uniqueness
+    if len(safe) > 60:
+        h = hashlib.sha1(source_id.encode()).hexdigest()[:8]
+        safe = safe[:60] + "_" + h
+    return safe
 
 
 @dataclass
@@ -95,19 +115,20 @@ class RepairOrchestrator:
         counter_examples: str,
     ) -> None:
         """Generate injection files in the target code directory."""
+        safe_id = _safe_dirname(source_id)
         # Backup existing CLAUDE.md if present.
         # Use source-specific backup names to avoid race conditions when
         # multiple sources run concurrently in the same target_dir
         # (architecture.md §3: source 间并发, source 内串行).
         claude_md_path = target_dir / "CLAUDE.md"
-        backup_path = target_dir / f"CLAUDE.md.bak.{source_id}"
+        backup_path = target_dir / f"CLAUDE.md.bak.{safe_id}"
         if claude_md_path.exists():
             shutil.copy2(claude_md_path, backup_path)
 
         # Backup existing .claude/ if present (architecture.md §3: preserve
         # pre-existing user config after cleanup)
         claude_dir = target_dir / ".claude"
-        claude_dir_backup = target_dir / f".claude.bak.{source_id}"
+        claude_dir_backup = target_dir / f".claude.bak.{safe_id}"
         if claude_dir.exists():
             if claude_dir_backup.exists():
                 shutil.rmtree(claude_dir_backup)
@@ -118,7 +139,7 @@ class RepairOrchestrator:
 
         # Use source-specific .icslpreprocess directory to avoid race
         # conditions when multiple sources run concurrently (§3).
-        icsl_dirname = f".icslpreprocess_{source_id}"
+        icsl_dirname = f".icslpreprocess_{safe_id}"
         claude_md_path.write_text(
             generate_claude_md(
                 source_id=source_id,
@@ -187,15 +208,16 @@ class RepairOrchestrator:
         Uses source-specific backup names to avoid race conditions when
         multiple sources run concurrently (architecture.md §3).
         """
-        # Remove source-specific .icslpreprocess_{source_id}/
-        icsl_dir = target_dir / f".icslpreprocess_{source_id}"
+        safe_id = _safe_dirname(source_id)
+        # Remove source-specific .icslpreprocess_{safe_id}/
+        icsl_dir = target_dir / f".icslpreprocess_{safe_id}"
         if icsl_dir.exists():
             shutil.rmtree(icsl_dir)
 
         # Restore .claude/ backup or remove generated one
         # (architecture.md §3: preserve pre-existing user config)
         claude_dir = target_dir / ".claude"
-        claude_dir_backup = target_dir / f".claude.bak.{source_id}"
+        claude_dir_backup = target_dir / f".claude.bak.{safe_id}"
         if claude_dir.exists():
             shutil.rmtree(claude_dir)
         if claude_dir_backup.exists():
@@ -203,7 +225,7 @@ class RepairOrchestrator:
 
         # Restore CLAUDE.md backup or remove generated one
         claude_md_path = target_dir / "CLAUDE.md"
-        backup_path = target_dir / f"CLAUDE.md.bak.{source_id}"
+        backup_path = target_dir / f"CLAUDE.md.bak.{safe_id}"
         if backup_path.exists():
             shutil.move(str(backup_path), str(claude_md_path))
         elif claude_md_path.exists():
@@ -510,7 +532,8 @@ class RepairOrchestrator:
         ``orchestrator._check_gate = AsyncMock(return_value=True)``.
         """
         target_dir = self._config.target_dir
-        tool_path = target_dir / f".icslpreprocess_{source_id}" / "icsl_tools.py"
+        safe_id = _safe_dirname(source_id)
+        tool_path = target_dir / f".icslpreprocess_{safe_id}" / "icsl_tools.py"
         cmd = [
             sys.executable,
             str(tool_path),
