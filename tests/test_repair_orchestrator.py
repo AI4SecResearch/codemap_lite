@@ -2951,3 +2951,46 @@ async def test_orchestrator_stamps_agent_exited_without_edge(tmp_path):
     assert stamped.last_attempt_reason == "agent_exited_without_edge"
     # Must never be mis-classified as gate_failed (regression guard).
     assert "gate_failed" not in stamped.last_attempt_reason
+
+
+# ---------------------------------------------------------------------------
+# _build_subprocess_env — proxy stripping (WSL safety)
+# ---------------------------------------------------------------------------
+
+
+def test_build_subprocess_env_strips_proxy_vars():
+    """Proxy vars must be stripped to avoid DashScope/Neo4j failures in WSL."""
+    from codemap_lite.analysis.repair_orchestrator import _build_subprocess_env
+
+    with patch.dict(
+        "os.environ",
+        {
+            "http_proxy": "http://proxy:8080",
+            "HTTPS_PROXY": "http://proxy:8080",
+            "ALL_PROXY": "socks5://proxy:1080",
+            "PATH": "/usr/bin",
+            "OPENAI_API_KEY": "sk-test",
+        },
+        clear=True,
+    ):
+        env = _build_subprocess_env(None)
+        assert "http_proxy" not in env
+        assert "HTTPS_PROXY" not in env
+        assert "ALL_PROXY" not in env
+        assert env["PATH"] == "/usr/bin"
+        assert env["OPENAI_API_KEY"] == "sk-test"
+
+
+def test_build_subprocess_env_applies_overrides():
+    """User-provided env overrides are merged after proxy stripping."""
+    from codemap_lite.analysis.repair_orchestrator import _build_subprocess_env
+
+    with patch.dict(
+        "os.environ",
+        {"PATH": "/usr/bin", "http_proxy": "http://proxy:8080"},
+        clear=True,
+    ):
+        env = _build_subprocess_env({"CUSTOM_VAR": "value", "PATH": "/custom/bin"})
+        assert env["CUSTOM_VAR"] == "value"
+        assert env["PATH"] == "/custom/bin"  # override wins
+        assert "http_proxy" not in env

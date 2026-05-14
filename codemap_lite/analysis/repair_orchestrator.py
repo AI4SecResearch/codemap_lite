@@ -28,6 +28,25 @@ def _truncate_reason(reason: str) -> str:
     return reason[: _MAX_REASON_LEN - 1] + "…"
 
 
+# Proxy vars that interfere with DashScope/Neo4j connections in WSL.
+_PROXY_VARS = frozenset({
+    "http_proxy", "https_proxy", "all_proxy",
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+})
+
+
+def _build_subprocess_env(overrides: dict[str, str] | None) -> dict[str, str]:
+    """Build env dict for agent subprocesses, stripping proxy vars.
+
+    WSL environments often inherit Windows proxy settings that break
+    DashScope API calls and Neo4j bolt connections from the agent subprocess.
+    """
+    env = {k: v for k, v in os.environ.items() if k not in _PROXY_VARS}
+    if overrides:
+        env.update(overrides)
+    return env
+
+
 def _safe_dirname(source_id: str) -> str:
     """Convert a source_id to a filesystem-safe directory name.
 
@@ -368,7 +387,7 @@ class RepairOrchestrator:
                 )
 
                 cmd = self._build_command(source_id)
-                env = {**os.environ, **(self._config.env or {})}
+                env = _build_subprocess_env(self._config.env)
 
                 log_dir = self._config.log_dir
                 stdout_target: Any = asyncio.subprocess.PIPE
@@ -581,7 +600,7 @@ class RepairOrchestrator:
                 cwd=str(target_dir),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env={**os.environ, **(self._config.env or {})},
+                env=_build_subprocess_env(self._config.env),
             )
             # architecture.md §3 超时护栏: gate check must not block
             # indefinitely if Neo4j or the subprocess hangs.

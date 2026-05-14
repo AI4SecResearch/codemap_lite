@@ -1421,3 +1421,265 @@ class TestSection3_GateMechanism:
         assert result["remaining_gaps"] > 0
         assert isinstance(result["pending_gap_ids"], list)
 
+
+# ---------------------------------------------------------------------------
+# §3 write-edge + RepairLog creation (architecture.md §3 修复成功时)
+# ---------------------------------------------------------------------------
+
+
+class TestSection3_WriteEdgeFlow:
+    """Test write-edge creates CALLS edge + RepairLog + deletes UC."""
+
+    def test_write_edge_creates_edge_and_repair_log(self, neo4j_store):
+        """write_edge creates a CALLS edge with resolved_by=llm and a RepairLog."""
+        from codemap_lite.agent.icsl_tools import write_edge
+        from codemap_lite.graph.schema import FunctionNode, UnresolvedCallNode
+
+        # Create two temporary functions
+        caller = FunctionNode(
+            id="test_we_caller_001", name="test_caller", signature="void test_caller()",
+            file_path="test_we.cpp", start_line=1, end_line=5, body_hash="aaa",
+        )
+        callee = FunctionNode(
+            id="test_we_callee_001", name="test_callee", signature="void test_callee()",
+            file_path="test_we.cpp", start_line=10, end_line=15, body_hash="bbb",
+        )
+        neo4j_store.create_function(caller)
+        neo4j_store.create_function(callee)
+
+        # Create an UnresolvedCall
+        uc = UnresolvedCallNode(
+            caller_id="test_we_caller_001", call_expression="ptr->callee()",
+            call_file="test_we.cpp", call_line=3, call_type="indirect",
+            source_code_snippet="ptr->callee();", var_name=None, var_type=None,
+            retry_count=0, status="pending",
+        )
+        neo4j_store.create_unresolved_call(uc)
+
+        try:
+            # Write the edge
+            result = write_edge(
+                caller_id="test_we_caller_001",
+                callee_id="test_we_callee_001",
+                call_type="indirect",
+                call_file="test_we.cpp",
+                call_line=3,
+                store=neo4j_store,
+                llm_response="Analysis: ptr is assigned DerivedClass at line 2",
+                reasoning_summary="ptr->callee() dispatches to test_callee via vtable",
+            )
+            assert result["skipped"] is False
+            assert result["edge_created"] is True
+
+            # Verify edge exists
+            assert neo4j_store.edge_exists(
+                "test_we_caller_001", "test_we_callee_001", "test_we.cpp", 3
+            )
+
+            # Verify edge has resolved_by=llm
+            edge = neo4j_store.get_calls_edge(
+                "test_we_caller_001", "test_we_callee_001", "test_we.cpp", 3
+            )
+            assert edge is not None
+            assert edge.resolved_by == "llm"
+            assert edge.call_type == "indirect"
+
+            # Verify RepairLog was created
+            logs = neo4j_store.get_repair_logs(
+                caller_id="test_we_caller_001", callee_id="test_we_callee_001"
+            )
+            assert len(logs) >= 1
+            log = logs[0]
+            assert log.repair_method == "llm"
+            assert log.reasoning_summary == "ptr->callee() dispatches to test_callee via vtable"
+            assert "DerivedClass" in log.llm_response
+
+            # Verify UC was deleted
+            remaining = neo4j_store.get_unresolved_calls(caller_id="test_we_caller_001")
+            uc_at_line3 = [u for u in remaining if u.call_file == "test_we.cpp" and u.call_line == 3]
+            assert len(uc_at_line3) == 0
+
+        finally:
+            # Cleanup
+            neo4j_store.delete_calls_edge("test_we_caller_001", "test_we_callee_001", "test_we.cpp", 3)
+            neo4j_store.delete_repair_logs_for_edge(
+                "test_we_caller_001", "test_we_callee_001", "test_we.cpp:3"
+            )
+            neo4j_store.delete_function("test_we_caller_001")
+            neo4j_store.delete_function("test_we_callee_001")
+
+    def test_write_edge_skips_duplicate(self, neo4j_store):
+        """write_edge returns skipped=True if edge already exists."""
+        from codemap_lite.agent.icsl_tools import write_edge
+        from codemap_lite.graph.schema import CallsEdgeProps, FunctionNode
+
+        caller = FunctionNode(
+            id="test_dup_caller_001", name="dup_caller", signature="void dup_caller()",
+            file_path="test_dup.cpp", start_line=1, end_line=5, body_hash="ccc",
+        )
+        callee = FunctionNode(
+            id="test_dup_callee_001", name="dup_callee", signature="void dup_callee()",
+            file_path="test_dup.cpp", start_line=10, end_line=15, body_hash="ddd",
+        )
+        neo4j_store.create_function(caller)
+        neo4j_store.create_function(callee)
+
+        # Pre-create the edge
+        props = CallsEdgeProps(
+            resolved_by="symbol_table", call_type="direct",
+            call_file="test_dup.cpp", call_line=3,
+        )
+        neo4j_store.create_calls_edge("test_dup_caller_001", "test_dup_callee_001", props)
+
+        try:
+            result = write_edge(
+                caller_id="test_dup_caller_001",
+                callee_id="test_dup_callee_001",
+                call_type="indirect",
+                call_file="test_dup.cpp",
+                call_line=3,
+                store=neo4j_store,
+            )
+            assert result["skipped"] is True
+            assert "already exists" in result["reason"]
+        finally:
+            neo4j_store.delete_calls_edge("test_dup_caller_001", "test_dup_callee_001", "test_dup.cpp", 3)
+            neo4j_store.delete_function("test_dup_caller_001")
+            neo4j_store.delete_function("test_dup_callee_001")
+
+    def test_write_edge_rejects_invalid_call_type(self, neo4j_store):
+        """write_edge raises ValueError for invalid call_type."""
+        from codemap_lite.agent.icsl_tools import write_edge
+
+        with pytest.raises(ValueError, match="call_type must be one of"):
+            write_edge(
+                caller_id="x", callee_id="y", call_type="unknown",
+                call_file="z.cpp", call_line=1, store=neo4j_store,
+            )
+
+    def test_write_edge_returns_error_for_nonexistent_caller(self, neo4j_store):
+        """write_edge returns error dict when caller doesn't exist."""
+        from codemap_lite.agent.icsl_tools import write_edge
+
+        result = write_edge(
+            caller_id="nonexistent_caller_xyz", callee_id="nonexistent_callee_xyz",
+            call_type="indirect", call_file="x.cpp", call_line=1, store=neo4j_store,
+        )
+        assert "error" in result
+        assert "not found" in result["error"].lower()
+
+
+# ---------------------------------------------------------------------------
+# §5 Review Cascade — 4-step flow (architecture.md §5 审阅交互)
+# ---------------------------------------------------------------------------
+
+
+class TestSection5_ReviewCascade:
+    """Test the review cascade against real Neo4j: delete edge → delete RepairLog → regen UC → reset SP."""
+
+    def test_review_incorrect_cascade(self, neo4j_store):
+        """verdict=incorrect triggers full 4-step cascade."""
+        from codemap_lite.graph.schema import (
+            CallsEdgeProps, FunctionNode, RepairLogNode, SourcePointNode, UnresolvedCallNode,
+        )
+        from datetime import datetime, timezone
+
+        # Setup: create caller (as source point), callee, edge, RepairLog
+        caller = FunctionNode(
+            id="test_rv_caller_001", name="rv_caller", signature="void rv_caller()",
+            file_path="test_rv.cpp", start_line=1, end_line=10, body_hash="eee",
+        )
+        callee = FunctionNode(
+            id="test_rv_callee_001", name="rv_callee", signature="void rv_callee()",
+            file_path="test_rv.cpp", start_line=20, end_line=30, body_hash="fff",
+        )
+        neo4j_store.create_function(caller)
+        neo4j_store.create_function(callee)
+
+        # Create SourcePoint for the caller
+        sp = SourcePointNode(
+            id="test_rv_caller_001", function_id="test_rv_caller_001",
+            entry_point_kind="entry_point", reason="test", status="complete",
+        )
+        neo4j_store.create_source_point(sp)
+
+        # Create CALLS edge (LLM-resolved)
+        props = CallsEdgeProps(
+            resolved_by="llm", call_type="indirect",
+            call_file="test_rv.cpp", call_line=5,
+        )
+        neo4j_store.create_calls_edge("test_rv_caller_001", "test_rv_callee_001", props)
+
+        # Create RepairLog
+        repair_log = RepairLogNode(
+            caller_id="test_rv_caller_001", callee_id="test_rv_callee_001",
+            call_location="test_rv.cpp:5", repair_method="llm",
+            llm_response="test", timestamp=datetime.now(timezone.utc).isoformat(),
+            reasoning_summary="test reasoning",
+        )
+        neo4j_store.create_repair_log(repair_log)
+
+        try:
+            # Verify setup
+            assert neo4j_store.edge_exists("test_rv_caller_001", "test_rv_callee_001", "test_rv.cpp", 5)
+            logs = neo4j_store.get_repair_logs(caller_id="test_rv_caller_001")
+            assert len(logs) >= 1
+
+            # Simulate the cascade (same logic as review.py verdict=incorrect)
+            # Step 1: Delete edge
+            deleted = neo4j_store.delete_calls_edge(
+                "test_rv_caller_001", "test_rv_callee_001", "test_rv.cpp", 5
+            )
+            assert deleted is True
+
+            # Step 2: Delete RepairLog
+            neo4j_store.delete_repair_logs_for_edge(
+                "test_rv_caller_001", "test_rv_callee_001", "test_rv.cpp:5"
+            )
+
+            # Step 3: Regenerate UC
+            uc = UnresolvedCallNode(
+                caller_id="test_rv_caller_001", call_expression="ptr->callee()",
+                call_file="test_rv.cpp", call_line=5, call_type="indirect",
+                source_code_snippet="", var_name=None, var_type=None,
+                retry_count=0, status="pending",
+            )
+            neo4j_store.create_unresolved_call(uc)
+
+            # Step 4: Reset SourcePoint status
+            neo4j_store.update_source_point_status("test_rv_caller_001", "pending", force_reset=True)
+
+            # Verify cascade results
+            # Edge gone
+            assert not neo4j_store.edge_exists("test_rv_caller_001", "test_rv_callee_001", "test_rv.cpp", 5)
+            # RepairLog gone
+            logs_after = neo4j_store.get_repair_logs(
+                caller_id="test_rv_caller_001", callee_id="test_rv_callee_001",
+                call_location="test_rv.cpp:5",
+            )
+            assert len(logs_after) == 0
+            # UC regenerated
+            ucs = neo4j_store.get_unresolved_calls(caller_id="test_rv_caller_001")
+            uc_at_5 = [u for u in ucs if u.call_file == "test_rv.cpp" and u.call_line == 5]
+            assert len(uc_at_5) == 1
+            assert uc_at_5[0].retry_count == 0
+            assert uc_at_5[0].status == "pending"
+            # SP reset to pending
+            sp_after = neo4j_store.get_source_point("test_rv_caller_001")
+            assert sp_after is not None
+            assert sp_after.status == "pending"
+
+        finally:
+            # Cleanup
+            neo4j_store.delete_calls_edge("test_rv_caller_001", "test_rv_callee_001", "test_rv.cpp", 5)
+            neo4j_store.delete_repair_logs_for_edge(
+                "test_rv_caller_001", "test_rv_callee_001", "test_rv.cpp:5"
+            )
+            neo4j_store.delete_unresolved_call("test_rv_caller_001", "test_rv.cpp", 5)
+            neo4j_store.delete_function("test_rv_caller_001")
+            neo4j_store.delete_function("test_rv_callee_001")
+            # Delete SourcePoint
+            with neo4j_store._get_driver().session() as session:
+                session.run("MATCH (s:SourcePoint {id: $id}) DETACH DELETE s", id="test_rv_caller_001")
+
+
