@@ -538,6 +538,69 @@ def stage_4_backend_api(args: argparse.Namespace, neo_store: Neo4jGraphStore, so
             errors.append("stats missing total_feedback field (§8)")
         if "total_repair_logs" not in stats:
             errors.append("stats missing total_repair_logs field (§8)")
+        # §8: unresolved_by_category must have 5 keys
+        by_cat = stats.get("unresolved_by_category", {})
+        expected_cats = {"gate_failed", "agent_error", "subprocess_crash", "subprocess_timeout", "none"}
+        missing_cats = expected_cats - set(by_cat.keys())
+        if missing_cats:
+            errors.append(f"stats.unresolved_by_category missing keys: {missing_cats}")
+        details["unresolved_by_category_keys"] = sorted(by_cat.keys())
+        # §8: calls_by_resolved_by must have 5 keys
+        by_rb = stats.get("calls_by_resolved_by", {})
+        expected_rb = {"symbol_table", "signature", "dataflow", "context", "llm"}
+        missing_rb = expected_rb - set(by_rb.keys())
+        if missing_rb:
+            errors.append(f"stats.calls_by_resolved_by missing keys: {missing_rb}")
+        details["calls_by_resolved_by_keys"] = sorted(by_rb.keys())
+
+    # §8: GET /api/v1/source-points/{id}/reachable
+    if source_points:
+        sp_id = source_points[0].function_id
+        reachable_resp = _http_get(f"{base_url}/api/v1/source-points/{sp_id}/reachable")
+        if reachable_resp["ok"]:
+            rb = json.loads(reachable_resp["body"])
+            if "nodes" not in rb or "edges" not in rb or "unresolved" not in rb:
+                errors.append("/source-points/{id}/reachable missing nodes/edges/unresolved")
+            details["reachable_ok"] = True
+            details["reachable_nodes"] = len(rb.get("nodes", []))
+        else:
+            # 404 is acceptable if the function doesn't exist in Neo4j
+            details["reachable_ok"] = "function_not_in_neo4j"
+
+    # §8: POST /api/v1/analyze (should return 202)
+    analyze_resp = _http_get(
+        f"{base_url}/api/v1/analyze",
+        method="POST",
+        body=json.dumps({"mode": "full"}),
+    )
+    # Without settings wired, it may fail — but the endpoint should exist
+    details["analyze_endpoint_exists"] = analyze_resp.get("status") is not None or analyze_resp["ok"]
+
+    # §8: POST /api/v1/analyze/repair (should return 202)
+    repair_resp = _http_get(
+        f"{base_url}/api/v1/analyze/repair",
+        method="POST",
+        body=json.dumps({"source_ids": []}),
+    )
+    details["analyze_repair_endpoint_exists"] = repair_resp.get("status") is not None or repair_resp["ok"]
+
+    # §8: GET /api/v1/repair-logs with filters
+    logs_resp = _http_get(f"{base_url}/api/v1/repair-logs?caller=nonexistent_id")
+    if logs_resp["ok"]:
+        logs_body = json.loads(logs_resp["body"])
+        if logs_body.get("total") != 0:
+            errors.append(f"repair-logs?caller=nonexistent should return 0, got {logs_body.get('total')}")
+        details["repair_logs_filter_ok"] = True
+    else:
+        errors.append(f"/repair-logs?caller= filter failed: {logs_resp.get('error')}")
+
+    # §8: GET /api/v1/unresolved-calls with ?status= filter
+    uc_resp = _http_get(f"{base_url}/api/v1/unresolved-calls?status=pending")
+    if uc_resp["ok"]:
+        uc_body = json.loads(uc_resp["body"])
+        details["uc_status_filter_ok"] = "total" in uc_body and "items" in uc_body
+    else:
+        errors.append(f"/unresolved-calls?status= filter failed: {uc_resp.get('error')}")
 
     if errors:
         result.status = "FAIL"
@@ -1025,6 +1088,102 @@ def stage_7_review_workflow(args: argparse.Namespace, port: int, neo_store: Neo4
             }),
         )
         details["edge_create_404_on_bad_callee"] = not bad_resp["ok"]
+
+    # 7g: Test GET /reviews returns {total, items} with our reviews
+    reviews_resp = _http_get(f"{base_url}/api/v1/reviews")
+    if reviews_resp["ok"]:
+        reviews_body = json.loads(reviews_resp["body"])
+        if "total" not in reviews_body or "items" not in reviews_body:
+            errors.append("GET /reviews missing {total, items} pagination")
+        else:
+            details["reviews_total"] = reviews_body["total"]
+            # We created at least 2 reviews (correct + incorrect)
+            if reviews_body["total"] < 2:
+                errors.append(f"Expected at least 2 reviews, got {reviews_body['total']}")
+    else:
+        errors.append(f"GET /reviews failed: {reviews_resp.get('error')}")
+
+    # 7h: Test PUT /reviews/{id} — update comment
+    if reviews_resp["ok"] and reviews_body.get("items"):
+        review_id = reviews_body["items"][0]["id"]
+        put_resp = _http_get(
+            f"{base_url}/api/v1/reviews/{review_id}",
+            method="PUT",
+            body=json.dumps({"comment": "e2e test update"}),
+        )
+        details["review_put_ok"] = put_resp["ok"]
+        if put_resp["ok"]:
+            put_body = json.loads(put_resp["body"])
+            if put_body.get("comment") != "e2e test update":
+                errors.append(f"PUT /reviews/{review_id} comment not updated")
+        else:
+            errors.append(f"PUT /reviews/{review_id} failed: {put_resp.get('error')}")
+
+        # 7i: Test DELETE /reviews/{id}
+        del_resp = _http_get(
+            f"{base_url}/api/v1/reviews/{review_id}",
+            method="DELETE",
+        )
+        # DELETE returns 204 No Content — urllib treats this as success
+        details["review_delete_ok"] = del_resp["ok"]
+
+        # Verify it's gone (GET should 404)
+        get_deleted = _http_get(f"{base_url}/api/v1/reviews/{review_id}")
+        details["review_deleted_404"] = not get_deleted["ok"]
+
+    # 7j: Test POST /feedback directly (§8: manual counter-example submission)
+    feedback_post_resp = _http_get(
+        f"{base_url}/api/v1/feedback",
+        method="POST",
+        body=json.dumps({
+            "call_context": "/e2e_test/manual.cpp:42",
+            "wrong_target": "fake_wrong_fn",
+            "correct_target": "fake_correct_fn",
+            "pattern": f"e2e_test_pattern_{ts_suffix}",
+        }),
+    )
+    if feedback_post_resp["ok"]:
+        fb_body = json.loads(feedback_post_resp["body"])
+        details["feedback_post_ok"] = True
+        details["feedback_deduplicated"] = fb_body.get("deduplicated", None)
+        details["feedback_total_after"] = fb_body.get("total", None)
+    else:
+        errors.append(f"POST /feedback failed: {feedback_post_resp.get('error')}")
+
+    # 7k: Test edge validation — invalid resolved_by rejected (422)
+    if all_functions and len(all_functions) >= 2:
+        bad_rb_resp = _http_get(
+            f"{base_url}/api/v1/edges",
+            method="POST",
+            body=json.dumps({
+                "caller_id": all_functions[0].id,
+                "callee_id": all_functions[1].id,
+                "resolved_by": "INVALID_VALUE",
+                "call_type": "direct",
+                "call_file": "/e2e_validate/bad_rb.cpp",
+                "call_line": 1,
+            }),
+        )
+        details["edge_invalid_resolved_by_rejected"] = not bad_rb_resp["ok"]
+        if bad_rb_resp["ok"]:
+            errors.append("POST /edges accepted invalid resolved_by — should reject")
+
+        # Invalid call_type rejected
+        bad_ct_resp = _http_get(
+            f"{base_url}/api/v1/edges",
+            method="POST",
+            body=json.dumps({
+                "caller_id": all_functions[0].id,
+                "callee_id": all_functions[1].id,
+                "resolved_by": "llm",
+                "call_type": "INVALID_TYPE",
+                "call_file": "/e2e_validate/bad_ct.cpp",
+                "call_line": 1,
+            }),
+        )
+        details["edge_invalid_call_type_rejected"] = not bad_ct_resp["ok"]
+        if bad_ct_resp["ok"]:
+            errors.append("POST /edges accepted invalid call_type — should reject")
 
     if errors:
         result.status = "FAIL"
