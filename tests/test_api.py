@@ -127,10 +127,10 @@ class TestCallersCalleesEndpoint:
         store.create_function(self.fn_c)
         # a -> b -> c
         store.create_calls_edge("a", "b", CallsEdgeProps(
-            resolved_by="static", call_type="direct", call_file="f.py", call_line=2,
+            resolved_by="symbol_table", call_type="direct", call_file="f.py", call_line=2,
         ))
         store.create_calls_edge("b", "c", CallsEdgeProps(
-            resolved_by="static", call_type="direct", call_file="f.py", call_line=6,
+            resolved_by="symbol_table", call_type="direct", call_file="f.py", call_line=6,
         ))
 
     def test_get_callers(self) -> None:
@@ -692,7 +692,7 @@ class TestReviewEndpoint:
         resp = client.post("/api/v1/edges", json={
             "caller_id": "x",
             "callee_id": "y",
-            "resolved_by": "manual",
+            "resolved_by": "llm",
             "call_type": "direct",
             "call_file": "f.py",
             "call_line": 2,
@@ -710,7 +710,7 @@ class TestReviewEndpoint:
         resp = client.post("/api/v1/edges", json={
             "caller_id": "nonexistent",
             "callee_id": "y",
-            "resolved_by": "manual",
+            "resolved_by": "llm",
             "call_type": "direct",
             "call_file": "f.py",
             "call_line": 2,
@@ -728,7 +728,7 @@ class TestReviewEndpoint:
         resp = client.post("/api/v1/edges", json={
             "caller_id": "x",
             "callee_id": "nonexistent",
-            "resolved_by": "manual",
+            "resolved_by": "llm",
             "call_type": "direct",
             "call_file": "f.py",
             "call_line": 2,
@@ -1811,7 +1811,7 @@ class TestEdgeCreation:
         body = {
             "caller_id": "fn_a",
             "callee_id": "fn_b",
-            "resolved_by": "manual",
+            "resolved_by": "llm",
             "call_type": "direct",
             "call_file": "x.c",
             "call_line": 3,
@@ -1853,7 +1853,7 @@ class TestEdgeCreation:
         resp = client.post("/api/v1/edges", json={
             "caller_id": "fn_a",
             "callee_id": "fn_b",
-            "resolved_by": "manual",
+            "resolved_by": "llm",
             "call_type": "indirect",
             "call_file": "x.c",
             "call_line": 3,
@@ -1876,7 +1876,7 @@ class TestEdgeCreation:
         resp = client.post("/api/v1/edges", json={
             "caller_id": "nonexistent",
             "callee_id": "fn_b",
-            "resolved_by": "manual",
+            "resolved_by": "llm",
             "call_type": "direct",
             "call_file": "x.c",
             "call_line": 3,
@@ -1894,7 +1894,7 @@ class TestEdgeCreation:
         resp = client.post("/api/v1/edges", json={
             "caller_id": "fn_a",
             "callee_id": "nonexistent",
-            "resolved_by": "manual",
+            "resolved_by": "llm",
             "call_type": "direct",
             "call_file": "x.c",
             "call_line": 3,

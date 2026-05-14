@@ -613,18 +613,8 @@ async def test_per_gap_retry_independence(tmp_path):
         attempt_count["n"] += 1
         if attempt_count["n"] == 1:
             # Simulate gap_1 being resolved after first attempt
-            store._unresolved_calls["gap_1"] = UnresolvedCallNode(
-                caller_id="src_001",
-                call_expression="fn_ptr(x)",
-                call_file="foo.cpp",
-                call_line=7,
-                call_type="indirect",
-                source_code_snippet="fn_ptr(x);",
-                var_name="fn_ptr",
-                var_type="void (*)(int)",
-                id="gap_1",
-                status="resolved",
-            )
+            # Per architecture.md §3: resolved gaps are DELETED, not status-changed
+            del store._unresolved_calls["gap_1"]
         return False
 
     orchestrator._check_gate = mock_gate
@@ -636,9 +626,9 @@ async def test_per_gap_retry_independence(tmp_path):
     gap2_final = store._unresolved_calls["gap_2"]
     assert gap2_final.retry_count == 3
     assert gap2_final.status == "unresolvable"
-    # gap_1 was resolved after attempt 1, so it only got stamped once
-    gap1_final = store._unresolved_calls["gap_1"]
-    assert gap1_final.retry_count == 0  # resolved, never stamped
+    # gap_1 was resolved (deleted) after attempt 1 — per architecture.md §3,
+    # resolved gaps are removed from the store, not status-changed
+    assert "gap_1" not in store._unresolved_calls
 
 
 @pytest.mark.asyncio

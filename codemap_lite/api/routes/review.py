@@ -223,7 +223,7 @@ def create_review_router() -> APIRouter:
             # architecture.md §5 step 4: "触发 Agent 重新修复该 source 点（异步）"
             sp = store.get_source_point(body.caller_id)
             if sp is not None and sp.status != "pending":
-                store.update_source_point_status(body.caller_id, "pending")
+                store.update_source_point_status(body.caller_id, "pending", force_reset=True)
 
             # Step 4: Trigger async repair
             settings = getattr(request.app.state, "settings", None)
@@ -343,7 +343,7 @@ def create_review_router() -> APIRouter:
         # (same ordering as review verdict=incorrect).
         sp = store.get_source_point(body.caller_id)
         if sp is not None and sp.status != "pending":
-            store.update_source_point_status(body.caller_id, "pending")
+            store.update_source_point_status(body.caller_id, "pending", force_reset=True)
 
         # Step 4: Trigger async repair (architecture.md §5 line 328)
         settings = getattr(request.app.state, "settings", None)

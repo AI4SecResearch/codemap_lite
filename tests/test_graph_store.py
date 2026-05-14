@@ -75,7 +75,7 @@ class TestCallsEdges:
         store.create_function(sample_function_b)
 
         props = CallsEdgeProps(
-            resolved_by="static",
+            resolved_by="symbol_table",
             call_type="direct",
             call_file="src/main.py",
             call_line=12,
@@ -96,7 +96,7 @@ class TestCallsEdges:
         store.create_function(sample_function_b)
 
         props = CallsEdgeProps(
-            resolved_by="static",
+            resolved_by="symbol_table",
             call_type="direct",
             call_file="src/main.py",
             call_line=12,
@@ -138,7 +138,7 @@ class TestUnresolvedCalls:
             var_type=None,
             candidates=[],
             retry_count=1,
-            status="resolved",
+            status="unresolvable",
         )
         store.create_unresolved_call(unresolved1)
         store.create_unresolved_call(unresolved2)
@@ -171,7 +171,7 @@ class TestDeleteOperations:
         store.create_function(sample_function_b)
 
         props = CallsEdgeProps(
-            resolved_by="static",
+            resolved_by="symbol_table",
             call_type="direct",
             call_file="src/main.py",
             call_line=12,
@@ -203,7 +203,7 @@ class TestReachableSubgraph:
         store.create_function(fn_c)
 
         props = CallsEdgeProps(
-            resolved_by="static", call_type="direct",
+            resolved_by="symbol_table", call_type="direct",
             call_file="f.py", call_line=2,
         )
         store.create_calls_edge(fn_a.id, fn_b.id, props)
@@ -260,7 +260,7 @@ class TestReachableSubgraph:
         store.create_function(fn_c)
 
         props = CallsEdgeProps(
-            resolved_by="static", call_type="direct",
+            resolved_by="symbol_table", call_type="direct",
             call_file="f.py", call_line=2,
         )
         store.create_calls_edge(fn_a.id, fn_b.id, props)
@@ -531,7 +531,7 @@ class TestAgentSideGapOperations:
             self._make_gap(caller_id=callee.id, call_line=8, status="pending")
         )
         store.create_unresolved_call(
-            self._make_gap(caller_id=callee.id, call_line=9, status="resolved")
+            self._make_gap(caller_id=callee.id, call_line=9, status="unresolvable")
         )
 
         pending = store.get_pending_gaps_for_source(source.id)
@@ -547,7 +547,7 @@ class TestAgentSideGapOperations:
         )
         store.create_function(source)
         store.create_unresolved_call(
-            self._make_gap(caller_id=source.id, status="resolved")
+            self._make_gap(caller_id=source.id, status="unresolvable")
         )
         assert store.get_pending_gaps_for_source(source.id) == []
 
@@ -1149,55 +1149,26 @@ def test_get_pending_gaps_excludes_non_pending(store):
     assert pending[0].id == "gap_pending"
 
 
-def test_count_stats_unknown_status_bucketed_as_pending(store):
+def test_count_stats_invalid_status_rejected_at_construction(store):
     """architecture.md §4: UC status ∈ {pending, unresolvable}.
 
-    If an UnresolvedCall has an unexpected status value (e.g. from a bug
-    or migration), count_stats must bucket it into 'pending' rather than
-    creating a new key. This ensures the frontend can rely on exactly
-    two status keys without null-checking unknown values.
+    With schema validation in place, invalid status values are rejected
+    at UnresolvedCallNode construction time — they can never enter the store.
     """
-    store.create_function(FunctionNode(
-        id="f1", signature="void f()", name="f",
-        file_path="a.cpp", start_line=1, end_line=10, body_hash="h1",
-    ))
-    # Normal pending gap
-    store.create_unresolved_call(UnresolvedCallNode(
-        id="gap_normal",
-        caller_id="f1",
-        call_expression="a()",
-        call_file="a.cpp",
-        call_line=3,
-        call_type="indirect",
-        source_code_snippet="a();",
-        var_name=None,
-        var_type=None,
-        candidates=["A"],
-        status="pending",
-    ))
-    # Gap with invalid status
-    store.create_unresolved_call(UnresolvedCallNode(
-        id="gap_weird",
-        caller_id="f1",
-        call_expression="b()",
-        call_file="a.cpp",
-        call_line=7,
-        call_type="indirect",
-        source_code_snippet="b();",
-        var_name=None,
-        var_type=None,
-        candidates=["B"],
-        status="some_invalid_status",
-    ))
-
-    stats = store.count_stats()
-    by_status = stats["unresolved_by_status"]
-    # Only "pending" and "unresolvable" keys should exist
-    assert set(by_status.keys()) == {"pending", "unresolvable"}, (
-        f"Expected only {{pending, unresolvable}} keys, got {set(by_status.keys())}"
-    )
-    # The invalid status should be counted as "pending"
-    assert by_status["pending"] == 2
+    with pytest.raises(ValueError):
+        UnresolvedCallNode(
+            id="gap_weird",
+            caller_id="f1",
+            call_expression="b()",
+            call_file="a.cpp",
+            call_line=7,
+            call_type="indirect",
+            source_code_snippet="b();",
+            var_name=None,
+            var_type=None,
+            candidates=["B"],
+            status="some_invalid_status",
+        )
 
 
 def test_get_calls_edge_returns_props(store):
@@ -1257,3 +1228,261 @@ def test_delete_calls_edge_returns_false_for_nonexistent(store):
     """delete_calls_edge must return False when no matching edge exists."""
     deleted = store.delete_calls_edge("no_such", "no_such", "x.cpp", 99)
     assert deleted is False
+
+
+# ============================================================
+# §4 Schema Validation: enum constraints on node/edge fields
+# ============================================================
+
+
+class TestUnresolvedCallStatusEnum:
+    """architecture.md §4: UnresolvedCall.status ∈ {"pending", "unresolvable"}."""
+
+    def test_valid_statuses_accepted(self):
+        """Both 'pending' and 'unresolvable' must be accepted."""
+        uc_pending = UnresolvedCallNode(
+            caller_id="f1", call_expression="x()", call_file="a.cpp",
+            call_line=1, call_type="indirect", source_code_snippet="x();",
+            var_name=None, var_type=None, status="pending",
+        )
+        assert uc_pending.status == "pending"
+
+        uc_unresolvable = UnresolvedCallNode(
+            caller_id="f1", call_expression="x()", call_file="a.cpp",
+            call_line=2, call_type="indirect", source_code_snippet="x();",
+            var_name=None, var_type=None, status="unresolvable",
+        )
+        assert uc_unresolvable.status == "unresolvable"
+
+    def test_invalid_status_rejected(self):
+        """Invalid status values must raise ValueError at construction time."""
+        with pytest.raises(ValueError):
+            UnresolvedCallNode(
+                caller_id="f1", call_expression="x()", call_file="a.cpp",
+                call_line=1, call_type="indirect", source_code_snippet="x();",
+                var_name=None, var_type=None, status="running",
+            )
+
+    def test_empty_status_rejected(self):
+        """Empty string is not a valid status."""
+        with pytest.raises(ValueError):
+            UnresolvedCallNode(
+                caller_id="f1", call_expression="x()", call_file="a.cpp",
+                call_line=1, call_type="indirect", source_code_snippet="x();",
+                var_name=None, var_type=None, status="",
+            )
+
+
+class TestCallsEdgeResolvedByEnum:
+    """architecture.md §4: CALLS.resolved_by ∈
+    {"symbol_table", "signature", "dataflow", "context", "llm"}."""
+
+    def test_valid_resolved_by_accepted(self):
+        for rb in ("symbol_table", "signature", "dataflow", "context", "llm"):
+            props = CallsEdgeProps(
+                resolved_by=rb, call_type="direct",
+                call_file="a.cpp", call_line=1,
+            )
+            assert props.resolved_by == rb
+
+    def test_invalid_resolved_by_rejected(self):
+        """Invalid resolved_by must raise ValueError."""
+        with pytest.raises(ValueError):
+            CallsEdgeProps(
+                resolved_by="magic", call_type="direct",
+                call_file="a.cpp", call_line=1,
+            )
+
+    def test_empty_resolved_by_rejected(self):
+        with pytest.raises(ValueError):
+            CallsEdgeProps(
+                resolved_by="", call_type="direct",
+                call_file="a.cpp", call_line=1,
+            )
+
+
+class TestCallsEdgeCallTypeEnum:
+    """architecture.md §4: CALLS.call_type ∈ {"direct", "indirect", "virtual"}."""
+
+    def test_valid_call_types_accepted(self):
+        for ct in ("direct", "indirect", "virtual"):
+            props = CallsEdgeProps(
+                resolved_by="symbol_table", call_type=ct,
+                call_file="a.cpp", call_line=1,
+            )
+            assert props.call_type == ct
+
+    def test_invalid_call_type_rejected(self):
+        with pytest.raises(ValueError):
+            CallsEdgeProps(
+                resolved_by="symbol_table", call_type="callback",
+                call_file="a.cpp", call_line=1,
+            )
+
+
+class TestSourcePointStatusTransitions:
+    """architecture.md §4: SourcePoint status transitions are forward-only.
+
+    Valid: pending → running → complete | partial_complete.
+    Invalid: running → pending, complete → running, etc.
+    """
+
+    def test_forward_transitions_accepted(self, store):
+        """pending→running→complete is valid."""
+        from codemap_lite.graph.schema import SourcePointNode
+
+        sp = SourcePointNode(
+            id="sp1", function_id="f1", entry_point_kind="api",
+            reason="handler", status="pending",
+        )
+        store.create_source_point(sp)
+
+        store.update_source_point_status("sp1", "running")
+        assert store.get_source_point("sp1").status == "running"
+
+        store.update_source_point_status("sp1", "complete")
+        assert store.get_source_point("sp1").status == "complete"
+
+    def test_forward_to_partial_complete(self, store):
+        """pending→running→partial_complete is valid."""
+        from codemap_lite.graph.schema import SourcePointNode
+
+        sp = SourcePointNode(
+            id="sp2", function_id="f2", entry_point_kind="api",
+            reason="handler", status="pending",
+        )
+        store.create_source_point(sp)
+        store.update_source_point_status("sp2", "running")
+        store.update_source_point_status("sp2", "partial_complete")
+        assert store.get_source_point("sp2").status == "partial_complete"
+
+    def test_backward_transition_rejected(self, store):
+        """running→pending must raise ValueError (backward transition)."""
+        from codemap_lite.graph.schema import SourcePointNode
+
+        sp = SourcePointNode(
+            id="sp3", function_id="f3", entry_point_kind="api",
+            reason="handler", status="pending",
+        )
+        store.create_source_point(sp)
+        store.update_source_point_status("sp3", "running")
+
+        with pytest.raises(ValueError):
+            store.update_source_point_status("sp3", "pending")
+
+    def test_complete_to_running_rejected(self, store):
+        """complete→running must raise ValueError."""
+        from codemap_lite.graph.schema import SourcePointNode
+
+        sp = SourcePointNode(
+            id="sp4", function_id="f4", entry_point_kind="api",
+            reason="handler", status="pending",
+        )
+        store.create_source_point(sp)
+        store.update_source_point_status("sp4", "running")
+        store.update_source_point_status("sp4", "complete")
+
+        with pytest.raises(ValueError):
+            store.update_source_point_status("sp4", "running")
+
+    def test_invalid_status_value_rejected(self, store):
+        """Unknown status value must raise ValueError."""
+        from codemap_lite.graph.schema import SourcePointNode
+
+        sp = SourcePointNode(
+            id="sp5", function_id="f5", entry_point_kind="api",
+            reason="handler", status="pending",
+        )
+        store.create_source_point(sp)
+
+        with pytest.raises(ValueError):
+            store.update_source_point_status("sp5", "cancelled")
+
+    def test_pending_reset_allowed_from_any_state(self, store):
+        """architecture.md §7 cascade: invalidate_file resets SourcePoint to
+        'pending' regardless of current state. This is the ONLY backward
+        transition allowed — it's an explicit reset, not a normal transition.
+
+        The store must accept a force_reset=True parameter for this case.
+        """
+        from codemap_lite.graph.schema import SourcePointNode
+
+        sp = SourcePointNode(
+            id="sp6", function_id="f6", entry_point_kind="api",
+            reason="handler", status="pending",
+        )
+        store.create_source_point(sp)
+        store.update_source_point_status("sp6", "running")
+        store.update_source_point_status("sp6", "complete")
+
+        # Normal backward transition should fail
+        with pytest.raises(ValueError):
+            store.update_source_point_status("sp6", "pending")
+
+        # But force_reset=True (used by cascade invalidation) must succeed
+        store.update_source_point_status("sp6", "pending", force_reset=True)
+        assert store.get_source_point("sp6").status == "pending"
+
+
+class TestUnresolvedCallReasonFormat:
+    """architecture.md §3: last_attempt_reason format is
+    '<category>: <summary>' where category ∈
+    {gate_failed, agent_error, subprocess_timeout, subprocess_crash},
+    and total length ≤ 200 chars."""
+
+    def test_valid_reasons_accepted(self, store):
+        """All valid category prefixes must be accepted."""
+        from codemap_lite.graph.schema import SourcePointNode
+
+        for i, cat in enumerate([
+            "gate_failed", "agent_error",
+            "subprocess_timeout", "subprocess_crash",
+        ]):
+            uc = UnresolvedCallNode(
+                id=f"uc_reason_{i}",
+                caller_id="f1", call_expression="x()", call_file="a.cpp",
+                call_line=i + 10, call_type="indirect",
+                source_code_snippet="x();", var_name=None, var_type=None,
+                status="pending", retry_count=1,
+                last_attempt_timestamp="2026-05-14T00:00:00Z",
+                last_attempt_reason=f"{cat}: some detail here",
+            )
+            store.create_unresolved_call(uc)
+            store.update_unresolved_call_retry_state(
+                uc.id, "2026-05-14T01:00:00Z", f"{cat}: updated detail"
+            )
+            updated = store._unresolved_calls[uc.id]
+            assert updated.last_attempt_reason == f"{cat}: updated detail"
+
+    def test_invalid_category_rejected(self, store):
+        """Reason with invalid category prefix must raise ValueError."""
+        uc = UnresolvedCallNode(
+            id="uc_bad_reason",
+            caller_id="f1", call_expression="x()", call_file="a.cpp",
+            call_line=100, call_type="indirect",
+            source_code_snippet="x();", var_name=None, var_type=None,
+            status="pending",
+        )
+        store.create_unresolved_call(uc)
+
+        with pytest.raises(ValueError):
+            store.update_unresolved_call_retry_state(
+                uc.id, "2026-05-14T00:00:00Z", "unknown_cat: bad"
+            )
+
+    def test_reason_exceeding_200_chars_rejected(self, store):
+        """Reason longer than 200 characters must raise ValueError."""
+        uc = UnresolvedCallNode(
+            id="uc_long_reason",
+            caller_id="f1", call_expression="x()", call_file="a.cpp",
+            call_line=101, call_type="indirect",
+            source_code_snippet="x();", var_name=None, var_type=None,
+            status="pending",
+        )
+        store.create_unresolved_call(uc)
+
+        long_reason = "gate_failed: " + "x" * 200  # > 200 total
+        with pytest.raises(ValueError):
+            store.update_unresolved_call_retry_state(
+                uc.id, "2026-05-14T00:00:00Z", long_reason
+            )

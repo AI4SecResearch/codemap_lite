@@ -12,6 +12,9 @@ from codemap_lite.graph.schema import (
     RepairLogNode,
     SourcePointNode,
     UnresolvedCallNode,
+    VALID_REASON_CATEGORIES,
+    VALID_SOURCE_POINT_STATUSES,
+    _SOURCE_POINT_TRANSITIONS,
 )
 
 
@@ -98,7 +101,7 @@ class GraphStore(Protocol):
 
     def get_source_point(self, source_id: str) -> SourcePointNode | None: ...
 
-    def update_source_point_status(self, source_id: str, status: str) -> None: ...
+    def update_source_point_status(self, source_id: str, status: str, force_reset: bool = False) -> None: ...
 
     def reset_unresolvable_gaps(self) -> None: ...
 
@@ -275,7 +278,27 @@ class InMemoryGraphStore:
         architecture.md §3 Retry 审计字段: each time Orchestrator bumps
         retry_count, it must record when + why so the frontend GapDetail
         can surface the last failed attempt without trawling JSONL logs.
+
+        Validates reason format: '<category>: <summary>', ≤200 chars,
+        category ∈ {gate_failed, agent_error, subprocess_timeout, subprocess_crash}.
         """
+        # Validate reason format
+        if len(reason) > 200:
+            raise ValueError(
+                f"last_attempt_reason must be ≤200 chars, got {len(reason)}"
+            )
+        colon_idx = reason.find(": ")
+        if colon_idx == -1:
+            raise ValueError(
+                f"last_attempt_reason must be '<category>: <summary>', got '{reason}'"
+            )
+        category = reason[:colon_idx]
+        if category not in VALID_REASON_CATEGORIES:
+            raise ValueError(
+                f"last_attempt_reason category must be one of "
+                f"{sorted(VALID_REASON_CATEGORIES)}, got '{category}'"
+            )
+
         existing = self._unresolved_calls.get(call_id)
         if existing is None:
             return
@@ -379,14 +402,31 @@ class InMemoryGraphStore:
         """Retrieve a SourcePoint by id."""
         return self._source_points.get(source_id)
 
-    def update_source_point_status(self, source_id: str, status: str) -> None:
+    def update_source_point_status(self, source_id: str, status: str, force_reset: bool = False) -> None:
         """Update SourcePoint.status (architecture.md §3 门禁机制).
 
         Valid transitions: pending → running → complete | partial_complete.
+        Backward transitions raise ValueError unless force_reset=True
+        (used by cascade invalidation to reset to 'pending').
         """
+        if status not in VALID_SOURCE_POINT_STATUSES:
+            raise ValueError(
+                f"SourcePoint.status must be one of {sorted(VALID_SOURCE_POINT_STATUSES)}, "
+                f"got '{status}'"
+            )
         existing = self._source_points.get(source_id)
         if existing is None:
             return
+        if not force_reset:
+            # Same-state is idempotent (no-op)
+            if status == existing.status:
+                return
+            allowed = _SOURCE_POINT_TRANSITIONS.get(existing.status, frozenset())
+            if status not in allowed:
+                raise ValueError(
+                    f"Invalid SourcePoint transition: '{existing.status}' → '{status}'. "
+                    f"Allowed next states: {sorted(allowed)}"
+                )
         self._source_points[source_id] = SourcePointNode(
             id=existing.id,
             entry_point_kind=existing.entry_point_kind,
@@ -1269,8 +1309,19 @@ class Neo4jGraphStore:
             status=record["status"],
         )
 
-    def update_source_point_status(self, source_id: str, status: str) -> None:
-        """Update SourcePoint.status (architecture.md §3 门禁机制)."""
+    def update_source_point_status(self, source_id: str, status: str, force_reset: bool = False) -> None:
+        """Update SourcePoint.status (architecture.md §3 门禁机制).
+
+        Validates forward-only transitions unless force_reset=True.
+        """
+        if status not in VALID_SOURCE_POINT_STATUSES:
+            raise ValueError(
+                f"SourcePoint.status must be one of {sorted(VALID_SOURCE_POINT_STATUSES)}, "
+                f"got '{status}'"
+            )
+        # Note: Neo4j implementation does not enforce transitions server-side
+        # (would require a read-before-write round trip). Validation is best-effort
+        # at the application layer; the InMemoryGraphStore enforces strictly.
         cypher = (
             "MATCH (s:SourcePoint {id: $id}) "
             "SET s.status = $status"

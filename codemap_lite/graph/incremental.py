@@ -126,7 +126,7 @@ class IncrementalUpdater:
         for source_id in affected_source_ids:
             sp = self._store.get_source_point(source_id)
             if sp is not None and getattr(sp, "status", "") != "pending":
-                self._store.update_source_point_status(source_id, "pending")
+                self._store.update_source_point_status(source_id, "pending", force_reset=True)
 
         # Expose affected_source_ids so the orchestrator can trigger re-repair
         # (architecture.md §7 step 5).
