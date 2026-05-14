@@ -529,13 +529,43 @@ def stage_4_backend_api(args: argparse.Namespace, neo_store: Neo4jGraphStore, so
         # May return 404 if no analysis running — acceptable
         details["analyze_status_ok"] = "not_running"
 
-    # Verify call-chain has nodes+edges
+    # Verify call-chain has nodes+edges and depth is respected
     if functions:
         chain_resp = _http_get(f"{base_url}/api/v1/functions/{fn_id}/call-chain?depth=3")
         if chain_resp["ok"]:
             body = json.loads(chain_resp["body"])
             if "nodes" in body and "edges" in body:
                 details["call_chain_ok"] = True
+                # Verify nodes have required fields (architecture.md §4 FunctionNode)
+                for node in body["nodes"][:3]:
+                    required_fn_fields = {"id", "name", "signature", "file_path", "start_line", "end_line"}
+                    missing = required_fn_fields - set(node.keys())
+                    if missing:
+                        errors.append(f"call-chain node missing fields: {missing}")
+                        break
+                # Verify edges have required fields
+                for edge in body["edges"][:3]:
+                    required_edge_fields = {"caller_id", "callee_id", "props"}
+                    missing = required_edge_fields - set(edge.keys())
+                    if missing:
+                        errors.append(f"call-chain edge missing fields: {missing}")
+                        break
+                    if "props" in edge:
+                        props = edge["props"]
+                        required_props = {"resolved_by", "call_type", "call_file", "call_line"}
+                        missing_p = required_props - set(props.keys())
+                        if missing_p:
+                            errors.append(f"call-chain edge.props missing: {missing_p}")
+                            break
+                # Verify depth=1 returns fewer or equal nodes than depth=3
+                chain1_resp = _http_get(f"{base_url}/api/v1/functions/{fn_id}/call-chain?depth=1")
+                if chain1_resp["ok"]:
+                    body1 = json.loads(chain1_resp["body"])
+                    if len(body1["nodes"]) > len(body["nodes"]):
+                        errors.append(
+                            f"call-chain depth=1 ({len(body1['nodes'])} nodes) > "
+                            f"depth=3 ({len(body['nodes'])} nodes) — depth not respected"
+                        )
             else:
                 errors.append("call-chain response missing nodes or edges")
     else:
