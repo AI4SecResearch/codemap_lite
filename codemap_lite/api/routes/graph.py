@@ -110,8 +110,11 @@ def create_graph_router() -> APIRouter:
         if category:
             all_uc = [
                 u for u in all_uc
-                if (u.last_attempt_reason or "").startswith(f"{category}:")
-                or (category == "none" and not u.last_attempt_reason)
+                if (
+                    (u.last_attempt_reason or "").startswith(f"{category}:")
+                    or u.last_attempt_reason == category  # standalone category
+                    or (category == "none" and not u.last_attempt_reason)
+                )
             ]
         total = len(all_uc)
         items = all_uc[offset:offset + limit]

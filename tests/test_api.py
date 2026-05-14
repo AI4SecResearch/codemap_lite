@@ -1747,6 +1747,12 @@ class TestUnresolvedCallsFiltering:
             source_code_snippet="", var_name=None, var_type=None,
             id="g3",  # no last_attempt_reason → "none" category
         ))
+        store.create_unresolved_call(UnresolvedCallNode(
+            caller_id="f4", call_expression="w()",
+            call_file="d.cpp", call_line=4, call_type="indirect",
+            source_code_snippet="", var_name=None, var_type=None,
+            id="g4", last_attempt_reason="agent_exited_without_edge",
+        ))
         # Filter by gate_failed
         resp = client.get("/api/v1/unresolved-calls?category=gate_failed")
         assert resp.json()["total"] == 1
@@ -1755,6 +1761,10 @@ class TestUnresolvedCallsFiltering:
         resp = client.get("/api/v1/unresolved-calls?category=none")
         assert resp.json()["total"] == 1
         assert resp.json()["items"][0]["id"] == "g3"
+        # Filter by standalone category (no colon in reason)
+        resp = client.get("/api/v1/unresolved-calls?category=agent_exited_without_edge")
+        assert resp.json()["total"] == 1
+        assert resp.json()["items"][0]["id"] == "g4"
 
     def test_pagination_limit_offset(self) -> None:
         """architecture.md §8: GET /unresolved-calls supports ?limit= and ?offset=."""
