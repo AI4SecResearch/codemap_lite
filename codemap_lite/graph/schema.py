@@ -113,6 +113,11 @@ class UnresolvedCallNode:
                 f"UnresolvedCall.status must be one of {sorted(VALID_UC_STATUSES)}, "
                 f"got '{self.status}'"
             )
+        if self.call_type not in VALID_CALL_TYPES:
+            raise ValueError(
+                f"UnresolvedCall.call_type must be one of {sorted(VALID_CALL_TYPES)}, "
+                f"got '{self.call_type}'"
+            )
 
     def __hash__(self) -> int:
         return hash(self.id)
