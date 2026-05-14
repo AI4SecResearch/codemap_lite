@@ -1574,6 +1574,7 @@ class TestFeedbackEndpoint:
             "agent_error": 1,
             "subprocess_crash": 1,
             "subprocess_timeout": 2,
+            "agent_exited_without_edge": 0,
             "none": 1,
         }
 
@@ -1585,7 +1586,7 @@ class TestFeedbackEndpoint:
         assert resp.status_code == 200
         assert resp.json()["unresolved_by_category"] == {
             "gate_failed": 0, "agent_error": 0, "subprocess_crash": 0,
-            "subprocess_timeout": 0, "none": 0,
+            "subprocess_timeout": 0, "agent_exited_without_edge": 0, "none": 0,
         }
 
 
@@ -2341,9 +2342,9 @@ class TestEdgeDeletion:
         assert "unresolved_by_category" in data
         cats = data["unresolved_by_category"]
         expected_keys = {"gate_failed", "agent_error", "subprocess_crash",
-                         "subprocess_timeout", "none"}
+                         "subprocess_timeout", "agent_exited_without_edge", "none"}
         assert set(cats.keys()) == expected_keys, (
-            f"unresolved_by_category must always have all 5 keys, got {set(cats.keys())}"
+            f"unresolved_by_category must always have all 6 keys, got {set(cats.keys())}"
         )
         # All should be 0 when no unresolved calls exist
         for k in expected_keys:

@@ -324,6 +324,15 @@ class RepairOrchestrator:
                 gaps_total=gaps_total,
             )
 
+            # Snapshot edge count before this attempt so we can detect
+            # "agent_exited_without_edge" (architecture.md §3 Retry 审计字段).
+            # Only meaningful when graph_store is available.
+            edges_before = (
+                self._count_edges_written(source_id)
+                if self._config.graph_store is not None
+                else 0
+            )
+
             # Inject files — re-render counter examples each attempt so
             # newly added feedback lands in the next agent launch
             # (architecture.md §3 反馈机制 step 4).
@@ -441,7 +450,7 @@ class RepairOrchestrator:
                 # Gate check
                 self._write_progress(source_id, state="gate_checking")
                 gate_passed = await self._check_gate(source_id)
-                edges = self._count_edges_written(source_id)
+                edges_after = self._count_edges_written(source_id)
                 if gate_passed:
                     # architecture.md §3: gaps_fixed = gaps_total when gate passes
                     # (all pending gaps resolved). Write final progress snapshot.
@@ -449,7 +458,7 @@ class RepairOrchestrator:
                         source_id,
                         state="succeeded",
                         gate_result="passed",
-                        edges_written=edges,
+                        edges_written=edges_after,
                         gaps_fixed=gaps_total,
                     )
                     # architecture.md §3: 无残留 → SourcePoint.status = "complete"
@@ -457,13 +466,26 @@ class RepairOrchestrator:
                     return SourceRepairResult(
                         source_id=source_id, success=True, attempts=attempts
                     )
-                # Gate failed — stamp retry audit fields onto every pending
-                # UnresolvedCall for this source so ReviewQueue can surface
-                # "last attempt failed at <ts> because <reason>"
+
+                # Gate failed — determine the specific failure reason.
+                # architecture.md §3 Retry 审计字段: "agent_exited_without_edge"
+                # means agent exited 0 but produced no new LLM edges (distinct
+                # from gate_failed where edges were written but gaps remain).
+                if (
+                    self._config.graph_store is not None
+                    and edges_after <= edges_before
+                ):
+                    reason = "agent_exited_without_edge"
+                else:
+                    reason = "gate_failed: remaining pending GAPs"
+
+                # Stamp retry audit fields onto every pending UnresolvedCall
+                # for this source so ReviewQueue can surface "last attempt
+                # failed at <ts> because <reason>"
                 # (architecture.md §3 Retry 审计字段).
                 self._record_retry_attempt(
                     source_id=source_id,
-                    reason="gate_failed: remaining pending GAPs",
+                    reason=reason,
                 )
                 # Compute gaps_fixed = gaps_total - remaining pending
                 remaining = 0
@@ -473,9 +495,9 @@ class RepairOrchestrator:
                 self._write_progress(
                     source_id,
                     gate_result="failed",
-                    edges_written=edges,
+                    edges_written=edges_after,
                     gaps_fixed=gaps_fixed,
-                    last_error="gate_failed: remaining pending GAPs",
+                    last_error=reason,
                 )
             finally:
                 self._cleanup_injection(target_dir, source_id)

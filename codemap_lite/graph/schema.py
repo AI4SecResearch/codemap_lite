@@ -13,6 +13,7 @@ VALID_CALL_TYPES = frozenset({"direct", "indirect", "virtual"})
 VALID_SOURCE_POINT_STATUSES = frozenset({"pending", "running", "complete", "partial_complete"})
 VALID_REASON_CATEGORIES = frozenset({
     "gate_failed", "agent_error", "subprocess_timeout", "subprocess_crash",
+    "agent_exited_without_edge",
 })
 
 # Forward-only transition map: current_status → set of allowed next statuses

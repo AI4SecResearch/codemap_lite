@@ -585,7 +585,9 @@ async def test_orchestrator_stamps_retry_audit_on_gate_failure(tmp_path):
     # ISO-8601 UTC string — the orchestrator uses datetime.now(timezone.utc).isoformat()
     assert "T" in stamped.last_attempt_timestamp
     assert stamped.last_attempt_reason is not None
-    assert stamped.last_attempt_reason.startswith("gate_failed:")
+    # With no graph_store edge counting, gate_failed is used when gate returns False
+    # but with graph_store and no edges written, agent_exited_without_edge is used.
+    assert stamped.last_attempt_reason == "agent_exited_without_edge"
 
 
 @pytest.mark.asyncio
@@ -1307,7 +1309,7 @@ async def test_retry_stamps_audit_fields_on_graph_store(tmp_path):
     updated_gap = store._unresolved_calls[gap.id]
     assert updated_gap.retry_count == 3
     assert updated_gap.status == "unresolvable"
-    assert updated_gap.last_attempt_reason == "gate_failed: remaining pending GAPs"
+    assert updated_gap.last_attempt_reason == "agent_exited_without_edge"
     assert updated_gap.last_attempt_timestamp is not None
 
 
@@ -1553,18 +1555,20 @@ async def test_retry_stamps_all_pending_gaps_independently(tmp_path):
 @pytest.mark.asyncio
 async def test_retry_reason_format_matches_category_prefix(tmp_path):
     """architecture.md §3 Retry 审计字段: last_attempt_reason must follow
-    format '<category>: <summary>' where category ∈ {gate_failed,
-    agent_error, subprocess_crash, subprocess_timeout}."""
+    format '<category>: <summary>' or be a standalone category like
+    'agent_exited_without_edge'."""
     import re
 
     from codemap_lite.graph.neo4j_store import InMemoryGraphStore
     from codemap_lite.graph.schema import FunctionNode, UnresolvedCallNode
 
     VALID_CATEGORIES = {
-        "gate_failed", "agent_error", "subprocess_crash", "subprocess_timeout"
+        "gate_failed", "agent_error", "subprocess_crash",
+        "subprocess_timeout", "agent_exited_without_edge",
     }
+    # Match either "<category>: <summary>" or standalone category
     reason_pattern = re.compile(
-        r"^(gate_failed|agent_error|subprocess_crash|subprocess_timeout): .+$"
+        r"^(gate_failed|agent_error|subprocess_crash|subprocess_timeout|agent_exited_without_edge)(: .+)?$"
     )
 
     store = InMemoryGraphStore()
@@ -1608,7 +1612,7 @@ async def test_retry_reason_format_matches_category_prefix(tmp_path):
     reason = updated.last_attempt_reason
     assert reason is not None, "reason must be set after gate failure"
     assert reason_pattern.match(reason), (
-        f"reason '{reason}' does not match '<category>: <summary>' format"
+        f"reason '{reason}' does not match valid format"
     )
     # Verify category is one of the valid ones
     category = reason.split(":")[0]
@@ -1680,7 +1684,7 @@ async def test_retry_count_increments_per_gate_failure(tmp_path):
     assert final.status == "unresolvable"
     # Timestamps must be set
     assert final.last_attempt_timestamp is not None
-    assert final.last_attempt_reason == "gate_failed: remaining pending GAPs"
+    assert final.last_attempt_reason == "agent_exited_without_edge"
 
 
 @pytest.mark.asyncio
@@ -2875,3 +2879,73 @@ async def test_count_edges_written_counts_only_llm_edges(tmp_path):
         f"Expected 2 LLM edges (src→A, B→C), got {count}. "
         "Must count only resolved_by='llm' edges in reachable subgraph."
     )
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_stamps_agent_exited_without_edge(tmp_path):
+    """Agent exits 0 but writes no new LLM edges → stamp
+    ``agent_exited_without_edge`` instead of falling through to gate check.
+
+    architecture.md §3 Retry 审计字段 explicitly lists this as a valid
+    last_attempt_reason category. Before this fix, such cases were
+    mis-attributed as ``gate_failed: remaining pending GAPs``, hiding the
+    real signal that the LLM simply didn't act.
+    """
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import FunctionNode, UnresolvedCallNode
+
+    target_dir = tmp_path / "target_code"
+    target_dir.mkdir()
+
+    store = InMemoryGraphStore()
+    caller = FunctionNode(
+        signature="void src_002(int)",
+        name="src_002",
+        file_path="bar.cpp",
+        start_line=1,
+        end_line=10,
+        body_hash="h2",
+        id="src_002",
+    )
+    store.create_function(caller)
+    gap = UnresolvedCallNode(
+        caller_id="src_002",
+        call_expression="callback(y)",
+        call_file="bar.cpp",
+        call_line=5,
+        call_type="indirect",
+        source_code_snippet="callback(y);",
+        var_name="callback",
+        var_type="void (*)(int)",
+    )
+    store.create_unresolved_call(gap)
+
+    config = RepairConfig(
+        target_dir=target_dir,
+        backend="claudecode",
+        # Agent exits 0 but does nothing (no edges written)
+        command="sh",
+        args=["-c", "exit 0"],
+        max_concurrency=1,
+        neo4j_uri="bolt://localhost:7687",
+        neo4j_user="neo4j",
+        neo4j_password="test",
+        graph_store=store,
+    )
+    orchestrator = RepairOrchestrator(config=config)
+    # Gate returns False (gaps remain), then edge check determines reason.
+    gate_mock = AsyncMock(return_value=False)
+    orchestrator._check_gate = gate_mock
+
+    results = await orchestrator.run_repairs(["src_002"])
+
+    assert results[0].success is False
+    assert results[0].attempts == 3
+    # Gate IS called — but since no edges were written, reason is
+    # "agent_exited_without_edge" not "gate_failed".
+    gate_mock.assert_called()
+    stamped = store._unresolved_calls[gap.id]
+    assert stamped.last_attempt_timestamp is not None
+    assert stamped.last_attempt_reason == "agent_exited_without_edge"
+    # Must never be mis-classified as gate_failed (regression guard).
+    assert "gate_failed" not in stamped.last_attempt_reason

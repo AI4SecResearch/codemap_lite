@@ -593,9 +593,9 @@ def stage_4_backend_api(args: argparse.Namespace, neo_store: Neo4jGraphStore, so
             errors.append("stats missing total_feedback field (§8)")
         if "total_repair_logs" not in stats:
             errors.append("stats missing total_repair_logs field (§8)")
-        # §8: unresolved_by_category must have 5 keys
+        # §8: unresolved_by_category must have 6 keys
         by_cat = stats.get("unresolved_by_category", {})
-        expected_cats = {"gate_failed", "agent_error", "subprocess_crash", "subprocess_timeout", "none"}
+        expected_cats = {"gate_failed", "agent_error", "subprocess_crash", "subprocess_timeout", "agent_exited_without_edge", "none"}
         missing_cats = expected_cats - set(by_cat.keys())
         if missing_cats:
             errors.append(f"stats.unresolved_by_category missing keys: {missing_cats}")

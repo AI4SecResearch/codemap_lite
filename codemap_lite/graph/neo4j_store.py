@@ -281,8 +281,8 @@ class InMemoryGraphStore:
         retry_count, it must record when + why so the frontend GapDetail
         can surface the last failed attempt without trawling JSONL logs.
 
-        Validates reason format: '<category>: <summary>', ≤200 chars,
-        category ∈ {gate_failed, agent_error, subprocess_timeout, subprocess_crash}.
+        Validates reason format: '<category>: <summary>' or standalone category,
+        ≤200 chars, category ∈ VALID_REASON_CATEGORIES.
         """
         # Validate reason format
         if len(reason) > 200:
@@ -291,10 +291,10 @@ class InMemoryGraphStore:
             )
         colon_idx = reason.find(": ")
         if colon_idx == -1:
-            raise ValueError(
-                f"last_attempt_reason must be '<category>: <summary>', got '{reason}'"
-            )
-        category = reason[:colon_idx]
+            # Allow standalone category (e.g. "agent_exited_without_edge")
+            category = reason
+        else:
+            category = reason[:colon_idx]
         if category not in VALID_REASON_CATEGORIES:
             raise ValueError(
                 f"last_attempt_reason category must be one of "
@@ -529,13 +529,19 @@ class InMemoryGraphStore:
         # architecture.md §8: unresolved_by_category must always contain all
         # 5 keys so the frontend can render chips without null-checking.
         _VALID_CATEGORIES = {
-            "gate_failed", "agent_error", "subprocess_crash", "subprocess_timeout"
+            "gate_failed", "agent_error", "subprocess_crash",
+            "subprocess_timeout", "agent_exited_without_edge",
         }
         by_category: dict[str, int] = {c: 0 for c in _VALID_CATEGORIES}
         by_category["none"] = 0
         for u in self._unresolved_calls.values():
             reason = getattr(u, "last_attempt_reason", None)
-            if reason and ":" in reason:
+            if not reason:
+                cat_key = "none"
+            elif reason in _VALID_CATEGORIES:
+                # Standalone category (e.g. "agent_exited_without_edge")
+                cat_key = reason
+            elif ":" in reason:
                 prefix = reason.split(":", 1)[0].strip()
                 cat_key = prefix if prefix in _VALID_CATEGORIES else "none"
             else:
@@ -981,10 +987,10 @@ class Neo4jGraphStore:
             )
         colon_idx = reason.find(": ")
         if colon_idx == -1:
-            raise ValueError(
-                f"last_attempt_reason must be '<category>: <summary>', got '{reason}'"
-            )
-        category = reason[:colon_idx]
+            # Allow standalone category (e.g. "agent_exited_without_edge")
+            category = reason
+        else:
+            category = reason[:colon_idx]
         if category not in VALID_REASON_CATEGORIES:
             raise ValueError(
                 f"last_attempt_reason category must be one of "
@@ -1208,12 +1214,12 @@ class Neo4jGraphStore:
                 if key not in _VALID_STATUSES:
                     key = "pending"
                 by_status[key] = by_status.get(key, 0) + row["n"]
-            # last_attempt_reason may be absent; bucket missing/malformed
-            # to "none" so the Dashboard chip row never silently drops UCs.
             # architecture.md §3: valid categories are {gate_failed,
-            # agent_error, subprocess_crash, subprocess_timeout}.
+            # agent_error, subprocess_crash, subprocess_timeout,
+            # agent_exited_without_edge}.
             _VALID_CATEGORIES = {
-                "gate_failed", "agent_error", "subprocess_crash", "subprocess_timeout"
+                "gate_failed", "agent_error", "subprocess_crash",
+                "subprocess_timeout", "agent_exited_without_edge",
             }
             cat_rows = list(session.run(
                 "MATCH (u:UnresolvedCall) "
@@ -1223,7 +1229,12 @@ class Neo4jGraphStore:
             by_category["none"] = 0
             for row in cat_rows:
                 reason = row["reason"]
-                if reason and ":" in reason:
+                if not reason:
+                    cat_key = "none"
+                elif reason in _VALID_CATEGORIES:
+                    # Standalone category (e.g. "agent_exited_without_edge")
+                    cat_key = reason
+                elif ":" in reason:
                     prefix = reason.split(":", 1)[0].strip()
                     cat_key = prefix if prefix in _VALID_CATEGORIES else "none"
                 else:
