@@ -84,6 +84,13 @@ export interface Stats {
   total_files: number;
   total_calls: number;
   total_unresolved: number;
+  /**
+   * Convenience count of llm-repaired CALLS edges (architecture.md §8).
+   * Equals `calls_by_resolved_by['llm']` — surfaced so the Dashboard
+   * can render the "LLM Repaired" StatCard without drilling into the
+   * bucket breakdown (北极星指标 #2 调用链可信度).
+   */
+  total_llm_edges?: number;
   total_source_points: number;
   /**
    * Breakdown of `total_unresolved` by `UnresolvedCall.status`

@@ -1249,6 +1249,8 @@ class TestFeedbackEndpoint:
         assert "total_files" in data
         assert "total_calls" in data
         assert "total_unresolved" in data
+        # architecture.md §8 convenience: llm-repaired edge backlog count
+        assert "total_llm_edges" in data
         # New breakdown surfaces GAP lifecycle on the Dashboard without
         # drilling into ReviewQueue (architecture.md §3 UnresolvedCall 生命周期).
         assert "unresolved_by_status" in data
@@ -1353,6 +1355,7 @@ class TestFeedbackEndpoint:
         assert resp.status_code == 200
         data = resp.json()
         assert data["total_unresolved"] == 3
+        assert data["total_llm_edges"] == 0  # no CALLS edges created
         assert data["unresolved_by_status"] == {"pending": 1, "unresolvable": 2}
 
     def test_get_stats_calls_by_resolved_by(self) -> None:
@@ -1388,6 +1391,7 @@ class TestFeedbackEndpoint:
         assert resp.status_code == 200
         data = resp.json()
         assert data["total_calls"] == 4
+        assert data["total_llm_edges"] == 2  # §8 convenience
         assert data["calls_by_resolved_by"] == {
             "symbol_table": 1,
             "llm": 2,
@@ -1453,6 +1457,7 @@ class TestFeedbackEndpoint:
         assert resp.status_code == 200
         data = resp.json()
         assert data["total_unresolved"] == 6
+        assert data["total_llm_edges"] == 0
         assert data["unresolved_by_category"] == {
             "gate_failed": 1,
             "agent_error": 1,
@@ -1509,6 +1514,7 @@ class TestNoPrivateAttrLeak:
                 return {
                     "total_functions": 1, "total_files": 1,
                     "total_calls": 1, "total_unresolved": 0,
+                    "total_llm_edges": 1,
                     "total_repair_logs": 0,
                     "unresolved_by_status": {"pending": 0, "unresolvable": 0},
                     "unresolved_by_category": {},

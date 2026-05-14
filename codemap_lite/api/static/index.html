@@ -52,6 +52,10 @@
           <div class="text-sm text-gray-500 mt-1">Call Edges</div>
         </div>
         <div class="card text-center">
+          <div class="text-3xl font-bold text-amber-600" id="stat-llm-edges">-</div>
+          <div class="text-sm text-gray-500 mt-1">LLM Repaired</div>
+        </div>
+        <div class="card text-center">
           <div class="text-3xl font-bold text-orange-600" id="stat-unresolved">-</div>
           <div class="text-sm text-gray-500 mt-1">GAPs (Unresolved)</div>
         </div>
@@ -190,6 +194,7 @@ async function pollStats() {
     document.getElementById('stat-files').textContent = data.total_files || 0;
     document.getElementById('stat-functions').textContent = data.total_functions || 0;
     document.getElementById('stat-calls').textContent = data.total_calls || 0;
+    document.getElementById('stat-llm-edges').textContent = data.total_llm_edges || 0;
     document.getElementById('stat-unresolved').textContent = data.total_unresolved || 0;
     document.getElementById('stat-source-points').textContent = data.total_source_points || 0;
     document.getElementById('status-badge').textContent = 'Connected';

@@ -389,7 +389,7 @@ export default function Dashboard() {
         />
         <StatCard
           title="LLM Repaired"
-          value={stats ? llmCalls : '-'}
+          value={stats?.total_llm_edges ?? llmCalls ?? '-'}
           hint="needs review (resolved_by=llm)"
           tone={llmCalls > 0 ? 'warn' : 'default'}
         />

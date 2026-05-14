@@ -550,6 +550,10 @@ class InMemoryGraphStore:
             "total_calls": len(self._calls_edges),
             "total_unresolved": len(self._unresolved_calls),
             "total_repair_logs": len(self._repair_logs),
+            # architecture.md §8 convenience: llm-repaired edge backlog
+            # count so Dashboard can surface it without drilling into
+            # calls_by_resolved_by (北极星指标 #2 调用链可信度).
+            "total_llm_edges": by_resolved.get("llm", 0),
             "unresolved_by_status": by_status,
             "unresolved_by_category": by_category,
             "calls_by_resolved_by": by_resolved,
@@ -662,6 +666,12 @@ class Neo4jGraphStore:
             # UnresolvedCall triple-key uniqueness (implied by MERGE dedup)
             "CREATE CONSTRAINT uniq_uc_key IF NOT EXISTS FOR (n:UnresolvedCall) REQUIRE (n.caller_id, n.call_file, n.call_line) IS UNIQUE",
         ]
+        # CALLS edges are deduplicated by the MERGE predicate in
+        # create_calls_edge, which matches on (caller, callee) node
+        # identities + {call_file, call_line} relationship properties,
+        # giving the full 4-field key (caller_id, callee_id, call_file,
+        # call_line).  Neo4j does not support relationship uniqueness
+        # constraints, so enforcement is by MERGE semantics only.
         index_statements = [
             # architecture.md §4: 7 indexes
             "CREATE INDEX idx_file_hash IF NOT EXISTS FOR (n:File) ON (n.hash)",
@@ -726,6 +736,14 @@ class Neo4jGraphStore:
     def create_calls_edge(
         self, caller_id: str, callee_id: str, props: CallsEdgeProps
     ) -> None:
+        # architecture.md §4: CALLS edge uniqueness on the 4-field key
+        # (caller_id, callee_id, call_file, call_line). In Neo4j MERGE,
+        # a relationship's identity is defined by its start/end node
+        # identities + type + MERGE-predicate properties, so the MATCH
+        # anchors on a.id/caller_id and b.id/callee_id plus the
+        # {call_file, call_line} predicate together enforce the full
+        # 4-tuple. ON CREATE SET preserves first-write semantics
+        # (matching InMemoryStore.edge_exists → skip).
         cypher = (
             "MATCH (a:Function {id: $caller_id}), (b:Function {id: $callee_id}) "
             "MERGE (a)-[r:CALLS {call_file: $call_file, call_line: $call_line}]->(b) "
@@ -1209,6 +1227,10 @@ class Neo4jGraphStore:
             "total_calls": total_calls,
             "total_unresolved": total_unresolved,
             "total_repair_logs": total_repair_logs,
+            # architecture.md §8 convenience: llm-repaired edge backlog
+            # count so Dashboard can surface it without drilling into
+            # calls_by_resolved_by (北极星指标 #2 调用链可信度).
+            "total_llm_edges": by_resolved.get("llm", 0),
             "unresolved_by_status": by_status,
             "unresolved_by_category": by_category,
             "calls_by_resolved_by": by_resolved,

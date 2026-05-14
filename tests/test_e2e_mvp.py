@@ -574,6 +574,7 @@ class TestPhase4_APICallerCalleeQuery:
         stats = resp.json()
         assert stats["total_functions"] == 4
         assert stats["total_calls"] == 3
+        assert stats["total_llm_edges"] == 1  # §8 convenience: 1 llm edge (entry→indirect)
 
 
 # ---------------------------------------------------------------------------
