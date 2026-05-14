@@ -189,14 +189,14 @@ export default function Dashboard() {
       const [s, st, fns, unresolved] = await Promise.all([
         api.getStats(),
         api.getAnalyzeStatus(),
-        api.getFunctions().catch(() => [] as FunctionNode[]),
+        api.getFunctions().catch(() => ({ total: 0, items: [] as FunctionNode[] })),
         api
           .listUnresolved({ limit: 500 })
           .catch(() => ({ total: 0, items: [] })),
       ]);
       setStats(s);
       setStatus(st);
-      setFunctions(fns);
+      setFunctions(fns.items);
       const counts = new Map<string, number>();
       for (const g of unresolved.items) {
         counts.set(g.caller_id, (counts.get(g.caller_id) ?? 0) + 1);

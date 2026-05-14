@@ -245,17 +245,17 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   // Graph browsing
-  getFiles: () => fetchJson<FileNode[]>('/api/v1/files'),
+  getFiles: () => fetchJson<{ total: number; items: FileNode[] }>('/api/v1/files'),
   getFunctions: (file?: string) =>
-    fetchJson<FunctionNode[]>(
+    fetchJson<{ total: number; items: FunctionNode[] }>(
       `/api/v1/functions${file ? `?file=${encodeURIComponent(file)}` : ''}`
     ),
   getFunction: (id: string) =>
     fetchJson<FunctionNode>(`/api/v1/functions/${id}`),
   getCallers: (id: string) =>
-    fetchJson<FunctionNode[]>(`/api/v1/functions/${id}/callers`),
+    fetchJson<{ total: number; items: FunctionNode[] }>(`/api/v1/functions/${id}/callers`),
   getCallees: (id: string) =>
-    fetchJson<FunctionNode[]>(`/api/v1/functions/${id}/callees`),
+    fetchJson<{ total: number; items: FunctionNode[] }>(`/api/v1/functions/${id}/callees`),
   getCallChain: (id: string, depth = 5) =>
     fetchJson<Subgraph>(`/api/v1/functions/${id}/call-chain?depth=${depth}`),
   listUnresolved: (params?: {
