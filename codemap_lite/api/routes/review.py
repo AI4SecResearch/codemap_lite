@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response
 from pydantic import BaseModel, field_validator
 
 from codemap_lite.graph.schema import CallsEdgeProps
@@ -135,8 +135,15 @@ def create_review_router() -> APIRouter:
     router = APIRouter(tags=["review"])
 
     @router.get("/reviews")
-    def list_reviews(request: Request) -> list[dict[str, Any]]:
-        return list(request.app.state.reviews.values())
+    def list_reviews(
+        request: Request,
+        limit: int = Query(default=100, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+    ) -> dict[str, Any]:
+        reviews = list(request.app.state.reviews.values())
+        total = len(reviews)
+        items = reviews[offset:offset + limit]
+        return {"total": total, "items": items}
 
     @router.post("/reviews", status_code=201)
     def create_review(

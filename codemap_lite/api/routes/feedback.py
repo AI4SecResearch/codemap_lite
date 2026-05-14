@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field, model_validator
 
 from codemap_lite.analysis.feedback_store import CounterExample
@@ -46,17 +46,24 @@ def create_feedback_router() -> APIRouter:
     router = APIRouter(tags=["feedback"])
 
     @router.get("/feedback")
-    def list_feedback(request: Request) -> list[dict[str, Any]]:
-        """Return every persisted counter example.
+    def list_feedback(
+        request: Request,
+        limit: int = Query(default=100, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+    ) -> dict[str, Any]:
+        """Return persisted counter examples with pagination.
 
         When ``app.state.feedback_store`` is unset (tests, pure in-memory
-        demos) the endpoint returns ``[]`` rather than failing — matching
-        the pre-wire stub contract so existing clients keep working.
+        demos) the endpoint returns ``{"total": 0, "items": []}`` rather
+        than failing — matching the pre-wire stub contract.
         """
         feedback_store = getattr(request.app.state, "feedback_store", None)
         if feedback_store is None:
-            return []
-        return [asdict(example) for example in feedback_store.list_all()]
+            return {"total": 0, "items": []}
+        all_items = [asdict(example) for example in feedback_store.list_all()]
+        total = len(all_items)
+        items = all_items[offset:offset + limit]
+        return {"total": total, "items": items}
 
     @router.post("/feedback", status_code=201)
     def create_feedback(

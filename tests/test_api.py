@@ -38,7 +38,7 @@ class TestFilesEndpoint:
         client, _ = get_test_client()
         resp = client.get("/api/v1/files")
         assert resp.status_code == 200
-        assert resp.json() == []
+        assert resp.json() == {"total": 0, "items": []}
 
     def test_get_files_with_data(self) -> None:
         client, store = get_test_client()
@@ -46,7 +46,7 @@ class TestFilesEndpoint:
         store.create_file(f)
         resp = client.get("/api/v1/files")
         assert resp.status_code == 200
-        files = resp.json()
+        files = resp.json()["items"]
         assert len(files) == 1
         assert files[0]["file_path"] == "src/main.py"
 
@@ -56,7 +56,7 @@ class TestFunctionsEndpoint:
         client, _ = get_test_client()
         resp = client.get("/api/v1/functions")
         assert resp.status_code == 200
-        assert resp.json() == []
+        assert resp.json() == {"total": 0, "items": []}
 
     def test_get_functions_filtered_by_file(self) -> None:
         client, store = get_test_client()
@@ -80,7 +80,7 @@ class TestFunctionsEndpoint:
         store.create_function(fn2)
         resp = client.get("/api/v1/functions", params={"file": "src/a.py"})
         assert resp.status_code == 200
-        funcs = resp.json()
+        funcs = resp.json()["items"]
         assert len(funcs) == 1
         assert funcs[0]["name"] == "foo"
 
@@ -138,7 +138,7 @@ class TestCallersCalleesEndpoint:
         self._setup_graph(store)
         resp = client.get("/api/v1/functions/b/callers")
         assert resp.status_code == 200
-        callers = resp.json()
+        callers = resp.json()["items"]
         assert len(callers) == 1
         assert callers[0]["id"] == "a"
 
@@ -147,7 +147,7 @@ class TestCallersCalleesEndpoint:
         self._setup_graph(store)
         resp = client.get("/api/v1/functions/b/callees")
         assert resp.status_code == 200
-        callees = resp.json()
+        callees = resp.json()["items"]
         assert len(callees) == 1
         assert callees[0]["id"] == "c"
 
@@ -464,7 +464,7 @@ class TestSourcePointsEndpoint:
         client, _ = get_test_client()
         resp = client.get("/api/v1/source-points")
         assert resp.status_code == 200
-        assert resp.json() == []
+        assert resp.json() == {"total": 0, "items": []}
 
     def test_get_source_point_reachable(self) -> None:
         client, store = get_test_client()
@@ -541,7 +541,7 @@ class TestSourcePointsEndpoint:
         # Filter by module substring
         resp = client.get("/api/v1/source-points?module=audio")
         assert resp.status_code == 200
-        data = resp.json()
+        data = resp.json()["items"]
         assert len(data) == 2
         ids = {e["id"] for e in data}
         assert ids == {"sp1", "sp3"}
@@ -555,7 +555,7 @@ class TestSourcePointsEndpoint:
         ]
         resp = client.get("/api/v1/source-points?kind=entry_point")
         assert resp.status_code == 200
-        data = resp.json()
+        data = resp.json()["items"]
         assert len(data) == 1
         assert data[0]["id"] == "sp2"
 
@@ -633,7 +633,7 @@ class TestReviewEndpoint:
         })
         resp = client.get("/api/v1/reviews")
         assert resp.status_code == 200
-        reviews = resp.json()
+        reviews = resp.json()["items"]
         assert len(reviews) == 1
 
     def test_update_review(self) -> None:
@@ -949,7 +949,7 @@ class TestFeedbackEndpoint:
         client, _ = get_test_client()
         resp = client.get("/api/v1/feedback")
         assert resp.status_code == 200
-        assert resp.json() == []
+        assert resp.json() == {"total": 0, "items": []}
 
     def test_get_feedback_with_store(self, tmp_path) -> None:
         # Seed a FeedbackStore on disk, then wire it into create_app so
@@ -980,7 +980,7 @@ class TestFeedbackEndpoint:
 
         resp = client.get("/api/v1/feedback")
         assert resp.status_code == 200
-        data = resp.json()
+        data = resp.json()["items"]
         assert len(data) == 2
         patterns = {item["pattern"] for item in data}
         assert "dispatch_event callbacks must match signature EventHandler" in patterns
@@ -1028,7 +1028,7 @@ class TestFeedbackEndpoint:
         assert len(stored) == 1
         assert stored[0].pattern == payload["pattern"]
 
-        listing = client.get("/api/v1/feedback").json()
+        listing = client.get("/api/v1/feedback").json()["items"]
         assert len(listing) == 1
         assert listing[0]["correct_target"] == "modern_handler"
 
@@ -1062,7 +1062,7 @@ class TestFeedbackEndpoint:
         assert second.json()["deduplicated"] is True
         assert second.json()["total"] == 1
 
-        assert len(client.get("/api/v1/feedback").json()) == 1
+        assert client.get("/api/v1/feedback").json()["total"] == 1
 
     def test_post_feedback_requires_all_fields(self, tmp_path) -> None:
         """Missing a required field → 422 (Pydantic validation)."""
@@ -1230,7 +1230,7 @@ class TestFeedbackEndpoint:
         # Verify counter-example is visible via GET /feedback
         feedback_resp = client.get("/api/v1/feedback")
         assert feedback_resp.status_code == 200
-        examples = feedback_resp.json()
+        examples = feedback_resp.json()["items"]
         assert len(examples) == 1
         ex = examples[0]
         assert ex["wrong_target"] == "callee1"
@@ -1550,7 +1550,7 @@ class TestNoPrivateAttrLeak:
         client = TestClient(app)
         resp = client.get("/api/v1/files")
         assert resp.status_code == 200
-        assert resp.json()[0]["file_path"] == "a.cpp"
+        assert resp.json()["items"][0]["file_path"] == "a.cpp"
 
     def test_list_functions_no_private_attrs(self) -> None:
         store = self._make_protocol_store()
@@ -1558,7 +1558,7 @@ class TestNoPrivateAttrLeak:
         client = TestClient(app)
         resp = client.get("/api/v1/functions")
         assert resp.status_code == 200
-        assert resp.json()[0]["name"] == "f"
+        assert resp.json()["items"][0]["name"] == "f"
 
     def test_unresolved_calls_no_private_attrs(self) -> None:
         store = self._make_protocol_store()

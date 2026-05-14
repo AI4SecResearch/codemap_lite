@@ -7,37 +7,61 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 
 
+def _paginate(items: list[Any], limit: int, offset: int) -> dict[str, Any]:
+    """Wrap a list in {total, items} pagination per architecture.md §8."""
+    total = len(items)
+    page = items[offset:offset + limit]
+    return {"total": total, "items": page}
+
+
 def create_graph_router() -> APIRouter:
     """Create the graph browsing router."""
     router = APIRouter(tags=["graph"])
 
     @router.get("/files")
-    def list_files(request: Request) -> list[dict[str, Any]]:
+    def list_files(
+        request: Request,
+        limit: int = Query(default=100, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+    ) -> dict[str, Any]:
         store = request.app.state.store
-        return [asdict(f) for f in store.list_files()]
+        return _paginate([asdict(f) for f in store.list_files()], limit, offset)
 
     @router.get("/functions")
     def list_functions(
-        request: Request, file: str | None = Query(default=None)
-    ) -> list[dict[str, Any]]:
+        request: Request,
+        file: str | None = Query(default=None),
+        limit: int = Query(default=100, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+    ) -> dict[str, Any]:
         store = request.app.state.store
-        return [asdict(f) for f in store.list_functions(file_path=file)]
+        return _paginate([asdict(f) for f in store.list_functions(file_path=file)], limit, offset)
 
     @router.get("/functions/{function_id:path}/callers")
-    def get_callers(request: Request, function_id: str) -> list[dict[str, Any]]:
+    def get_callers(
+        request: Request,
+        function_id: str,
+        limit: int = Query(default=100, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+    ) -> dict[str, Any]:
         store = request.app.state.store
         if store.get_function_by_id(function_id) is None:
             raise HTTPException(status_code=404, detail="Function not found")
         callers = store.get_callers(function_id)
-        return [asdict(f) for f in callers]
+        return _paginate([asdict(f) for f in callers], limit, offset)
 
     @router.get("/functions/{function_id:path}/callees")
-    def get_callees(request: Request, function_id: str) -> list[dict[str, Any]]:
+    def get_callees(
+        request: Request,
+        function_id: str,
+        limit: int = Query(default=100, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+    ) -> dict[str, Any]:
         store = request.app.state.store
         if store.get_function_by_id(function_id) is None:
             raise HTTPException(status_code=404, detail="Function not found")
         callees = store.get_callees(function_id)
-        return [asdict(f) for f in callees]
+        return _paginate([asdict(f) for f in callees], limit, offset)
 
     @router.get("/functions/{function_id:path}/call-chain")
     def get_call_chain(

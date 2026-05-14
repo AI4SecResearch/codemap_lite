@@ -16,13 +16,17 @@ def create_source_points_router() -> APIRouter:
         request: Request,
         kind: str | None = Query(default=None),
         module: str | None = Query(default=None),
-    ) -> list[dict[str, Any]]:
+        limit: int = Query(default=100, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+    ) -> dict[str, Any]:
         entries = getattr(request.app.state, "source_points", [])
         if kind:
             entries = [e for e in entries if e.get("entry_point_kind") == kind]
         if module:
             entries = [e for e in entries if module in e.get("module", "")]
-        return entries
+        total = len(entries)
+        items = entries[offset:offset + limit]
+        return {"total": total, "items": items}
 
     @router.get("/source-points/summary")
     def source_points_summary(request: Request) -> dict[str, Any]:
