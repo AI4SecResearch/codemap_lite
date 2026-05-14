@@ -63,6 +63,43 @@ class TestCreateAndGetFunction:
     def test_get_function_not_found(self, store: InMemoryGraphStore) -> None:
         assert store.get_function_by_id("nonexistent") is None
 
+    def test_list_functions_all(self, store: InMemoryGraphStore) -> None:
+        """list_functions() without filter returns all functions."""
+        fn1 = FunctionNode(
+            id="f1", name="a", signature="void a()",
+            file_path="src/a.cpp", start_line=1, end_line=5, body_hash="h1",
+        )
+        fn2 = FunctionNode(
+            id="f2", name="b", signature="void b()",
+            file_path="src/b.cpp", start_line=1, end_line=5, body_hash="h2",
+        )
+        store.create_function(fn1)
+        store.create_function(fn2)
+        result = store.list_functions()
+        assert len(result) == 2
+
+    def test_list_functions_filtered_by_file_path(self, store: InMemoryGraphStore) -> None:
+        """list_functions(file_path=...) returns only functions in that file."""
+        fn1 = FunctionNode(
+            id="f1", name="a", signature="void a()",
+            file_path="src/a.cpp", start_line=1, end_line=5, body_hash="h1",
+        )
+        fn2 = FunctionNode(
+            id="f2", name="b", signature="void b()",
+            file_path="src/b.cpp", start_line=1, end_line=5, body_hash="h2",
+        )
+        fn3 = FunctionNode(
+            id="f3", name="c", signature="void c()",
+            file_path="src/a.cpp", start_line=10, end_line=15, body_hash="h3",
+        )
+        store.create_function(fn1)
+        store.create_function(fn2)
+        store.create_function(fn3)
+        result = store.list_functions(file_path="src/a.cpp")
+        assert len(result) == 2
+        names = {fn.name for fn in result}
+        assert names == {"a", "c"}
+
 
 class TestCallsEdges:
     def test_create_calls_edge_and_get_callees(
