@@ -214,7 +214,8 @@ def create_review_router() -> APIRouter:
                         correct_target=body.correct_target,
                         pattern=f"{body.caller_id} -> {body.callee_id} at {body.call_file}:{body.call_line}",
                     )
-                    feedback_store.add(example)
+                    was_new = feedback_store.add(example)
+                    review["counter_example_deduplicated"] = not was_new
 
             # Reset SourcePoint status to "pending" BEFORE triggering repair
             # so the frontend immediately reflects re-processing state and the

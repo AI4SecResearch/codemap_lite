@@ -2328,3 +2328,131 @@ class TestReviewResetsSourcePointStatus:
             "architecture.md §5: SourcePoint must reset to 'pending' when "
             "a review marks an edge incorrect and triggers re-repair"
         )
+
+
+class TestReviewCounterExampleIntegration:
+    """Integration tests for the review→counter-example→repair flow.
+
+    architecture.md §5 + §3: marking an edge incorrect with correct_target
+    creates a counter-example that persists into the next repair cycle.
+    """
+
+    def test_counter_example_persists_across_repair_cycles(self) -> None:
+        """architecture.md §3 反馈机制: counter-examples created by review
+        must be available to subsequent repair runs via render_markdown().
+        """
+        import tempfile
+        from pathlib import Path
+        from codemap_lite.analysis.feedback_store import FeedbackStore
+
+        store = InMemoryGraphStore()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            feedback_store = FeedbackStore(storage_dir=Path(tmpdir))
+            app = create_app(store=store, feedback_store=feedback_store)
+            client = TestClient(app)
+
+            # Setup: create an LLM-resolved edge
+            fn1 = FunctionNode(
+                signature="void caller()", name="caller",
+                file_path="a.cpp", start_line=1, end_line=10,
+                body_hash="h1", id="fn_caller",
+            )
+            fn2 = FunctionNode(
+                signature="void wrong_callee()", name="wrong_callee",
+                file_path="b.cpp", start_line=1, end_line=10,
+                body_hash="h2", id="fn_wrong",
+            )
+            store.create_function(fn1)
+            store.create_function(fn2)
+            store.create_calls_edge(
+                "fn_caller", "fn_wrong",
+                CallsEdgeProps(
+                    resolved_by="llm", call_type="indirect",
+                    call_file="a.cpp", call_line=5,
+                ),
+            )
+
+            # Act: reviewer marks edge incorrect with correct_target
+            resp = client.post("/api/v1/reviews", json={
+                "caller_id": "fn_caller",
+                "callee_id": "fn_wrong",
+                "call_file": "a.cpp",
+                "call_line": 5,
+                "verdict": "incorrect",
+                "correct_target": "fn_correct",
+            })
+            assert resp.status_code == 201
+
+            # Verify: counter-example is in the store
+            examples = feedback_store.list_all()
+            assert len(examples) == 1
+
+            # Verify: render_markdown() produces content the agent can read
+            md = feedback_store.render_markdown()
+            assert "fn_wrong" in md, "Wrong target must appear in counter-example markdown"
+            assert "fn_correct" in md, "Correct target must appear in counter-example markdown"
+
+            # Verify: a fresh FeedbackStore instance (simulating next repair cycle)
+            # can still read the counter-example
+            fresh_store = FeedbackStore(storage_dir=Path(tmpdir))
+            fresh_examples = fresh_store.list_all()
+            assert len(fresh_examples) == 1
+            assert fresh_examples[0].correct_target == "fn_correct"
+
+    def test_review_returns_counter_example_dedup_status(self) -> None:
+        """architecture.md §3: when a duplicate counter-example is created,
+        the review response should indicate deduplicated=true so the frontend
+        can show "已合并到现有规则" instead of "反例已保存".
+        """
+        import tempfile
+        from pathlib import Path
+        from codemap_lite.analysis.feedback_store import FeedbackStore
+
+        store = InMemoryGraphStore()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            feedback_store = FeedbackStore(storage_dir=Path(tmpdir))
+            app = create_app(store=store, feedback_store=feedback_store)
+            client = TestClient(app)
+
+            # Setup: create edge
+            fn1 = FunctionNode(
+                signature="void caller()", name="caller",
+                file_path="a.cpp", start_line=1, end_line=10,
+                body_hash="h1", id="fn_caller2",
+            )
+            fn2 = FunctionNode(
+                signature="void wrong()", name="wrong",
+                file_path="b.cpp", start_line=1, end_line=10,
+                body_hash="h2", id="fn_wrong2",
+            )
+            store.create_function(fn1)
+            store.create_function(fn2)
+
+            def _create_edge_and_review():
+                store.create_calls_edge(
+                    "fn_caller2", "fn_wrong2",
+                    CallsEdgeProps(
+                        resolved_by="llm", call_type="indirect",
+                        call_file="a.cpp", call_line=10,
+                    ),
+                )
+                return client.post("/api/v1/reviews", json={
+                    "caller_id": "fn_caller2",
+                    "callee_id": "fn_wrong2",
+                    "call_file": "a.cpp",
+                    "call_line": 10,
+                    "verdict": "incorrect",
+                    "correct_target": "fn_right",
+                })
+
+            # First review: new counter-example
+            resp1 = _create_edge_and_review()
+            assert resp1.status_code == 201
+            data1 = resp1.json()
+            assert data1.get("counter_example_deduplicated") is False
+
+            # Second review with same pattern: should be deduplicated
+            resp2 = _create_edge_and_review()
+            assert resp2.status_code == 201
+            data2 = resp2.json()
+            assert data2.get("counter_example_deduplicated") is True
