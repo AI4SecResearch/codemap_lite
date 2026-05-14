@@ -101,6 +101,8 @@ class GraphStore(Protocol):
 
     def get_source_point(self, source_id: str) -> SourcePointNode | None: ...
 
+    def get_source_point_by_function_id(self, function_id: str) -> SourcePointNode | None: ...
+
     def list_source_points(self) -> list[SourcePointNode]: ...
 
     def update_source_point_status(self, source_id: str, status: str, force_reset: bool = False) -> None: ...
@@ -403,6 +405,18 @@ class InMemoryGraphStore:
     def get_source_point(self, source_id: str) -> SourcePointNode | None:
         """Retrieve a SourcePoint by id."""
         return self._source_points.get(source_id)
+
+    def get_source_point_by_function_id(self, function_id: str) -> SourcePointNode | None:
+        """Retrieve a SourcePoint by function_id (architecture.md §5 cascade).
+
+        Falls back to id-based lookup for compatibility with the repair
+        orchestrator which sets id == function_id.
+        """
+        for sp in self._source_points.values():
+            if sp.function_id == function_id:
+                return sp
+        # Fallback: try by id
+        return self._source_points.get(function_id)
 
     def list_source_points(self) -> list[SourcePointNode]:
         """Return all SourcePoint nodes."""
@@ -1418,6 +1432,35 @@ class Neo4jGraphStore:
             module=record.get("module", ""),
             status=record["status"],
         )
+
+    def get_source_point_by_function_id(self, function_id: str) -> SourcePointNode | None:
+        """Retrieve a SourcePoint by function_id (architecture.md §5 cascade).
+
+        Used by the review cascade to find the SourcePoint associated with
+        a caller function. Falls back to id-based lookup for compatibility
+        with the repair orchestrator which sets id == function_id.
+        """
+        # Try by function_id first
+        cypher = (
+            "MATCH (s:SourcePoint {function_id: $fid}) "
+            "RETURN s.id AS id, s.entry_point_kind AS entry_point_kind, "
+            "s.reason AS reason, s.function_id AS function_id, "
+            "s.module AS module, s.status AS status "
+            "LIMIT 1"
+        )
+        with self._get_driver().session() as session:
+            record = session.run(cypher, fid=function_id).single()
+        if record is not None:
+            return SourcePointNode(
+                id=record["id"],
+                entry_point_kind=record["entry_point_kind"],
+                reason=record["reason"],
+                function_id=record["function_id"],
+                module=record.get("module", ""),
+                status=record["status"],
+            )
+        # Fallback: try by id (repair orchestrator sets id == function_id)
+        return self.get_source_point(function_id)
 
     def list_source_points(self) -> list[SourcePointNode]:
         """Return all SourcePoint nodes from Neo4j."""

@@ -82,8 +82,11 @@ class SourcePointClient:
                     continue
 
                 for entry in entries:
+                    entry_id = entry.get("id")
+                    if not entry_id:
+                        continue
                     results.append(SourcePointInfo(
-                        function_id=entry["id"],
+                        function_id=entry_id,
                         entry_point_kind=entry.get("classification") or "entry_point",
                         reason="archdoc-detected",
                         module=mod_name,

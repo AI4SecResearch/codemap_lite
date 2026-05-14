@@ -208,6 +208,7 @@ def create_analyze_router() -> APIRouter:
         }
 
         async def _run_repair() -> None:
+            _success = False
             try:
                 from codemap_lite.analysis.feedback_store import FeedbackStore
                 from codemap_lite.analysis.repair_orchestrator import (
@@ -279,12 +280,13 @@ def create_analyze_router() -> APIRouter:
                         sid for sid in source_ids if sid in set(requested_source_ids)
                     ]
                 await orch.run_repairs(source_ids)
+                _success = True
             except Exception as exc:
                 logger.exception("Repair background task failed: %s", exc)
             finally:
                 request.app.state.analyze_state = {
                     "state": "idle",
-                    "progress": 0.0,
+                    "progress": 1.0 if _success else 0.0,
                     "started_at": request.app.state.analyze_state.get("started_at"),
                     "completed_at": datetime.now(timezone.utc).isoformat(),
                 }
