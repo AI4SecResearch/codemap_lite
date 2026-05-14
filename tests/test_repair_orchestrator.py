@@ -440,6 +440,7 @@ async def test_orchestrator_injects_feedback_store_counter_examples(tmp_path):
             wrong_target="legacy_handler",
             correct_target="modern_handler",
             pattern="dispatcher vtable resolution must prefer modern_handler",
+            source_id="src_001",
         )
     )
 
@@ -2010,6 +2011,7 @@ async def test_feedback_loop_injects_counter_examples_into_next_repair(tmp_path)
         call_context="void* fp = (void*)handler; ((fn_t)fp)()",
         wrong_target="generic_handler",
         correct_target="specific_handler",
+        source_id="f1",
     ))
 
     store = InMemoryGraphStore()

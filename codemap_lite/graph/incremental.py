@@ -74,6 +74,10 @@ class IncrementalUpdater:
         function_ids = {f.id for f in functions}
         result.removed_functions = list(function_ids)
 
+        if not function_ids:
+            # File has no functions — nothing to invalidate
+            return result
+
         # Step 2: Find edges pointing to/from functions in this file.
         # Capture edge details before deletion so we can regenerate
         # UnresolvedCalls (architecture.md §7 step 3).
@@ -112,6 +116,20 @@ class IncrementalUpdater:
         # Step 3: Delete functions, their edges, and associated UnresolvedCalls
         # architecture.md §7: "删除旧 Function 节点及关联 CALLS 边 + UnresolvedCall"
         # Count total edges before bulk deletion (single pass, not per-function)
+        #
+        # Before deleting, snapshot UC metadata for call sites that will be
+        # regenerated — preserves var_name/var_type/candidates from static
+        # analysis so the repair agent has richer context (Bug fix: previously
+        # regenerated UCs lost this metadata).
+        uc_metadata_cache: dict[tuple[str, str, int], UnresolvedCallNode] = {}
+        for caller_id, _callee_id, props in invalidated_llm_edges:
+            existing = [
+                uc for uc in self._store.get_unresolved_calls(caller_id=caller_id)
+                if uc.call_file == props.call_file and uc.call_line == props.call_line
+            ]
+            if existing:
+                uc_metadata_cache[(caller_id, props.call_file, props.call_line)] = existing[0]
+
         edges_before = len(self._store.list_calls_edges())
         for fid in function_ids:
             self._store.delete_calls_edges_for_function(fid)
@@ -152,7 +170,9 @@ class IncrementalUpdater:
             call_expr, snippet = self._read_source_context(
                 props.call_file, props.call_line, self._target_dir
             )
-            # Regenerate UnresolvedCall so the repair agent can re-attempt
+            # Regenerate UnresolvedCall so the repair agent can re-attempt.
+            # Preserve var_name/var_type from the original UC if available.
+            cached = uc_metadata_cache.get((caller_id, props.call_file, props.call_line))
             gap = UnresolvedCallNode(
                 caller_id=caller_id,
                 call_expression=call_expr,
@@ -160,8 +180,8 @@ class IncrementalUpdater:
                 call_line=props.call_line,
                 call_type=props.call_type,
                 source_code_snippet=snippet,
-                var_name="",
-                var_type="",
+                var_name=getattr(cached, "var_name", "") or "",
+                var_type=getattr(cached, "var_type", "") or "",
                 retry_count=0,
                 status="pending",
             )

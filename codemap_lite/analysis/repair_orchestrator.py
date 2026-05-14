@@ -341,7 +341,7 @@ class RepairOrchestrator:
             # newly added feedback lands in the next agent launch
             # (architecture.md §3 反馈机制 step 4).
             counter_examples = (
-                self._config.feedback_store.render_markdown()
+                self._config.feedback_store.render_markdown_for_source(source_id)
                 if self._config.feedback_store is not None
                 else ""
             )

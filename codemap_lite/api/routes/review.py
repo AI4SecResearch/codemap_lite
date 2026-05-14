@@ -251,6 +251,7 @@ def create_review_router() -> APIRouter:
                         wrong_target=body.callee_id,
                         correct_target=body.correct_target,
                         pattern=f"{body.caller_id} -> {body.callee_id} at {body.call_file}:{body.call_line}",
+                        source_id=body.caller_id,
                     )
                     was_new = feedback_store.add(example)
                     review["counter_example_deduplicated"] = not was_new
@@ -398,6 +399,7 @@ def create_review_router() -> APIRouter:
                     wrong_target=body.callee_id,
                     correct_target=body.correct_target,
                     pattern=f"{body.caller_id} -> {body.callee_id} at {body.call_file}:{body.call_line}",
+                    source_id=body.caller_id,
                 )
                 feedback_store.add(example)
 

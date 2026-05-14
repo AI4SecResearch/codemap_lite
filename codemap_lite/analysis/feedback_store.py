@@ -14,6 +14,7 @@ class CounterExample:
     wrong_target: str
     correct_target: str
     pattern: str
+    source_id: str = ""
 
 
 class FeedbackStore:
@@ -59,6 +60,36 @@ class FeedbackStore:
 
     def list_all(self) -> list[CounterExample]:
         return list(self._examples)
+
+    def get_for_source(self, source_id: str) -> list[CounterExample]:
+        """Return counter-examples scoped to a specific source point.
+
+        architecture.md §3 反馈机制: each repair agent should only see
+        counter-examples relevant to its own source point's repair history.
+        """
+        return [e for e in self._examples if e.source_id == source_id]
+
+    def render_markdown_for_source(self, source_id: str) -> str:
+        """Render counter-examples filtered by source_id as agent-readable markdown.
+
+        Used by RepairOrchestrator to inject only relevant counter-examples
+        into each source's .icslpreprocess directory (architecture.md §3).
+        Falls back to render_markdown() (all examples) when source_id is empty.
+        """
+        if not source_id:
+            return self.render_markdown()
+        examples = self.get_for_source(source_id)
+        if not examples:
+            return ""
+        lines = ["# Counter Examples (反例库)\n"]
+        lines.append("以下是之前修复中出现的错误模式，请避免重复：\n")
+        for i, ex in enumerate(examples, 1):
+            lines.append(f"## 反例 {i}: {ex.pattern}\n")
+            lines.append(f"- **调用上下文**: `{ex.call_context}`")
+            lines.append(f"- **错误目标**: `{ex.wrong_target}`")
+            lines.append(f"- **正确目标**: `{ex.correct_target}`")
+            lines.append("")
+        return "\n".join(lines)
 
     def _save(self) -> None:
         # Save JSON (machine-readable)
