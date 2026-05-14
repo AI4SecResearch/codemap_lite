@@ -64,12 +64,15 @@ class PipelineOrchestrator:
         target_dir: Path,
         store: GraphStore | None = None,
         registry: PluginRegistry | None = None,
+        source_point_client: Any = None,
     ) -> None:
         self._target_dir = target_dir
         self._store = store or InMemoryGraphStore()
         self._scanner = FileScanner()
         self._registry = registry or self._default_registry()
         self._state_path = target_dir / ".icslpreprocess" / "state.json"
+        # architecture.md §7 step 4: re-fetch source points before incremental
+        self._source_point_client = source_point_client
 
     def _default_registry(self) -> PluginRegistry:
         """Create registry with default plugins."""
@@ -102,10 +105,41 @@ class PipelineOrchestrator:
         return result
 
     def run_incremental_analysis(self) -> PipelineResult:
-        """Run incremental analysis: only process changed files."""
+        """Run incremental analysis: only process changed files.
+
+        architecture.md §7 5-step cascade:
+        1. file change detection (SHA256 hash comparison)
+        2. invalidate stale functions/edges + re-parse changed files
+        3. cascade: LLM edges → delete + regenerate UC
+        4. re-fetch source points from codewiki_lite
+        5. re-repair affected sources (caller triggers this via CLI)
+        """
         result = PipelineResult()
 
-        # Detect changes
+        # architecture.md §7 step 4: re-fetch source points before invalidation
+        # so new/removed source points are reflected in the graph store.
+        if self._source_point_client is not None:
+            import asyncio
+
+            try:
+                source_points = asyncio.run(self._source_point_client.fetch())
+                for sp in source_points:
+                    from codemap_lite.graph.schema import SourcePointNode
+
+                    node = SourcePointNode(
+                        function_id=sp.function_id,
+                        entry_point_kind=sp.entry_point_kind,
+                        reason=sp.reason,
+                        module=sp.module,
+                        status="pending",
+                    )
+                    self._store.create_source_point(node)
+            except Exception as exc:
+                # Source point fetch is non-blocking: proceed with stale SPs
+                # if codewiki_lite is unreachable.
+                result.errors.append(f"source_point_fetch_failed: {exc}")
+
+        # Detect changes (architecture.md §7 step 1)
         changes = self._scanner.detect_changes(self._target_dir, self._state_path)
         changed_files = changes.added + changes.modified
         result.files_changed = len(changed_files) + len(changes.deleted)

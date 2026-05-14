@@ -640,14 +640,30 @@ class Neo4jGraphStore:
             self._driver = None
 
     def ensure_indexes(self) -> None:
-        """Create required indexes if they don't exist.
+        """Create required indexes and uniqueness constraints if they don't exist.
 
         architecture.md §4 索引: 7 indexes for query performance.
+        architecture.md §4 节点唯一性: Function.id, File.file_path, and
+        implied uniqueness on RepairLog triple-key (caller_id, callee_id,
+        call_location) and UnresolvedCall triple-key (caller_id, call_file,
+        call_line). Also adds a composite index on RepairLog for efficient
+        delete_repair_logs_for_edge lookups.
         Idempotent — safe to call multiple times.
         """
         if self._indexes_ensured:
             return
+        constraint_statements = [
+            # architecture.md §4: Function.id must be unique (MERGE key)
+            "CREATE CONSTRAINT uniq_function_id IF NOT EXISTS FOR (n:Function) REQUIRE n.id IS UNIQUE",
+            # architecture.md §4: File.file_path must be unique (MERGE key)
+            "CREATE CONSTRAINT uniq_file_path IF NOT EXISTS FOR (n:File) REQUIRE n.file_path IS UNIQUE",
+            # architecture.md §4 line 271: RepairLog triple-key uniqueness
+            "CREATE CONSTRAINT uniq_repairlog_key IF NOT EXISTS FOR (n:RepairLog) REQUIRE (n.caller_id, n.callee_id, n.call_location) IS UNIQUE",
+            # UnresolvedCall triple-key uniqueness (implied by MERGE dedup)
+            "CREATE CONSTRAINT uniq_uc_key IF NOT EXISTS FOR (n:UnresolvedCall) REQUIRE (n.caller_id, n.call_file, n.call_line) IS UNIQUE",
+        ]
         index_statements = [
+            # architecture.md §4: 7 indexes
             "CREATE INDEX idx_file_hash IF NOT EXISTS FOR (n:File) ON (n.hash)",
             "CREATE INDEX idx_function_file IF NOT EXISTS FOR (n:Function) ON (n.file_path)",
             "CREATE INDEX idx_function_sig IF NOT EXISTS FOR (n:Function) ON (n.signature)",
@@ -655,8 +671,12 @@ class Neo4jGraphStore:
             "CREATE INDEX idx_calls_resolved IF NOT EXISTS FOR ()-[r:CALLS]-() ON (r.resolved_by)",
             "CREATE INDEX idx_gap_status IF NOT EXISTS FOR (n:UnresolvedCall) ON (n.status)",
             "CREATE INDEX idx_gap_caller IF NOT EXISTS FOR (n:UnresolvedCall) ON (n.caller_id)",
+            # Composite index for efficient RepairLog lookups by edge triple-key
+            "CREATE INDEX idx_repairlog_caller IF NOT EXISTS FOR (n:RepairLog) ON (n.caller_id)",
         ]
         with self._driver.session() as session:
+            for stmt in constraint_statements:
+                session.run(stmt)
             for stmt in index_statements:
                 session.run(stmt)
         self._indexes_ensured = True

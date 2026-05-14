@@ -36,18 +36,71 @@ def _load_settings(config: str):
 def analyze(
     config: str = typer.Option("config.yaml", "--config", "-c", help="Path to config.yaml"),
     incremental: bool = typer.Option(False, "--incremental", help="Run incremental analysis"),
+    auto_repair: bool = typer.Option(
+        False,
+        "--auto-repair",
+        help="After incremental analysis, automatically trigger repair "
+        "for affected sources (architecture.md §7 step 5).",
+    ),
 ):
     """Parse target code and build call graph in Neo4j."""
     from codemap_lite.pipeline.orchestrator import PipelineOrchestrator
 
     settings = _load_settings(config)
-    orch = PipelineOrchestrator(target_dir=Path(settings.project.target_dir))
+    target_dir = Path(settings.project.target_dir)
+
+    # Build optional source_point_client for §7 step 4
+    sp_client = None
+    try:
+        from codemap_lite.analysis.source_point_client import SourcePointClient
+        sp_client = SourcePointClient(base_url=settings.codewiki_lite.base_url)
+    except Exception:
+        pass  # non-critical: proceed without SP re-fetch
+
+    orch = PipelineOrchestrator(
+        target_dir=target_dir,
+        source_point_client=sp_client,
+    )
 
     if incremental:
         result = orch.run_incremental_analysis()
         typer.echo(f"Incremental: {result.files_changed} files changed, {result.functions_found} functions updated")
         if result.affected_source_ids:
             typer.echo(f"  {len(result.affected_source_ids)} source(s) need re-repair: {', '.join(result.affected_source_ids[:5])}")
+
+            # architecture.md §7 step 5: auto-trigger repair for affected sources
+            if auto_repair:
+                from codemap_lite.analysis.feedback_store import FeedbackStore
+                from codemap_lite.analysis.repair_orchestrator import (
+                    RepairConfig,
+                    RepairOrchestrator,
+                )
+
+                command, args = _backend_subprocess(settings)
+                feedback_store = FeedbackStore(
+                    storage_dir=target_dir / ".codemap_lite" / "feedback"
+                )
+                graph_store = _build_graph_store(settings)
+
+                repair_orch = RepairOrchestrator(
+                    RepairConfig(
+                        target_dir=target_dir,
+                        backend=settings.agent.backend,
+                        command=command,
+                        args=args,
+                        max_concurrency=settings.agent.max_concurrency,
+                        neo4j_uri=settings.neo4j.uri,
+                        neo4j_user=settings.neo4j.user,
+                        neo4j_password=settings.neo4j.password,
+                        feedback_store=feedback_store,
+                        graph_store=graph_store,
+                        subprocess_timeout_seconds=settings.agent.subprocess_timeout_seconds,
+                    )
+                )
+                repair_result = asyncio.run(
+                    repair_orch.run_repairs(result.affected_source_ids)
+                )
+                typer.echo(f"  Repair completed: {len(repair_result.successes)} sources repaired, {len(repair_result.failures)} failed")
     else:
         result = orch.run_full_analysis()
         typer.echo(f"Full: {result.files_scanned} files, {result.functions_found} functions, {result.direct_calls} calls, {result.unresolved_calls} gaps")

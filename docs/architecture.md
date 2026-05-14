@@ -159,7 +159,7 @@ Agent 的工作流程（CLAUDE.md 中描述）：
 ├── CLAUDE.md              # Agent 角色定义 + 工具使用说明 + 反例库引用
 ├── .claude/
 │   └── settings.json      # Hook 配置
-└── .icslpreprocess/
+└── .icslpreprocess_{source_id}/   # 每个并发 source 独立目录（ADR-5）
     ├── icsl_tools.py       # 图查询 + 边写入 + 门禁 CLI 工具
     ├── counter_examples.md # 反例库（泛化后全量注入）
     ├── config.yaml         # Neo4j 连接配置（icsl_tools.py 读取）
@@ -172,7 +172,7 @@ Agent 的工作流程（CLAUDE.md 中描述）：
 
 **Orchestrator 在启动每个 Agent 前**：
 1. 生成 CLAUDE.md（角色 + 任务 + 工具说明 + 反例引用 + 终止条件）
-2. 复制 icsl_tools.py 到 .icslpreprocess/
+2. 复制 icsl_tools.py 到 .icslpreprocess_{source_id}/（ADR-5：并发 source 各自独立目录）
 3. 生成 config.yaml（Neo4j 连接信息）
 4. 更新 counter_examples.md（最新反例库）
 5. 配置 .claude/settings.json（hooks）
@@ -187,10 +187,10 @@ Agent 的工作流程（CLAUDE.md 中描述）：
 {
   "hooks": {
     "PostToolUse": [{
-      "command": "python .icslpreprocess/hooks/log_tool_use.py"
+      "command": "python .icslpreprocess_{source_id}/hooks/log_tool_use.py"
     }],
     "Notification": [{
-      "command": "python .icslpreprocess/hooks/log_notification.py"
+      "command": "python .icslpreprocess_{source_id}/hooks/log_notification.py"
     }]
   }
 }
@@ -233,7 +233,7 @@ agent:
 
 ### 反馈机制（反例库）
 
-**存储格式**：Markdown 文件（`.icslpreprocess/counter_examples.md`），通过 CLAUDE.md 引用，Agent 启动时自动加载。
+**存储格式**：Markdown 文件（`.icslpreprocess_{source_id}/counter_examples.md`），通过 CLAUDE.md 引用，Agent 启动时自动加载（ADR-5）。
 
 **反例生成流程**：
 1. 审阅标记边为错误 → 提取反例（调用上下文 + 错误目标 + 正确目标）
@@ -268,14 +268,15 @@ agent:
 | `HAS_GAP` | Function → UnresolvedCall | — |
 | `IS_SOURCE` | Function → SourcePoint | — |
 
-注：RepairLog 不通过关系关联，而是通过属性引用 CALLS 边（存储 caller_id + callee_id + location 三元组唯一定位）。
+注：RepairLog 不通过关系关联，而是通过属性引用 CALLS 边（存储 caller_id + callee_id + call_location 三元组唯一定位，call_location 格式为 `{call_file}:{call_line}`）。
 
 ### CALLS 边属性
 ```
 {
   resolved_by: "symbol_table" | "signature" | "dataflow" | "context" | "llm",
   call_type: "direct" | "indirect" | "virtual",
-  location: {file: str, line: int}
+  call_file: str,    // flattened from location.file (Neo4j doesn't support nested rel props)
+  call_line: int     // flattened from location.line
 }
 ```
 
@@ -290,6 +291,16 @@ CREATE INDEX idx_source_kind FOR (n:SourcePoint) ON (n.entry_point_kind);
 CREATE INDEX idx_calls_resolved FOR ()-[r:CALLS]-() ON (r.resolved_by);
 CREATE INDEX idx_gap_status FOR (n:UnresolvedCall) ON (n.status);
 CREATE INDEX idx_gap_caller FOR (n:UnresolvedCall) ON (n.caller_id);
+CREATE INDEX idx_repairlog_caller FOR (n:RepairLog) ON (n.caller_id);
+```
+
+### 唯一性约束
+```cypher
+CREATE CONSTRAINT uniq_function_id FOR (n:Function) REQUIRE n.id IS UNIQUE;
+CREATE CONSTRAINT uniq_file_path FOR (n:File) REQUIRE n.file_path IS UNIQUE;
+CREATE CONSTRAINT uniq_repairlog_key FOR (n:RepairLog) REQUIRE (n.caller_id, n.callee_id, n.call_location) IS UNIQUE;
+CREATE CONSTRAINT uniq_uc_key FOR (n:UnresolvedCall) REQUIRE (n.caller_id, n.call_file, n.call_line) IS UNIQUE;
+```
 ```
 
 ### UnresolvedCall 生命周期
@@ -427,7 +438,7 @@ codemap_lite/
 ├── CLAUDE.md                       # Agent 角色 + 工具说明 + 反例库引用
 ├── .claude/
 │   └── settings.json               # Hook 配置
-└── .icslpreprocess/
+└── .icslpreprocess_{source_id}/   # 每个并发 source 独立目录（ADR-5）
     ├── icsl_tools.py               # 图查询 + 边写入 + 门禁 CLI 工具
     ├── counter_examples.md          # 反例库（泛化后全量）
     ├── config.yaml                  # Neo4j 连接配置

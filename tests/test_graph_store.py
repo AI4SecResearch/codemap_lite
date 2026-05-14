@@ -865,12 +865,21 @@ def test_neo4j_ensure_indexes_runs_on_first_connection(neo4j_store):
     neo4j_store.ensure_indexes()
 
     assert neo4j_store._indexes_ensured is True
-    # Should have run 7 CREATE INDEX statements (architecture.md §4)
+    # Should have run 8 CREATE INDEX + 4 CREATE CONSTRAINT statements
+    # (architecture.md §4: 7 original indexes + idx_repairlog_caller,
+    #  plus 4 uniqueness constraints)
     index_calls = [
         c for c in session.calls if "CREATE INDEX" in c[0]
     ]
-    assert len(index_calls) == 7, (
-        f"architecture.md §4: expected 7 index creation statements, got {len(index_calls)}"
+    assert len(index_calls) == 8, (
+        f"architecture.md §4: expected 8 index creation statements, got {len(index_calls)}"
+    )
+
+    constraint_calls = [
+        c for c in session.calls if "CREATE CONSTRAINT" in c[0]
+    ]
+    assert len(constraint_calls) == 4, (
+        f"expected 4 uniqueness constraints, got {len(constraint_calls)}"
     )
 
     # Verify specific indexes
@@ -882,6 +891,14 @@ def test_neo4j_ensure_indexes_runs_on_first_connection(neo4j_store):
     assert "idx_calls_resolved" in all_cypher
     assert "idx_gap_status" in all_cypher
     assert "idx_gap_caller" in all_cypher
+    assert "idx_repairlog_caller" in all_cypher
+
+    # Verify specific constraints
+    all_constraint_cypher = " ".join(c[0] for c in constraint_calls)
+    assert "uniq_function_id" in all_constraint_cypher
+    assert "uniq_file_path" in all_constraint_cypher
+    assert "uniq_repairlog_key" in all_constraint_cypher
+    assert "uniq_uc_key" in all_constraint_cypher
 
 
 def test_neo4j_ensure_indexes_is_idempotent(neo4j_store):
