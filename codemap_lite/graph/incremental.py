@@ -152,10 +152,14 @@ class IncrementalUpdater:
 
         # All affected callers (LLM and non-LLM) may be SourcePoints whose
         # reachable subgraph has changed — collect them for status reset.
+        # affected_source_ids stores function_ids (for run_repairs compatibility).
+        # sp_ids_to_reset stores SP.id (for update_source_point_status).
+        sp_ids_to_reset: set[str] = set()
         for caller_id in result.affected_callers:
-            sp = self._store.get_source_point(caller_id)
+            sp = self._store.get_source_point_by_function_id(caller_id)
             if sp is not None:
                 affected_source_ids.add(caller_id)
+                sp_ids_to_reset.add(sp.id)
 
         for caller_id, callee_id, props in invalidated_llm_edges:
             # Delete the RepairLog that documented this LLM repair
@@ -187,16 +191,20 @@ class IncrementalUpdater:
             )
             self._store.create_unresolved_call(gap)
             result.regenerated_unresolved_calls.append(gap.id)
-            affected_source_ids.add(caller_id)
+            # Track the SourcePoint for status reset
+            sp = self._store.get_source_point_by_function_id(caller_id)
+            if sp is not None:
+                affected_source_ids.add(caller_id)
+                sp_ids_to_reset.add(sp.id)
 
         # Step 4: Reset SourcePoint status to "pending" for affected sources
         # so the repair orchestrator will re-process them.
         # architecture.md §7 + §3: invalidation regenerates pending GAPs,
         # so the source must transition back to allow re-repair.
-        for source_id in affected_source_ids:
-            sp = self._store.get_source_point(source_id)
+        for sp_id in sp_ids_to_reset:
+            sp = self._store.get_source_point(sp_id)
             if sp is not None and getattr(sp, "status", "") != "pending":
-                self._store.update_source_point_status(source_id, "pending", force_reset=True)
+                self._store.update_source_point_status(sp_id, "pending", force_reset=True)
 
         # Expose affected_source_ids so the orchestrator can trigger re-repair
         # (architecture.md §7 step 5).
