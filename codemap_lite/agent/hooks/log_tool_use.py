@@ -1,10 +1,26 @@
 """PostToolUse hook — logs agent tool usage to JSONL files."""
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any
+
+
+def _safe_dirname(source_id: str) -> str:
+    """Convert source_id to filesystem-safe directory name.
+
+    Must match codemap_lite.analysis.repair_orchestrator._safe_dirname
+    exactly so hooks write to the same directory the orchestrator reads.
+    """
+    safe = re.sub(r"[/\\:]+", "_", source_id)
+    safe = re.sub(r"_+", "_", safe).strip("_")
+    if len(safe) > 60:
+        h = hashlib.sha1(source_id.encode()).hexdigest()[:8]
+        safe = safe[:60] + "_" + h
+    return safe
 
 
 def _is_write_edge_call(event: dict[str, Any]) -> bool:
@@ -28,7 +44,8 @@ def _update_progress_on_write_edge(
     mechanism for real-time progress reporting because the agent doesn't
     emit Notification events for every edge write.
     """
-    progress_path = log_dir / "repair" / source_id / "progress.json"
+    safe_id = _safe_dirname(source_id)
+    progress_path = log_dir / "repair" / safe_id / "progress.json"
     progress_path.parent.mkdir(parents=True, exist_ok=True)
 
     existing: dict[str, Any] = {}
@@ -50,7 +67,8 @@ def process_tool_use_event(
     log_dir: Path,
 ) -> None:
     """Append a tool use event to the JSONL log for a specific GAP."""
-    log_path = log_dir / "repair" / source_id / f"{gap_id}.jsonl"
+    safe_id = _safe_dirname(source_id)
+    log_path = log_dir / "repair" / safe_id / f"{gap_id}.jsonl"
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     entry = {

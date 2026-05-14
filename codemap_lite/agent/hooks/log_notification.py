@@ -1,10 +1,26 @@
 """Notification hook — updates progress.json for orchestrator polling."""
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
+
+
+def _safe_dirname(source_id: str) -> str:
+    """Convert source_id to filesystem-safe directory name.
+
+    Must match codemap_lite.analysis.repair_orchestrator._safe_dirname
+    exactly so hooks write to the same directory the orchestrator reads.
+    """
+    safe = re.sub(r"[/\\:]+", "_", source_id)
+    safe = re.sub(r"_+", "_", safe).strip("_")
+    if len(safe) > 60:
+        h = hashlib.sha1(source_id.encode()).hexdigest()[:8]
+        safe = safe[:60] + "_" + h
+    return safe
 
 
 def process_notification_event(
@@ -13,7 +29,8 @@ def process_notification_event(
     log_dir: Path,
 ) -> None:
     """Update progress.json with current repair status."""
-    progress_path = log_dir / "repair" / source_id / "progress.json"
+    safe_id = _safe_dirname(source_id)
+    progress_path = log_dir / "repair" / safe_id / "progress.json"
     progress_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Canonical progress.json schema (architecture.md §3 + ADR 0004).

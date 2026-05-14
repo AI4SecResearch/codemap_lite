@@ -211,3 +211,36 @@ def test_write_edge_hook_preserves_gaps_total():
         assert data["gaps_total"] == 10, "gaps_total was lost by hook"
         assert data["gaps_fixed"] == 1
         assert data["state"] == "running", "orchestrator state was lost"
+
+
+def test_hooks_use_safe_dirname_for_path_unsafe_source_ids():
+    """Hooks must apply _safe_dirname to source_id so progress files land in
+    the same directory the orchestrator reads from (regression: raw source_id
+    with '/' or '::' created nested/wrong directories)."""
+    from codemap_lite.analysis.repair_orchestrator import _safe_dirname
+
+    unsafe_id = "module/sub::OHOS::Func::OnRemoteRequest"
+    safe_id = _safe_dirname(unsafe_id)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Notification hook
+        event = {"gaps_fixed": 1, "gaps_total": 5, "current_gap": "gap_x"}
+        process_notification_event(event, source_id=unsafe_id, log_dir=Path(tmpdir))
+
+        # Must land in the safe dirname, not the raw source_id path
+        progress_path = Path(tmpdir) / "repair" / safe_id / "progress.json"
+        assert progress_path.exists(), (
+            f"progress.json not at expected path: {progress_path}"
+        )
+        data = json.loads(progress_path.read_text())
+        assert data["gaps_fixed"] == 1
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Tool use hook
+        event = {"tool_name": "Read", "params": {"file_path": "/x"}, "result": "ok"}
+        process_tool_use_event(event, source_id=unsafe_id, gap_id="gap_1", log_dir=Path(tmpdir))
+
+        log_path = Path(tmpdir) / "repair" / safe_id / "gap_1.jsonl"
+        assert log_path.exists(), (
+            f"JSONL log not at expected path: {log_path}"
+        )
