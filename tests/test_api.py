@@ -654,8 +654,48 @@ class TestSourcePointsEndpoint:
         assert data["by_status"]["complete"] == 1
         assert data["by_status"]["pending"] == 1
 
+    def test_get_source_point_by_id(self) -> None:
+        """architecture.md §8: GET /source-points/{id} returns individual SP."""
+        from codemap_lite.graph.schema import SourcePointNode
 
-class TestReviewEndpoint:
+        client, store = get_test_client()
+        store.create_source_point(SourcePointNode(
+            id="sp1", entry_point_kind="cb", reason="test reason",
+            function_id="f1", module="audio", status="running",
+        ))
+        resp = client.get("/api/v1/source-points/sp1")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["id"] == "sp1"
+        assert data["status"] == "running"
+        assert data["entry_point_kind"] == "cb"
+
+    def test_get_source_point_not_found(self) -> None:
+        """GET /source-points/{id} returns 404 for unknown id."""
+        client, _ = get_test_client()
+        resp = client.get("/api/v1/source-points/nonexistent")
+        assert resp.status_code == 404
+
+    def test_stats_includes_source_points_by_status(self) -> None:
+        """architecture.md §8: stats includes source_points_by_status."""
+        from codemap_lite.graph.schema import SourcePointNode
+
+        client, store = get_test_client()
+        store.create_source_point(SourcePointNode(
+            id="sp1", entry_point_kind="cb", reason="",
+            function_id="f1", module="", status="complete",
+        ))
+        store.create_source_point(SourcePointNode(
+            id="sp2", entry_point_kind="cb", reason="",
+            function_id="f2", module="", status="pending",
+        ))
+        resp = client.get("/api/v1/stats")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "source_points_by_status" in data
+        assert data["source_points_by_status"]["complete"] == 1
+        assert data["source_points_by_status"]["pending"] == 1
+        assert data["source_points_by_status"]["running"] == 0
     def _setup_edge(self, store: InMemoryGraphStore) -> None:
         fn1 = FunctionNode(
             signature="void f()", name="f", file_path="a.c",

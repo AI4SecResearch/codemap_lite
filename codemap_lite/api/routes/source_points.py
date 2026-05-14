@@ -86,6 +86,24 @@ def create_source_points_router() -> APIRouter:
             by_status[s] = by_status.get(s, 0) + 1
         return {"total": len(entries), "by_kind": by_kind, "by_status": by_status}
 
+    @router.get("/source-points/{source_id}")
+    def get_source_point(request: Request, source_id: str) -> dict[str, Any]:
+        """Get a single source point with status (architecture.md §8)."""
+        store = request.app.state.store
+        # Try graph store first
+        sp = store.get_source_point(source_id)
+        if sp is not None:
+            from dataclasses import asdict
+            return asdict(sp)
+        # Fall back to codewiki_lite entries
+        entries = getattr(request.app.state, "source_points", [])
+        for entry in entries:
+            if entry.get("id") == source_id or entry.get("function_id") == source_id:
+                item = dict(entry)
+                item.setdefault("status", "pending")
+                return item
+        raise HTTPException(status_code=404, detail="Source point not found")
+
     @router.get("/source-points/{source_id:path}/reachable")
     def get_reachable(request: Request, source_id: str) -> dict[str, Any]:
         store = request.app.state.store

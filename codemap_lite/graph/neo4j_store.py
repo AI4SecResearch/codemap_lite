@@ -551,6 +551,13 @@ class InMemoryGraphStore:
             key = e.props.resolved_by
             if key in _VALID_RESOLVED_BY:
                 by_resolved[key] += 1
+        # architecture.md §3: SourcePoint status lifecycle tracking
+        sp_by_status: dict[str, int] = {
+            "pending": 0, "running": 0, "complete": 0, "partial_complete": 0,
+        }
+        for sp in self._source_points.values():
+            s = sp.status if sp.status in sp_by_status else "pending"
+            sp_by_status[s] += 1
         return {
             "total_functions": len(self._functions),
             "total_files": len(self._files),
@@ -564,6 +571,7 @@ class InMemoryGraphStore:
             "unresolved_by_status": by_status,
             "unresolved_by_category": by_category,
             "calls_by_resolved_by": by_resolved,
+            "source_points_by_status": sp_by_status,
         }
 
     def get_reachable_subgraph(
@@ -1233,6 +1241,17 @@ class Neo4jGraphStore:
                 key = row["rb"]
                 if key in _VALID_RESOLVED_BY:
                     by_resolved[key] += row["n"]
+            # architecture.md §3: SourcePoint status lifecycle tracking
+            _VALID_SP_STATUSES = {"pending", "running", "complete", "partial_complete"}
+            sp_by_status: dict[str, int] = {s: 0 for s in _VALID_SP_STATUSES}
+            for row in session.run(
+                "MATCH (s:SourcePoint) "
+                "RETURN coalesce(s.status, 'pending') AS s, count(s) AS n"
+            ):
+                key = row["s"] or "pending"
+                if key not in _VALID_SP_STATUSES:
+                    key = "pending"
+                sp_by_status[key] = sp_by_status.get(key, 0) + row["n"]
         return {
             "total_functions": total_functions,
             "total_files": total_files,
@@ -1246,6 +1265,7 @@ class Neo4jGraphStore:
             "unresolved_by_status": by_status,
             "unresolved_by_category": by_category,
             "calls_by_resolved_by": by_resolved,
+            "source_points_by_status": sp_by_status,
         }
 
     def get_reachable_subgraph(
