@@ -367,7 +367,7 @@ class RepairOrchestrator:
                 stderr_target: Any = asyncio.subprocess.PIPE
                 log_fh = None
                 if log_dir is not None:
-                    source_log_dir = log_dir / source_id
+                    source_log_dir = log_dir / _safe_dirname(source_id)
                     source_log_dir.mkdir(parents=True, exist_ok=True)
                     log_path = source_log_dir / f"attempt_{attempts}.log"
                     log_fh = open(log_path, "ab")
