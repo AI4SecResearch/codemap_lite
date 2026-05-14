@@ -253,7 +253,8 @@ class RepairOrchestrator:
         (gaps_fixed/gaps_total/current_gap) are preserved.
         """
         target_dir = self._config.target_dir
-        progress_dir = target_dir / "logs" / "repair" / source_id
+        safe_id = _safe_dirname(source_id)
+        progress_dir = target_dir / "logs" / "repair" / safe_id
         progress_dir.mkdir(parents=True, exist_ok=True)
         path = progress_dir / "progress.json"
         existing: dict[str, Any] = {}
