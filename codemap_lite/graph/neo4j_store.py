@@ -177,17 +177,17 @@ class InMemoryGraphStore:
         return self._functions.get(id)
 
     def get_callers(self, function_id: str) -> list[FunctionNode]:
-        caller_ids = [
+        caller_ids = {
             e.caller_id for e in self._calls_edges if e.callee_id == function_id
-        ]
+        }
         return [
             self._functions[cid] for cid in caller_ids if cid in self._functions
         ]
 
     def get_callees(self, function_id: str) -> list[FunctionNode]:
-        callee_ids = [
+        callee_ids = {
             e.callee_id for e in self._calls_edges if e.caller_id == function_id
-        ]
+        }
         return [
             self._functions[cid] for cid in callee_ids if cid in self._functions
         ]
