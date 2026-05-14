@@ -4,13 +4,21 @@ from __future__ import annotations
 
 def generate_claude_md(
     source_id: str,
-    neo4j_config_path: str = ".icslpreprocess/config.yaml",
-    counter_examples_path: str = ".icslpreprocess/counter_examples.md",
+    neo4j_config_path: str | None = None,
+    counter_examples_path: str | None = None,
 ) -> str:
     """Generate CLAUDE.md content for a repair agent working on a specific source point."""
     # Derive the icsl_tools.py path from the config path's parent directory
     # (e.g. ".icslpreprocess_src_001/config.yaml" → ".icslpreprocess_src_001/icsl_tools.py")
     from pathlib import PurePosixPath
+
+    from codemap_lite.analysis.repair_orchestrator import _safe_dirname
+
+    safe_id = _safe_dirname(source_id)
+    if neo4j_config_path is None:
+        neo4j_config_path = f".icslpreprocess_{safe_id}/config.yaml"
+    if counter_examples_path is None:
+        counter_examples_path = f".icslpreprocess_{safe_id}/counter_examples.md"
     icsl_dir = str(PurePosixPath(neo4j_config_path).parent)
     icsl_tools = f"{icsl_dir}/icsl_tools.py"
 

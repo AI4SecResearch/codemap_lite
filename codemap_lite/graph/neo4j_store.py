@@ -101,6 +101,8 @@ class GraphStore(Protocol):
 
     def get_source_point(self, source_id: str) -> SourcePointNode | None: ...
 
+    def list_source_points(self) -> list[SourcePointNode]: ...
+
     def update_source_point_status(self, source_id: str, status: str, force_reset: bool = False) -> None: ...
 
     def reset_unresolvable_gaps(self) -> None: ...
@@ -401,6 +403,10 @@ class InMemoryGraphStore:
     def get_source_point(self, source_id: str) -> SourcePointNode | None:
         """Retrieve a SourcePoint by id."""
         return self._source_points.get(source_id)
+
+    def list_source_points(self) -> list[SourcePointNode]:
+        """Return all SourcePoint nodes."""
+        return list(self._source_points.values())
 
     def update_source_point_status(self, source_id: str, status: str, force_reset: bool = False) -> None:
         """Update SourcePoint.status (architecture.md §3 门禁机制).
@@ -1184,12 +1190,16 @@ class Neo4jGraphStore:
             total_repair_logs = session.run(
                 "MATCH (r:RepairLog) RETURN count(r) AS n"
             ).single()["n"]
+            _VALID_STATUSES = {"pending", "unresolvable"}
             by_status: dict[str, int] = {"pending": 0, "unresolvable": 0}
             for row in session.run(
                 "MATCH (u:UnresolvedCall) "
                 "RETURN coalesce(u.status, 'pending') AS s, count(u) AS n"
             ):
-                by_status[row["s"] or "pending"] = row["n"]
+                key = row["s"] or "pending"
+                if key not in _VALID_STATUSES:
+                    key = "pending"
+                by_status[key] = by_status.get(key, 0) + row["n"]
             # last_attempt_reason may be absent; bucket missing/malformed
             # to "none" so the Dashboard chip row never silently drops UCs.
             # architecture.md §3: valid categories are {gate_failed,
@@ -1368,6 +1378,28 @@ class Neo4jGraphStore:
             module=record.get("module", ""),
             status=record["status"],
         )
+
+    def list_source_points(self) -> list[SourcePointNode]:
+        """Return all SourcePoint nodes from Neo4j."""
+        cypher = (
+            "MATCH (s:SourcePoint) "
+            "RETURN s.id AS id, s.entry_point_kind AS entry_point_kind, "
+            "s.reason AS reason, s.function_id AS function_id, "
+            "s.module AS module, s.status AS status"
+        )
+        with self._get_driver().session() as session:
+            records = list(session.run(cypher))
+        return [
+            SourcePointNode(
+                id=r["id"],
+                entry_point_kind=r["entry_point_kind"],
+                reason=r["reason"],
+                function_id=r["function_id"],
+                module=r.get("module", ""),
+                status=r["status"],
+            )
+            for r in records
+        ]
 
     def update_source_point_status(self, source_id: str, status: str, force_reset: bool = False) -> None:
         """Update SourcePoint.status (architecture.md §3 门禁机制).

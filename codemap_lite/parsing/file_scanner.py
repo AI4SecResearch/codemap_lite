@@ -100,7 +100,7 @@ class FileScanner:
             state_path: Path to write the state.json file.
         """
         state = {f.file_path: f.hash for f in files}
-        state_path.write_text(json.dumps(state, indent=2))
+        state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
     def load_state(self, state_path: Path) -> dict[str, str]:
         """Load a previously saved state file.
@@ -114,7 +114,10 @@ class FileScanner:
         """
         if not state_path.exists():
             return {}
-        return json.loads(state_path.read_text())
+        try:
+            return json.loads(state_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return {}
 
     @staticmethod
     def _compute_hash(file_path: Path) -> str:

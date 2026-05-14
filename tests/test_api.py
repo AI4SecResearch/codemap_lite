@@ -583,6 +583,77 @@ class TestSourcePointsEndpoint:
         assert data["total"] == 0
         assert data["by_kind"] == {}
 
+    def test_source_points_status_enrichment(self) -> None:
+        """architecture.md §4: source points expose status from graph store."""
+        from codemap_lite.graph.schema import SourcePointNode
+
+        client, store = get_test_client()
+        # Create source point in graph store with status
+        sp = SourcePointNode(
+            id="sp1", entry_point_kind="callback_registration",
+            reason="test", function_id="func-1", module="m1", status="complete",
+        )
+        store.create_source_point(sp)
+        # Set raw codewiki_lite entries
+        client.app.state.source_points = [
+            {"id": "sp1", "entry_point_kind": "callback_registration",
+             "module": "m1", "function_id": "func-1"},
+            {"id": "sp2", "entry_point_kind": "entry_point",
+             "module": "m2", "function_id": "func-2"},
+        ]
+        resp = client.get("/api/v1/source-points")
+        assert resp.status_code == 200
+        items = resp.json()["items"]
+        # sp1 should have status from graph store
+        sp1 = next(i for i in items if i["id"] == "sp1")
+        assert sp1["status"] == "complete"
+        # sp2 has no graph store entry, defaults to "pending"
+        sp2 = next(i for i in items if i["id"] == "sp2")
+        assert sp2["status"] == "pending"
+
+    def test_source_points_filter_by_status(self) -> None:
+        """architecture.md §8: source points can be filtered by status."""
+        from codemap_lite.graph.schema import SourcePointNode
+
+        client, store = get_test_client()
+        store.create_source_point(SourcePointNode(
+            id="sp1", entry_point_kind="cb", reason="", function_id="f1",
+            module="", status="complete",
+        ))
+        store.create_source_point(SourcePointNode(
+            id="sp2", entry_point_kind="cb", reason="", function_id="f2",
+            module="", status="pending",
+        ))
+        client.app.state.source_points = [
+            {"id": "sp1", "function_id": "f1", "entry_point_kind": "cb", "module": ""},
+            {"id": "sp2", "function_id": "f2", "entry_point_kind": "cb", "module": ""},
+        ]
+        resp = client.get("/api/v1/source-points?status=complete")
+        assert resp.status_code == 200
+        items = resp.json()["items"]
+        assert len(items) == 1
+        assert items[0]["function_id"] == "f1"
+
+    def test_source_points_summary_includes_by_status(self) -> None:
+        """architecture.md §8: summary includes by_status breakdown."""
+        from codemap_lite.graph.schema import SourcePointNode
+
+        client, store = get_test_client()
+        store.create_source_point(SourcePointNode(
+            id="sp1", entry_point_kind="cb", reason="", function_id="f1",
+            module="", status="complete",
+        ))
+        client.app.state.source_points = [
+            {"id": "sp1", "function_id": "f1", "entry_point_kind": "cb", "module": ""},
+            {"id": "sp2", "function_id": "f2", "entry_point_kind": "ep", "module": ""},
+        ]
+        resp = client.get("/api/v1/source-points/summary")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "by_status" in data
+        assert data["by_status"]["complete"] == 1
+        assert data["by_status"]["pending"] == 1
+
 
 class TestReviewEndpoint:
     def _setup_edge(self, store: InMemoryGraphStore) -> None:
