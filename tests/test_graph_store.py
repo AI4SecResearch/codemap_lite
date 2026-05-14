@@ -1198,3 +1198,62 @@ def test_count_stats_unknown_status_bucketed_as_pending(store):
     )
     # The invalid status should be counted as "pending"
     assert by_status["pending"] == 2
+
+
+def test_get_calls_edge_returns_props(store):
+    """architecture.md §5: review endpoint uses get_calls_edge to verify
+    an edge exists before operating on it. Must return CallsEdgeProps."""
+    store.create_function(FunctionNode(
+        id="f1", signature="void f()", name="f",
+        file_path="a.cpp", start_line=1, end_line=10, body_hash="h1",
+    ))
+    store.create_function(FunctionNode(
+        id="f2", signature="void g()", name="g",
+        file_path="a.cpp", start_line=20, end_line=30, body_hash="h2",
+    ))
+    store.create_calls_edge("f1", "f2", CallsEdgeProps(
+        resolved_by="llm", call_type="indirect",
+        call_file="a.cpp", call_line=5,
+    ))
+
+    props = store.get_calls_edge("f1", "f2", "a.cpp", 5)
+    assert props is not None
+    assert props.resolved_by == "llm"
+    assert props.call_type == "indirect"
+    assert props.call_file == "a.cpp"
+    assert props.call_line == 5
+
+
+def test_get_calls_edge_returns_none_for_nonexistent(store):
+    """get_calls_edge must return None when no matching edge exists."""
+    result = store.get_calls_edge("no_such", "no_such", "x.cpp", 99)
+    assert result is None
+
+
+def test_delete_calls_edge_removes_and_returns_true(store):
+    """architecture.md §5 审阅交互: delete_calls_edge must remove the
+    specific edge and return True."""
+    store.create_function(FunctionNode(
+        id="f1", signature="void f()", name="f",
+        file_path="a.cpp", start_line=1, end_line=10, body_hash="h1",
+    ))
+    store.create_function(FunctionNode(
+        id="f2", signature="void g()", name="g",
+        file_path="a.cpp", start_line=20, end_line=30, body_hash="h2",
+    ))
+    store.create_calls_edge("f1", "f2", CallsEdgeProps(
+        resolved_by="llm", call_type="indirect",
+        call_file="a.cpp", call_line=5,
+    ))
+
+    deleted = store.delete_calls_edge("f1", "f2", "a.cpp", 5)
+    assert deleted is True
+    # Edge should be gone
+    assert store.get_calls_edge("f1", "f2", "a.cpp", 5) is None
+    assert not store.edge_exists("f1", "f2", "a.cpp", 5)
+
+
+def test_delete_calls_edge_returns_false_for_nonexistent(store):
+    """delete_calls_edge must return False when no matching edge exists."""
+    deleted = store.delete_calls_edge("no_such", "no_such", "x.cpp", 99)
+    assert deleted is False
