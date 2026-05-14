@@ -3883,4 +3883,227 @@ class TestSection5_ReviewCascadeHTTP:
         assert r2.status_code == 404
 
 
+# ---------------------------------------------------------------------------
+# §5/§8 POST /edges + DELETE /edges Full Lifecycle
+# ---------------------------------------------------------------------------
+
+
+class TestSection5_EdgesLifecycle:
+    """Test POST /edges and DELETE /edges full lifecycle (architecture.md §5/§8).
+
+    POST /edges: creates edge, deletes matching UC, returns 409 on duplicate.
+    DELETE /edges: 4-step cascade (delete edge, delete RepairLog, regen UC, reset SP).
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup(self, neo4j_store):
+        from codemap_lite.graph.schema import (
+            FunctionNode, UnresolvedCallNode, SourcePointNode, CallsEdgeProps,
+        )
+        from codemap_lite.api.app import create_app
+        from fastapi.testclient import TestClient
+        from neo4j import GraphDatabase
+
+        self.store = neo4j_store
+        self.driver = GraphDatabase.driver(
+            "bolt://localhost:7687", auth=("neo4j", NEO4J_PASSWORD)
+        )
+
+        # Create functions
+        fn_a = FunctionNode(
+            id="el_fn_a", signature="void elA()", name="elA",
+            file_path="/test/el.cpp", start_line=1, end_line=10,
+            body_hash="el_hash_a",
+        )
+        fn_b = FunctionNode(
+            id="el_fn_b", signature="void elB()", name="elB",
+            file_path="/test/el.cpp", start_line=20, end_line=30,
+            body_hash="el_hash_b",
+        )
+        neo4j_store.create_function(fn_a)
+        neo4j_store.create_function(fn_b)
+
+        # Create an UnresolvedCall for the gap
+        self.uc = UnresolvedCallNode(
+            caller_id="el_fn_a", call_expression="ptr->dispatch()",
+            call_file="/test/el.cpp", call_line=5,
+            call_type="indirect", source_code_snippet="ptr->dispatch();",
+            var_name="ptr", var_type="IDispatch*",
+            candidates=[], retry_count=0, status="pending",
+            id="el_uc_1",
+        )
+        neo4j_store.create_unresolved_call(self.uc)
+
+        # Create SourcePoint for fn_a
+        sp = SourcePointNode(
+            id="el_sp_a", entry_point_kind="callback",
+            reason="test edges lifecycle", function_id="el_fn_a",
+            module="test", status="complete",
+        )
+        neo4j_store.create_source_point(sp)
+
+        app = create_app(store=neo4j_store)
+        self.client = TestClient(app)
+        yield
+
+        with self.driver.session() as s:
+            s.run(
+                "MATCH (n) WHERE n.id IN $ids DETACH DELETE n",
+                ids=["el_fn_a", "el_fn_b", "el_sp_a", "el_uc_1"],
+            )
+            s.run(
+                "MATCH (u:UnresolvedCall) WHERE u.caller_id = 'el_fn_a' "
+                "AND u.call_file = '/test/el.cpp' DETACH DELETE u"
+            )
+        self.driver.close()
+
+    def test_post_edges_creates_edge(self):
+        """§8: POST /edges creates a CALLS edge."""
+        r = self.client.post("/api/v1/edges", json={
+            "caller_id": "el_fn_a",
+            "callee_id": "el_fn_b",
+            "resolved_by": "context",
+            "call_type": "indirect",
+            "call_file": "/test/el.cpp",
+            "call_line": 5,
+        })
+        assert r.status_code == 201
+        assert self.store.edge_exists("el_fn_a", "el_fn_b", "/test/el.cpp", 5)
+
+    def test_post_edges_deletes_matching_uc(self):
+        """§8: POST /edges deletes the matching UnresolvedCall."""
+        # Verify UC exists before
+        ucs = self.store.get_unresolved_calls(caller_id="el_fn_a")
+        assert any(uc.call_line == 5 for uc in ucs)
+
+        self.client.post("/api/v1/edges", json={
+            "caller_id": "el_fn_a",
+            "callee_id": "el_fn_b",
+            "resolved_by": "context",
+            "call_type": "indirect",
+            "call_file": "/test/el.cpp",
+            "call_line": 5,
+        })
+
+        # UC should be gone
+        ucs = self.store.get_unresolved_calls(caller_id="el_fn_a")
+        assert not any(uc.call_line == 5 for uc in ucs)
+
+    def test_post_edges_duplicate_returns_409(self):
+        """§8: POST /edges with existing edge returns 409."""
+        self.client.post("/api/v1/edges", json={
+            "caller_id": "el_fn_a",
+            "callee_id": "el_fn_b",
+            "resolved_by": "context",
+            "call_type": "indirect",
+            "call_file": "/test/el.cpp",
+            "call_line": 5,
+        })
+        r2 = self.client.post("/api/v1/edges", json={
+            "caller_id": "el_fn_a",
+            "callee_id": "el_fn_b",
+            "resolved_by": "context",
+            "call_type": "indirect",
+            "call_file": "/test/el.cpp",
+            "call_line": 5,
+        })
+        assert r2.status_code == 409
+
+    def test_post_edges_nonexistent_caller_returns_404(self):
+        """§8: POST /edges with nonexistent caller returns 404."""
+        r = self.client.post("/api/v1/edges", json={
+            "caller_id": "nonexistent",
+            "callee_id": "el_fn_b",
+            "resolved_by": "context",
+            "call_type": "indirect",
+            "call_file": "/test/el.cpp",
+            "call_line": 99,
+        })
+        assert r.status_code == 404
+
+    def test_delete_edges_full_cascade(self):
+        """§5: DELETE /edges triggers full 4-step cascade."""
+        from codemap_lite.graph.schema import CallsEdgeProps, RepairLogNode
+
+        # First create an LLM edge
+        self.store.create_calls_edge(
+            "el_fn_a", "el_fn_b",
+            CallsEdgeProps(resolved_by="llm", call_type="indirect",
+                          call_file="/test/el.cpp", call_line=5),
+        )
+        # Create RepairLog
+        log = RepairLogNode(
+            caller_id="el_fn_a", callee_id="el_fn_b",
+            call_location="/test/el.cpp:5",
+            repair_method="llm", llm_response="test",
+            timestamp="2026-05-15T12:00:00Z",
+            reasoning_summary="test",
+            id="el_log_1",
+        )
+        self.store.create_repair_log(log)
+
+        # Delete the edge via API
+        r = self.client.request("DELETE", "/api/v1/edges", json={
+            "caller_id": "el_fn_a",
+            "callee_id": "el_fn_b",
+            "call_file": "/test/el.cpp",
+            "call_line": 5,
+        })
+        assert r.status_code == 204
+
+        # Verify cascade:
+        # 1. Edge deleted
+        assert not self.store.edge_exists("el_fn_a", "el_fn_b", "/test/el.cpp", 5)
+        # 2. RepairLog deleted
+        logs = self.store.get_repair_logs(
+            caller_id="el_fn_a", callee_id="el_fn_b",
+            call_location="/test/el.cpp:5",
+        )
+        assert len(logs) == 0
+        # 3. UC regenerated
+        ucs = self.store.get_unresolved_calls(caller_id="el_fn_a")
+        matching = [uc for uc in ucs if uc.call_line == 5]
+        assert len(matching) == 1
+        assert matching[0].status == "pending"
+        assert matching[0].retry_count == 0
+
+    def test_delete_edges_resets_source_point(self):
+        """§5: DELETE /edges resets SourcePoint status to pending."""
+        from codemap_lite.graph.schema import CallsEdgeProps
+
+        # Create edge
+        self.store.create_calls_edge(
+            "el_fn_a", "el_fn_b",
+            CallsEdgeProps(resolved_by="llm", call_type="indirect",
+                          call_file="/test/el.cpp", call_line=5),
+        )
+
+        # Verify SP is complete
+        sp = self.store.get_source_point("el_sp_a")
+        assert sp.status == "complete"
+
+        # Delete edge
+        r = self.client.request("DELETE", "/api/v1/edges", json={
+            "caller_id": "el_fn_a",
+            "callee_id": "el_fn_b",
+            "call_file": "/test/el.cpp",
+            "call_line": 5,
+        })
+        assert r.status_code == 204
+
+        # SP should be reset
+        sp = self.store.get_source_point("el_sp_a")
+        assert sp.status == "pending"
+
+    def test_delete_edges_nonexistent_returns_404(self):
+        """§5: DELETE /edges for nonexistent edge returns 404."""
+        r = self.client.request("DELETE", "/api/v1/edges", json={
+            "caller_id": "el_fn_a",
+            "callee_id": "el_fn_b",
+            "call_file": "/test/el.cpp",
+            "call_line": 999,
+        })
+        assert r.status_code == 404
+
+
 
