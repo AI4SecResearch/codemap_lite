@@ -61,7 +61,7 @@ export default function SourcePointList() {
       setLoading(true);
       try {
         const data = await api.getSourcePoints();
-        if (!cancelled) setPoints(data);
+        if (!cancelled) setPoints(data.items);
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       } finally {

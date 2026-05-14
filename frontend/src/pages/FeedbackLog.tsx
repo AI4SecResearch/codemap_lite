@@ -29,7 +29,7 @@ export default function FeedbackLog() {
     setLoading(true);
     try {
       const data = await api.getFeedback();
-      setItems(data);
+      setItems(data.items);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

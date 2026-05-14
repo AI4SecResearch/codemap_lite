@@ -90,10 +90,16 @@ def _run_analysis_background(app: Any, settings: Any, mode: str) -> None:
     architecture.md §8: POST /api/v1/analyze triggers full/incremental.
     """
     try:
+        from codemap_lite.graph.neo4j_store import Neo4jGraphStore
         from codemap_lite.pipeline.orchestrator import PipelineOrchestrator
 
         target_dir = Path(settings.project.target_dir)
-        orch = PipelineOrchestrator(target_dir=target_dir)
+        graph_store = Neo4jGraphStore(
+            uri=settings.neo4j.uri,
+            user=settings.neo4j.user,
+            password=settings.neo4j.password,
+        )
+        orch = PipelineOrchestrator(target_dir=target_dir, store=graph_store)
 
         if mode == "incremental":
             result = orch.run_incremental_analysis()

@@ -284,7 +284,7 @@ export const api = {
     if (params?.kind) qs.set('kind', params.kind);
     if (params?.module) qs.set('module', params.module);
     const q = qs.toString();
-    return fetchJson<SourcePoint[]>(
+    return fetchJson<{ total: number; items: SourcePoint[] }>(
       `/api/v1/source-points${q ? `?${q}` : ''}`
     );
   },
@@ -312,7 +312,7 @@ export const api = {
     }),
 
   // Reviews & manual edges
-  getReviews: () => fetchJson<Review[]>('/api/v1/reviews'),
+  getReviews: () => fetchJson<{ total: number; items: Review[] }>('/api/v1/reviews'),
   createReview: (data: {
     caller_id: string;
     callee_id: string;
@@ -357,7 +357,7 @@ export const api = {
     }),
 
   // Feedback
-  getFeedback: () => fetchJson<CounterExample[]>('/api/v1/feedback'),
+  getFeedback: () => fetchJson<{ total: number; items: CounterExample[] }>('/api/v1/feedback'),
   createFeedback: (example: CounterExample) =>
     fetchJson<CounterExampleCreateResult>('/api/v1/feedback', {
       method: 'POST',
@@ -376,7 +376,7 @@ export const api = {
     if (params?.callee) qs.set('callee', params.callee);
     if (params?.location) qs.set('location', params.location);
     const q = qs.toString();
-    return fetchJson<RepairLog[]>(
+    return fetchJson<{ total: number; items: RepairLog[] }>(
       `/api/v1/repair-logs${q ? `?${q}` : ''}`
     );
   },

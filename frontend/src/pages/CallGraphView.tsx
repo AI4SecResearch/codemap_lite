@@ -277,7 +277,7 @@ function EdgeLlmInspector({ edge }: { edge: CallEdge }) {
         location,
       })
       .then((data) => {
-        if (!cancelled) setLogs(data);
+        if (!cancelled) setLogs(data.items);
       })
       .catch((e) => {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));

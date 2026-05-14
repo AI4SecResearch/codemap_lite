@@ -1,6 +1,7 @@
 """Incremental update — 5-step cascade invalidation logic."""
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -22,8 +23,33 @@ class InvalidationResult:
 class IncrementalUpdater:
     """Handles incremental updates with cascade invalidation."""
 
-    def __init__(self, store: Any) -> None:
+    def __init__(self, store: Any, target_dir: str = "") -> None:
         self._store = store
+        self._target_dir = target_dir
+
+    @staticmethod
+    def _read_source_context(call_file: str, call_line: int, target_dir: str) -> tuple[str, str]:
+        """Read call_expression and source_code_snippet from the source file.
+
+        Returns (call_expression, snippet) — both empty string on failure.
+        """
+        # Try absolute path first, then relative to target_dir
+        path = call_file
+        if not os.path.isabs(path):
+            path = os.path.join(target_dir, call_file)
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+            if 1 <= call_line <= len(lines):
+                expr = lines[call_line - 1].strip()
+                # Snippet: 2 lines before + target line + 2 lines after
+                start = max(0, call_line - 3)
+                end = min(len(lines), call_line + 2)
+                snippet = "".join(lines[start:end])
+                return expr, snippet
+        except OSError:
+            pass
+        return "", ""
 
     def _get_functions_in_file(self, file_path: str) -> list[FunctionNode]:
         """Get all functions defined in a specific file."""
@@ -102,14 +128,19 @@ class IncrementalUpdater:
                 callee_id=callee_id,
                 call_location=call_location,
             )
+            # Recover call_expression from source file so the repair agent
+            # has context for re-repair (architecture.md §7 step 3).
+            call_expr, snippet = self._read_source_context(
+                props.call_file, props.call_line, self._target_dir
+            )
             # Regenerate UnresolvedCall so the repair agent can re-attempt
             gap = UnresolvedCallNode(
                 caller_id=caller_id,
-                call_expression="",  # Original expression not stored on edge
+                call_expression=call_expr,
                 call_file=props.call_file,
                 call_line=props.call_line,
                 call_type=props.call_type,
-                source_code_snippet="",
+                source_code_snippet=snippet,
                 var_name="",
                 var_type="",
                 retry_count=0,

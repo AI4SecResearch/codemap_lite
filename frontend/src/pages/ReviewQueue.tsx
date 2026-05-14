@@ -235,7 +235,7 @@ export default function ReviewQueue() {
         api.getReviews(),
       ]);
       setGaps(u.items);
-      setReviews(r);
+      setReviews(r.items);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

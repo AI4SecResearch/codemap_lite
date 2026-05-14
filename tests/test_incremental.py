@@ -617,6 +617,62 @@ def test_cascade_only_regenerates_uc_for_llm_edges_not_static():
     assert len(result.regenerated_unresolved_calls) == 1
 
 
+def test_invalidate_llm_edge_recovers_call_expression_from_source(tmp_path):
+    """architecture.md §7: regenerated UC should recover call_expression from source file."""
+    from codemap_lite.graph.incremental import IncrementalUpdater
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import (
+        CallsEdgeProps,
+        FunctionNode,
+        RepairLogNode,
+    )
+
+    # Create a source file with a call expression at line 5
+    src_file = tmp_path / "caller.cpp"
+    src_file.write_text(
+        "void foo() {\n"
+        "  int x = 1;\n"
+        "  int y = 2;\n"
+        "  // setup\n"
+        "  target->doSomething(x, y);\n"
+        "  return;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    store = InMemoryGraphStore()
+    store.create_function(FunctionNode(
+        id="caller_fn", signature="void foo()", name="foo",
+        file_path=str(src_file), start_line=1, end_line=7, body_hash="aaa",
+    ))
+    store.create_function(FunctionNode(
+        id="target_fn", signature="void doSomething(int,int)", name="doSomething",
+        file_path="target.cpp", start_line=1, end_line=5, body_hash="bbb",
+    ))
+    store.create_calls_edge("caller_fn", "target_fn", CallsEdgeProps(
+        resolved_by="llm", call_type="virtual",
+        call_file=str(src_file), call_line=5,
+    ))
+    store.create_repair_log(RepairLogNode(
+        id="rl1", caller_id="caller_fn", callee_id="target_fn",
+        call_location=f"{src_file}:5", repair_method="llm",
+        llm_response="resolved via vtable", timestamp="2026-01-01T00:00:00Z",
+        reasoning_summary="vtable dispatch",
+    ))
+
+    updater = IncrementalUpdater(store=store, target_dir=str(tmp_path))
+    result = updater.invalidate_file("target.cpp")
+
+    # The regenerated UC should have the call expression from line 5
+    gaps = store.get_unresolved_calls(caller_id="caller_fn")
+    assert len(gaps) == 1
+    assert "doSomething" in gaps[0].call_expression
+    assert "target->doSomething(x, y);" == gaps[0].call_expression
+    # Snippet should include surrounding context
+    assert "setup" in gaps[0].source_code_snippet
+    assert "doSomething" in gaps[0].source_code_snippet
+
+
 def test_pipeline_incremental_exposes_affected_source_ids_in_result():
     """architecture.md §7 step 5: PipelineResult must expose affected_source_ids
     so the caller (CLI / orchestrator) can trigger re-repair for sources whose

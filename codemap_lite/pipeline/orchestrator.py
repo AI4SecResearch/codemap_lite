@@ -150,7 +150,7 @@ class PipelineOrchestrator:
 
         # Invalidate deleted and modified files (architecture.md §7 step 2):
         # Remove stale functions/edges before re-parsing modified files.
-        updater = IncrementalUpdater(store=self._store)
+        updater = IncrementalUpdater(store=self._store, target_dir=self._target_dir)
         affected_caller_files: set[str] = set()
         all_affected_source_ids: set[str] = set()
         for deleted_file in changes.deleted:
