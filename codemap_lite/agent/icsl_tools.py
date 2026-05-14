@@ -87,6 +87,10 @@ def write_edge(
     if store.edge_exists(caller_id, callee_id, call_file, call_line):
         return {"skipped": True, "reason": "edge already exists"}
 
+    # architecture.md §3 line 125: reasoning_summary ≤ 200 chars
+    if len(reasoning_summary) > 200:
+        reasoning_summary = reasoning_summary[:199] + "…"
+
     # Create the CALLS edge
     from codemap_lite.graph.schema import CallsEdgeProps as _CallsEdgeProps
 

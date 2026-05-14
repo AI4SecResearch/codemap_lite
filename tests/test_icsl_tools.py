@@ -646,3 +646,30 @@ def test_write_edge_succeeds_with_valid_caller_and_callee(mock_graph_store):
     )
     assert result.get("edge_created") is True
     assert len(mock_graph_store.edges_created) == 1
+
+
+def test_write_edge_truncates_long_reasoning_summary(mock_graph_store):
+    """architecture.md §3 line 125: reasoning_summary ≤ 200 chars.
+
+    write-edge must truncate reasoning_summary that exceeds 200 characters
+    rather than rejecting the call (the agent may produce verbose output).
+    """
+    mock_graph_store.get_function_by_id = lambda fid: MagicMock()
+    long_summary = "x" * 300
+
+    result = write_edge(
+        caller_id="func_001",
+        callee_id="func_002",
+        call_type="indirect",
+        call_file="test.cpp",
+        call_line=200,
+        store=mock_graph_store,
+        reasoning_summary=long_summary,
+    )
+    assert result.get("edge_created") is True
+    # The RepairLog should have a truncated reasoning_summary
+    assert len(mock_graph_store.repair_logs) == 1
+    log = mock_graph_store.repair_logs[0]
+    stored_summary = log.reasoning_summary if hasattr(log, "reasoning_summary") else log["reasoning_summary"]
+    assert len(stored_summary) <= 200
+    assert stored_summary.endswith("…") or len(stored_summary) <= 200
