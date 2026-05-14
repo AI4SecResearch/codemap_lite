@@ -104,6 +104,8 @@ class StageResult:
     details: dict[str, Any] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
     neo_store: Any = None  # Neo4jGraphStore reference for downstream stages
+    backend_port: int | None = None
+    backend_server: Any = None
 
 
 @dataclass
@@ -447,6 +449,23 @@ def stage_4_backend_api(args: argparse.Namespace, neo_store: Neo4jGraphStore, so
         else:
             errors.append(f"{path}: {resp.get('error', resp.get('status'))}")
 
+    # Verify paginated endpoints return {total, items} wrapper (§8)
+    paginated_endpoints = [
+        "/api/v1/files",
+        "/api/v1/functions",
+        "/api/v1/unresolved-calls",
+        "/api/v1/repair-logs",
+        "/api/v1/feedback",
+        "/api/v1/source-points",
+    ]
+    for path in paginated_endpoints:
+        resp = _http_get(f"{base_url}{path}")
+        if resp["ok"]:
+            body = json.loads(resp["body"])
+            if not isinstance(body, dict) or "total" not in body or "items" not in body:
+                errors.append(f"{path}: missing {{total, items}} pagination wrapper (§8)")
+    details["pagination_validated"] = True
+
     # Test function-specific endpoints (need a real function ID)
     functions = neo_store.list_functions()
     if functions:
@@ -464,7 +483,29 @@ def stage_4_backend_api(args: argparse.Namespace, neo_store: Neo4jGraphStore, so
             else:
                 errors.append(f"{path}: {resp.get('error', resp.get('status'))}")
 
-        # Verify call-chain has nodes+edges
+        # §8: /functions?file= filter
+        fn = functions[0]
+        file_filter_resp = _http_get(f"{base_url}/api/v1/functions?file={fn.file_path}")
+        if file_filter_resp["ok"]:
+            file_body = json.loads(file_filter_resp["body"])
+            file_items = file_body.get("items", [])
+            if not any(f["id"] == fn.id for f in file_items):
+                errors.append(f"/functions?file= filter did not return expected function")
+            details["file_filter_ok"] = True
+        else:
+            errors.append(f"/functions?file= failed: {file_filter_resp.get('error')}")
+
+    # §8: Additional endpoints (analyze, source-points reachable)
+    # GET /api/v1/analyze/status
+    status_resp = _http_get(f"{base_url}/api/v1/analyze/status")
+    if status_resp["ok"]:
+        details["analyze_status_ok"] = True
+    else:
+        # May return 404 if no analysis running — acceptable
+        details["analyze_status_ok"] = "not_running"
+
+    # Verify call-chain has nodes+edges
+    if functions:
         chain_resp = _http_get(f"{base_url}/api/v1/functions/{fn_id}/call-chain?depth=3")
         if chain_resp["ok"]:
             body = json.loads(chain_resp["body"])
@@ -487,6 +528,16 @@ def stage_4_backend_api(args: argparse.Namespace, neo_store: Neo4jGraphStore, so
             if bucket not in stats:
                 errors.append(f"stats missing {bucket}")
         details["stats_buckets_ok"] = all(b in stats for b in required_buckets)
+        # §8: total_llm_edges convenience field
+        if "total_llm_edges" not in stats:
+            errors.append("stats missing total_llm_edges field (§8)")
+        else:
+            details["total_llm_edges"] = stats["total_llm_edges"]
+        # §8: total_feedback and total_repair_logs
+        if "total_feedback" not in stats:
+            errors.append("stats missing total_feedback field (§8)")
+        if "total_repair_logs" not in stats:
+            errors.append("stats missing total_repair_logs field (§8)")
 
     if errors:
         result.status = "FAIL"
@@ -501,15 +552,17 @@ def stage_4_backend_api(args: argparse.Namespace, neo_store: Neo4jGraphStore, so
 
 # --- Main orchestration ----------------------------------------------------
 
-def _resolve_entry_point(store: InMemoryGraphStore, name: str, file_hint: str | None = None) -> str | None:
+def _resolve_entry_point(store: Neo4jGraphStore | InMemoryGraphStore, name: str, file_hint: str | None = None) -> str | None:
     """Resolve a qualified function name to FunctionNode.id.
 
     Matches by (name, file_path hint) substring pattern.
+    Works with both InMemoryGraphStore and Neo4jGraphStore.
     """
-    for fid, fn in store._functions.items():
+    functions = store.list_functions()
+    for fn in functions:
         if fn.name == name or fn.name.endswith("::" + name):
             if file_hint is None or file_hint in fn.file_path:
-                return fid
+                return fn.id
     return None
 
 
@@ -662,8 +715,10 @@ def stage_6_post_repair_api(args: argparse.Namespace, port: int, neo_store: Neo4
         edge = llm_edges[0]
         callees_resp = _http_get(f"{base_url}/api/v1/functions/{edge.caller_id}/callees")
         if callees_resp["ok"]:
-            callees = json.loads(callees_resp["body"])
-            callee_ids = [c["id"] for c in callees]
+            callees_body = json.loads(callees_resp["body"])
+            # §8 pagination: {total, items} wrapper
+            callees_items = callees_body.get("items", callees_body if isinstance(callees_body, list) else [])
+            callee_ids = [c["id"] for c in callees_items]
             if edge.callee_id in callee_ids:
                 details["llm_edge_in_callees"] = True
             else:
@@ -871,11 +926,13 @@ def stage_7_review_workflow(args: argparse.Namespace, port: int, neo_store: Neo4
     # 7c: Verify counter-example was created
     feedback_resp = _http_get(f"{base_url}/api/v1/feedback")
     if feedback_resp["ok"]:
-        feedback = json.loads(feedback_resp["body"])
-        details["counter_example_count"] = len(feedback)
+        feedback_body = json.loads(feedback_resp["body"])
+        # §8 pagination: {total, items} wrapper
+        feedback_items = feedback_body.get("items", feedback_body if isinstance(feedback_body, list) else [])
+        details["counter_example_count"] = feedback_body.get("total", len(feedback_items))
         found_ce = any(
             ce.get("wrong_target") == edge_incorrect.callee_id
-            for ce in feedback
+            for ce in feedback_items
         )
         details["counter_example_found"] = found_ce
     else:
