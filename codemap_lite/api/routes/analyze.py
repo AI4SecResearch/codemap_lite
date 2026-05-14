@@ -251,7 +251,15 @@ def create_analyze_router() -> APIRouter:
                 except Exception:
                     source_points = []
 
-                if not source_points:
+                # Determine which source_ids to repair:
+                # - If user provided explicit source_ids, use them directly
+                #   (no need for codewiki_lite to be reachable).
+                # - Otherwise, derive from fetched source_points.
+                if requested_source_ids:
+                    source_ids = list(requested_source_ids)
+                elif source_points:
+                    source_ids = [sp.function_id for sp in source_points]
+                else:
                     logger.warning("No source points to repair")
                     request.app.state.analyze_state = {"state": "idle", "progress": 0.0}
                     return
@@ -273,12 +281,6 @@ def create_analyze_router() -> APIRouter:
                     )
                 )
 
-                source_ids = [sp.function_id for sp in source_points]
-                # Filter to requested source_ids if provided
-                if requested_source_ids:
-                    source_ids = [
-                        sid for sid in source_ids if sid in set(requested_source_ids)
-                    ]
                 await orch.run_repairs(source_ids)
                 _success = True
             except Exception as exc:
