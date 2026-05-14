@@ -70,14 +70,12 @@ export interface UnresolvedCall {
 export interface SourcePoint {
   id: string;
   module: string;
-  layer: number;
   kind: string;
   reason: string;
   signature: string;
   file: string;
   line: number;
-  reachable_sinks?: unknown[];
-  taint_paths?: unknown[];
+  status?: string;
 }
 
 export interface Stats {
