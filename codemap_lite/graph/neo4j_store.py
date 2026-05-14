@@ -473,8 +473,12 @@ class InMemoryGraphStore:
         # architecture.md §8: unresolved_by_status must always contain
         # {pending, unresolvable} keys so the frontend can render without null-checks.
         by_status: dict[str, int] = {"pending": 0, "unresolvable": 0}
+        _VALID_STATUSES = {"pending", "unresolvable"}
         for u in self._unresolved_calls.values():
             key = getattr(u, "status", None) or "pending"
+            # Bucket unknown statuses into "pending" for consistency with Neo4j
+            if key not in _VALID_STATUSES:
+                key = "pending"
             by_status[key] = by_status.get(key, 0) + 1
         # architecture.md §8: unresolved_by_category must always contain all
         # 5 keys so the frontend can render chips without null-checking.

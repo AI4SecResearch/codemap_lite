@@ -1012,3 +1012,189 @@ def test_create_calls_edge_preserves_resolved_by_on_duplicate(store):
     assert matching[0].props.resolved_by == "symbol_table", (
         f"resolved_by should be preserved as 'symbol_table', got '{matching[0].props.resolved_by}'"
     )
+
+
+def test_get_pending_gaps_for_source_includes_source_itself(store):
+    """architecture.md §3 门禁机制: get_pending_gaps_for_source must find
+    UnresolvedCalls on the source function itself (depth 0), not just
+    on callees reachable via CALLS edges.
+
+    This matches Neo4j's [:CALLS*0..] semantics where *0 includes the
+    starting node.
+    """
+    # Create a source function with a gap directly on it
+    store.create_function(FunctionNode(
+        id="src_self", signature="void src()", name="src",
+        file_path="a.cpp", start_line=1, end_line=10, body_hash="h1",
+    ))
+    store.create_unresolved_call(UnresolvedCallNode(
+        id="gap_on_source",
+        caller_id="src_self",
+        call_expression="ptr->method()",
+        call_file="a.cpp",
+        call_line=5,
+        call_type="indirect",
+        source_code_snippet="ptr->method();",
+        var_name="ptr",
+        var_type="Base*",
+        candidates=["Derived::method"],
+        status="pending",
+    ))
+
+    pending = store.get_pending_gaps_for_source("src_self")
+    assert len(pending) == 1
+    assert pending[0].id == "gap_on_source"
+
+
+def test_get_pending_gaps_for_source_multi_hop(store):
+    """architecture.md §3: BFS must traverse multiple hops to find all
+    pending gaps in the reachable subgraph.
+
+    Graph: src → A → B, with gaps on both A and B.
+    """
+    store.create_function(FunctionNode(
+        id="src_hop", signature="void src()", name="src",
+        file_path="a.cpp", start_line=1, end_line=10, body_hash="h1",
+    ))
+    store.create_function(FunctionNode(
+        id="func_a", signature="void a()", name="a",
+        file_path="a.cpp", start_line=20, end_line=30, body_hash="h2",
+    ))
+    store.create_function(FunctionNode(
+        id="func_b", signature="void b()", name="b",
+        file_path="b.cpp", start_line=1, end_line=10, body_hash="h3",
+    ))
+    # Edges: src → A → B
+    store.create_calls_edge("src_hop", "func_a", CallsEdgeProps(
+        resolved_by="symbol_table", call_type="direct",
+        call_file="a.cpp", call_line=5,
+    ))
+    store.create_calls_edge("func_a", "func_b", CallsEdgeProps(
+        resolved_by="symbol_table", call_type="direct",
+        call_file="a.cpp", call_line=25,
+    ))
+    # Gaps on A and B
+    store.create_unresolved_call(UnresolvedCallNode(
+        id="gap_on_a",
+        caller_id="func_a",
+        call_expression="x()",
+        call_file="a.cpp",
+        call_line=22,
+        call_type="indirect",
+        source_code_snippet="x();",
+        var_name=None,
+        var_type=None,
+        candidates=["X::call"],
+        status="pending",
+    ))
+    store.create_unresolved_call(UnresolvedCallNode(
+        id="gap_on_b",
+        caller_id="func_b",
+        call_expression="y()",
+        call_file="b.cpp",
+        call_line=5,
+        call_type="indirect",
+        source_code_snippet="y();",
+        var_name=None,
+        var_type=None,
+        candidates=["Y::call"],
+        status="pending",
+    ))
+
+    pending = store.get_pending_gaps_for_source("src_hop")
+    pending_ids = {g.id for g in pending}
+    assert "gap_on_a" in pending_ids, "Gap on hop-1 callee must be found"
+    assert "gap_on_b" in pending_ids, "Gap on hop-2 callee must be found"
+    assert len(pending) == 2
+
+
+def test_get_pending_gaps_excludes_non_pending(store):
+    """architecture.md §3: only status='pending' gaps are returned.
+
+    Gaps with status='unresolvable' should NOT appear in pending results.
+    """
+    store.create_function(FunctionNode(
+        id="src_status", signature="void src()", name="src",
+        file_path="a.cpp", start_line=1, end_line=10, body_hash="h1",
+    ))
+    store.create_unresolved_call(UnresolvedCallNode(
+        id="gap_pending",
+        caller_id="src_status",
+        call_expression="a()",
+        call_file="a.cpp",
+        call_line=3,
+        call_type="indirect",
+        source_code_snippet="a();",
+        var_name=None,
+        var_type=None,
+        candidates=["A"],
+        status="pending",
+    ))
+    store.create_unresolved_call(UnresolvedCallNode(
+        id="gap_unresolvable",
+        caller_id="src_status",
+        call_expression="b()",
+        call_file="a.cpp",
+        call_line=7,
+        call_type="indirect",
+        source_code_snippet="b();",
+        var_name=None,
+        var_type=None,
+        candidates=["B"],
+        status="unresolvable",
+    ))
+
+    pending = store.get_pending_gaps_for_source("src_status")
+    assert len(pending) == 1
+    assert pending[0].id == "gap_pending"
+
+
+def test_count_stats_unknown_status_bucketed_as_pending(store):
+    """architecture.md §4: UC status ∈ {pending, unresolvable}.
+
+    If an UnresolvedCall has an unexpected status value (e.g. from a bug
+    or migration), count_stats must bucket it into 'pending' rather than
+    creating a new key. This ensures the frontend can rely on exactly
+    two status keys without null-checking unknown values.
+    """
+    store.create_function(FunctionNode(
+        id="f1", signature="void f()", name="f",
+        file_path="a.cpp", start_line=1, end_line=10, body_hash="h1",
+    ))
+    # Normal pending gap
+    store.create_unresolved_call(UnresolvedCallNode(
+        id="gap_normal",
+        caller_id="f1",
+        call_expression="a()",
+        call_file="a.cpp",
+        call_line=3,
+        call_type="indirect",
+        source_code_snippet="a();",
+        var_name=None,
+        var_type=None,
+        candidates=["A"],
+        status="pending",
+    ))
+    # Gap with invalid status
+    store.create_unresolved_call(UnresolvedCallNode(
+        id="gap_weird",
+        caller_id="f1",
+        call_expression="b()",
+        call_file="a.cpp",
+        call_line=7,
+        call_type="indirect",
+        source_code_snippet="b();",
+        var_name=None,
+        var_type=None,
+        candidates=["B"],
+        status="some_invalid_status",
+    ))
+
+    stats = store.count_stats()
+    by_status = stats["unresolved_by_status"]
+    # Only "pending" and "unresolvable" keys should exist
+    assert set(by_status.keys()) == {"pending", "unresolvable"}, (
+        f"Expected only {{pending, unresolvable}} keys, got {set(by_status.keys())}"
+    )
+    # The invalid status should be counted as "pending"
+    assert by_status["pending"] == 2
