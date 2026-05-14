@@ -2456,3 +2456,126 @@ class TestReviewCounterExampleIntegration:
             assert resp2.status_code == 201
             data2 = resp2.json()
             assert data2.get("counter_example_deduplicated") is True
+
+
+class TestEdgeCreateResolvedByValidation:
+    """architecture.md §4: CALLS.resolved_by ∈
+    {symbol_table, signature, dataflow, context, llm}.
+
+    The POST /edges endpoint must reject values outside this enum.
+    """
+
+    def test_valid_resolved_by_values_accepted(self) -> None:
+        """All 5 architecture-defined resolved_by values must be accepted."""
+        for rb in ("symbol_table", "signature", "dataflow", "context", "llm"):
+            client, store = get_test_client()
+            store.create_function(FunctionNode(
+                id="fn_a", name="a", signature="void a()",
+                file_path="x.c", start_line=1, end_line=5, body_hash="h1",
+            ))
+            store.create_function(FunctionNode(
+                id="fn_b", name="b", signature="void b()",
+                file_path="x.c", start_line=10, end_line=15, body_hash="h2",
+            ))
+            resp = client.post("/api/v1/edges", json={
+                "caller_id": "fn_a",
+                "callee_id": "fn_b",
+                "resolved_by": rb,
+                "call_type": "direct",
+                "call_file": "x.c",
+                "call_line": 3,
+            })
+            assert resp.status_code == 201, f"resolved_by='{rb}' should be accepted"
+
+    def test_manual_resolved_by_rejected(self) -> None:
+        """architecture.md §4: 'manual' is NOT a valid resolved_by value.
+
+        The API must reject it with 422 (validation error), not crash with 500.
+        """
+        client, store = get_test_client()
+        store.create_function(FunctionNode(
+            id="fn_a", name="a", signature="void a()",
+            file_path="x.c", start_line=1, end_line=5, body_hash="h1",
+        ))
+        store.create_function(FunctionNode(
+            id="fn_b", name="b", signature="void b()",
+            file_path="x.c", start_line=10, end_line=15, body_hash="h2",
+        ))
+        resp = client.post("/api/v1/edges", json={
+            "caller_id": "fn_a",
+            "callee_id": "fn_b",
+            "resolved_by": "manual",
+            "call_type": "direct",
+            "call_file": "x.c",
+            "call_line": 3,
+        })
+        assert resp.status_code == 422, (
+            "resolved_by='manual' must be rejected by API validation (422), "
+            f"got {resp.status_code}"
+        )
+
+    def test_unknown_resolved_by_rejected(self) -> None:
+        """Completely unknown resolved_by values must be rejected."""
+        client, store = get_test_client()
+        store.create_function(FunctionNode(
+            id="fn_a", name="a", signature="void a()",
+            file_path="x.c", start_line=1, end_line=5, body_hash="h1",
+        ))
+        store.create_function(FunctionNode(
+            id="fn_b", name="b", signature="void b()",
+            file_path="x.c", start_line=10, end_line=15, body_hash="h2",
+        ))
+        resp = client.post("/api/v1/edges", json={
+            "caller_id": "fn_a",
+            "callee_id": "fn_b",
+            "resolved_by": "magic",
+            "call_type": "direct",
+            "call_file": "x.c",
+            "call_line": 3,
+        })
+        assert resp.status_code == 422
+
+
+class TestReviewIdempotency:
+    """architecture.md §5: review operations should handle edge-already-deleted
+    gracefully (idempotent delete semantics)."""
+
+    def _setup_edge(self, store: InMemoryGraphStore) -> None:
+        store.create_function(FunctionNode(
+            id="fn_a", name="a", signature="void a()",
+            file_path="x.c", start_line=1, end_line=5, body_hash="h1",
+        ))
+        store.create_function(FunctionNode(
+            id="fn_b", name="b", signature="void b()",
+            file_path="x.c", start_line=10, end_line=15, body_hash="h2",
+        ))
+        store.create_calls_edge(
+            "fn_a", "fn_b",
+            CallsEdgeProps(
+                resolved_by="llm", call_type="indirect",
+                call_file="x.c", call_line=3,
+            ),
+        )
+
+    def test_delete_edge_twice_returns_404_on_second(self) -> None:
+        """Deleting an already-deleted edge should return 404, not 500."""
+        client, store = get_test_client()
+        self._setup_edge(store)
+
+        # First delete succeeds
+        resp1 = client.request("DELETE", "/api/v1/edges", json={
+            "caller_id": "fn_a",
+            "callee_id": "fn_b",
+            "call_file": "x.c",
+            "call_line": 3,
+        })
+        assert resp1.status_code == 204
+
+        # Second delete: edge no longer exists → 404
+        resp2 = client.request("DELETE", "/api/v1/edges", json={
+            "caller_id": "fn_a",
+            "callee_id": "fn_b",
+            "call_file": "x.c",
+            "call_line": 3,
+        })
+        assert resp2.status_code == 404

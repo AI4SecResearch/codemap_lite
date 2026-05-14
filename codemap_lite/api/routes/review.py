@@ -60,7 +60,7 @@ class EdgeCreate(BaseModel):
     @field_validator("resolved_by")
     @classmethod
     def validate_resolved_by(cls, v: str) -> str:
-        allowed = {"symbol_table", "signature", "dataflow", "context", "llm", "manual"}
+        allowed = {"symbol_table", "signature", "dataflow", "context", "llm"}
         if v not in allowed:
             raise ValueError(
                 f"resolved_by must be one of {sorted(allowed)}, got '{v}'"
