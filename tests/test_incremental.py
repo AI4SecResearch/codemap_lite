@@ -725,3 +725,83 @@ def test_pipeline_incremental_exposes_affected_source_ids_in_result():
             "affected_source_ids for re-repair trigger"
         )
         assert "src_fn" in result.affected_source_ids
+
+
+def test_same_file_llm_edge_regenerates_uc_on_invalidation():
+    """architecture.md §7 step 3: when both caller and callee of an LLM edge
+    are in the same file being invalidated, the edge is deleted (because both
+    functions are removed) AND a UC must be regenerated so the repair agent
+    can re-attempt after re-parse rebuilds the functions.
+
+    Bug regression: previously only cross-file LLM edges (callee in changed
+    file, caller NOT in changed file) triggered UC regeneration. Same-file
+    LLM edges were silently lost."""
+    store = InMemoryGraphStore()
+
+    # Both functions in the same file
+    store.create_function(FunctionNode(
+        id="caller_same", name="caller_same", signature="void caller_same()",
+        file_path="same_file.cpp", start_line=1, end_line=10, body_hash="h1",
+    ))
+    store.create_function(FunctionNode(
+        id="callee_same", name="callee_same", signature="void callee_same()",
+        file_path="same_file.cpp", start_line=20, end_line=30, body_hash="h2",
+    ))
+
+    # LLM edge within the same file
+    store.create_calls_edge("caller_same", "callee_same", CallsEdgeProps(
+        resolved_by="llm", call_type="indirect",
+        call_file="same_file.cpp", call_line=5,
+    ))
+
+    # RepairLog for the LLM edge
+    store.create_repair_log(RepairLogNode(
+        id="rl_same",
+        caller_id="caller_same",
+        callee_id="callee_same",
+        call_location="same_file.cpp:5",
+        repair_method="llm",
+        llm_response="indirect call via vtable",
+        timestamp="2026-05-14T00:00:00Z",
+        reasoning_summary="vtable dispatch",
+    ))
+
+    # SourcePoint for the caller
+    from codemap_lite.graph.schema import SourcePointNode
+    store.create_source_point(SourcePointNode(
+        id="caller_same", function_id="caller_same",
+        entry_point_kind="entry_point", reason="test", status="complete",
+    ))
+
+    updater = IncrementalUpdater(store=store)
+    result = updater.invalidate_file("same_file.cpp")
+
+    # Both functions should be removed
+    assert "caller_same" in result.removed_functions
+    assert "callee_same" in result.removed_functions
+
+    # The LLM edge should be gone (both endpoints deleted)
+    assert len(store.list_calls_edges()) == 0
+
+    # Critical: UC must be regenerated for the same-file LLM edge
+    gaps = store.get_unresolved_calls(caller_id="caller_same")
+    assert len(gaps) == 1, (
+        "architecture.md §7: same-file LLM edge must regenerate UC "
+        "so repair agent can re-attempt after re-parse"
+    )
+    assert gaps[0].call_file == "same_file.cpp"
+    assert gaps[0].call_line == 5
+    assert gaps[0].retry_count == 0
+    assert gaps[0].status == "pending"
+
+    # RepairLog must be deleted
+    logs = store.get_repair_logs(caller_id="caller_same", callee_id="callee_same")
+    assert len(logs) == 0
+
+    # SourcePoint must be reset to pending
+    sp = store.get_source_point("caller_same")
+    assert sp.status == "pending"
+
+    # caller_same should be in affected_source_ids
+    assert "caller_same" in result.affected_source_ids
+    assert "caller_same" in result.regenerated_unresolved_calls or len(result.regenerated_unresolved_calls) == 1

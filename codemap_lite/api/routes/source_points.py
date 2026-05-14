@@ -43,9 +43,15 @@ def create_source_points_router() -> APIRouter:
         # Source points reference functions by function_id which is the
         # graph store's FunctionNode.id (architecture.md §4).
         fn_lookup: dict[str, Any] = {}
+        # Secondary index: bare function name → FunctionNode (for matching
+        # codewiki_lite path-based IDs to graph store hex IDs).
+        fn_by_name: dict[str, Any] = {}
         try:
             for fn in store.list_functions():
                 fn_lookup[fn.id] = fn
+                # Index by bare name (last :: segment) for fallback matching
+                bare = fn.name.split("::")[-1] if "::" in fn.name else fn.name
+                fn_by_name.setdefault(bare, fn)
         except Exception:
             pass  # Graceful fallback if store is empty
 
@@ -68,6 +74,12 @@ def create_source_points_router() -> APIRouter:
             # signature, file, and line (architecture.md §8 source-points
             # response contract).
             fn = fn_lookup.get(func_id) or fn_lookup.get(sp_id)
+            if fn is None and "::" in func_id:
+                # Fallback: match by bare function name (codewiki_lite uses
+                # path-based IDs like "dir/file.h::NS::Class::Method" while
+                # graph store uses 12-char hex IDs).
+                bare_name = func_id.split("::")[-1]
+                fn = fn_by_name.get(bare_name)
             if fn is not None:
                 item.setdefault("signature", fn.signature or fn.name)
                 item.setdefault("file", fn.file_path)

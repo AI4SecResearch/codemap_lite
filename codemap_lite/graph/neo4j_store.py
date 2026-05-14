@@ -953,14 +953,16 @@ class Neo4jGraphStore:
             ).consume()
 
     def get_pending_gaps_for_source(
-        self, source_id: str
+        self, source_id: str, max_depth: int = 50
     ) -> list[UnresolvedCallNode]:
         # architecture.md §3 门禁机制: intersect the source's reachable
         # caller set with pending UnresolvedCall nodes — the exact list
         # ``check-complete`` reports as ``remaining_gaps``.
+        # Bounded by max_depth (same as get_reachable_subgraph) to prevent
+        # pathological traversals on cyclic or deep graphs.
         cypher = (
             "MATCH (src:Function {id: $source_id}) "
-            "MATCH (src)-[:CALLS*0..]->(caller:Function) "
+            f"MATCH (src)-[:CALLS*0..{int(max_depth)}]->(caller:Function) "
             "MATCH (caller)-[:HAS_GAP]->(u:UnresolvedCall) "
             "WHERE u.status = 'pending' "
             "RETURN DISTINCT u.id AS id, u.caller_id AS caller_id, "

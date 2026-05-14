@@ -743,7 +743,8 @@ def test_neo4j_get_pending_gaps_for_source_filters_by_status(neo4j_store):
     cypher, _ = session.calls[0]
     assert "u.status = 'pending'" in cypher
     # BFS via variable-length CALLS path so gates respect reachability.
-    assert "[:CALLS*0..]" in cypher
+    # Bounded by max_depth (default 50) to prevent pathological traversals.
+    assert "[:CALLS*0.." in cypher
 
 
 def test_neo4j_close_releases_driver(neo4j_store):

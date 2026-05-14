@@ -74,18 +74,39 @@ class IncrementalUpdater:
         function_ids = {f.id for f in functions}
         result.removed_functions = list(function_ids)
 
-        # Step 2: Find edges from OTHER functions pointing to functions
-        # in this file. Capture edge details before deletion so we can
-        # regenerate UnresolvedCalls (architecture.md §7 step 3).
+        # Step 2: Find edges pointing to/from functions in this file.
+        # Capture edge details before deletion so we can regenerate
+        # UnresolvedCalls (architecture.md §7 step 3).
+        #
+        # Two categories:
+        # a) Cross-file: callee in changed file, caller NOT in changed file
+        #    → caller is "affected" and needs re-parse or re-repair
+        # b) Same-file LLM: both caller and callee in changed file,
+        #    resolved_by=llm → must regenerate UC since the edge will be
+        #    deleted with the functions (architecture.md §7 step 3)
         invalidated_llm_edges: list[tuple[str, str, Any]] = []
         affected_caller_set: set[str] = set()
         for edge in self._store.list_calls_edges():
             if edge.callee_id in function_ids and edge.caller_id not in function_ids:
+                # Cross-file edge: callee is being deleted
                 affected_caller_set.add(edge.caller_id)
                 if edge.props.resolved_by == "llm":
                     invalidated_llm_edges.append(
                         (edge.caller_id, edge.callee_id, edge.props)
                     )
+            elif (
+                edge.caller_id in function_ids
+                and edge.callee_id in function_ids
+                and edge.props.resolved_by == "llm"
+            ):
+                # Same-file LLM edge: both endpoints being deleted.
+                # The edge disappears with delete_calls_edges_for_function,
+                # but we must still regenerate the UC so the repair agent
+                # can re-attempt after re-parse rebuilds the functions.
+                invalidated_llm_edges.append(
+                    (edge.caller_id, edge.callee_id, edge.props)
+                )
+                affected_caller_set.add(edge.caller_id)
         result.affected_callers = list(affected_caller_set)
 
         # Step 3: Delete functions, their edges, and associated UnresolvedCalls
