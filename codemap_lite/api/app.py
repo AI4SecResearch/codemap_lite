@@ -113,9 +113,16 @@ def create_app(
         # store is not wired (tests / in-memory demos).
         fb = getattr(app.state, "feedback_store", None)
         total_feedback = len(fb.list_all()) if fb is not None else 0
+        # total_source_points: prefer Neo4j count (sum of by_status buckets)
+        # when SourcePoint nodes exist; fall back to codewiki_lite list length
+        # when Neo4j has none (e.g., before first repair run creates them).
+        sp_by_status = store_stats.get("source_points_by_status", {})
+        neo4j_sp_total = sum(sp_by_status.values())
+        codewiki_sp_total = len(getattr(app.state, "source_points", []))
+        total_source_points = neo4j_sp_total if neo4j_sp_total > 0 else codewiki_sp_total
         return {
             **store_stats,
-            "total_source_points": len(getattr(app.state, "source_points", [])),
+            "total_source_points": total_source_points,
             "total_feedback": total_feedback,
             **stats,
         }
