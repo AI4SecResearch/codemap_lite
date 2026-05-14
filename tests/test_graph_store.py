@@ -1149,7 +1149,109 @@ def test_get_pending_gaps_excludes_non_pending(store):
     assert pending[0].id == "gap_pending"
 
 
-def test_count_stats_invalid_status_rejected_at_construction(store):
+def test_get_pending_gaps_for_source_handles_cycle(store):
+    """architecture.md §3: BFS must terminate on cyclic call graphs.
+
+    Graph: src → A → B → A (cycle). Gap on B.
+    BFS must find the gap without infinite loop.
+    """
+    store.create_function(FunctionNode(
+        id="src_cycle", signature="void src()", name="src",
+        file_path="a.cpp", start_line=1, end_line=10, body_hash="h1",
+    ))
+    store.create_function(FunctionNode(
+        id="func_a_cycle", signature="void a()", name="a",
+        file_path="a.cpp", start_line=20, end_line=30, body_hash="h2",
+    ))
+    store.create_function(FunctionNode(
+        id="func_b_cycle", signature="void b()", name="b",
+        file_path="b.cpp", start_line=1, end_line=10, body_hash="h3",
+    ))
+    # Edges: src → A → B → A (cycle)
+    store.create_calls_edge("src_cycle", "func_a_cycle", CallsEdgeProps(
+        resolved_by="symbol_table", call_type="direct",
+        call_file="a.cpp", call_line=5,
+    ))
+    store.create_calls_edge("func_a_cycle", "func_b_cycle", CallsEdgeProps(
+        resolved_by="symbol_table", call_type="direct",
+        call_file="a.cpp", call_line=25,
+    ))
+    store.create_calls_edge("func_b_cycle", "func_a_cycle", CallsEdgeProps(
+        resolved_by="llm", call_type="indirect",
+        call_file="b.cpp", call_line=5,
+    ))
+    # Gap on B
+    store.create_unresolved_call(UnresolvedCallNode(
+        id="gap_in_cycle",
+        caller_id="func_b_cycle",
+        call_expression="callback()",
+        call_file="b.cpp",
+        call_line=8,
+        call_type="indirect",
+        source_code_snippet="callback();",
+        var_name=None,
+        var_type=None,
+        status="pending",
+    ))
+
+    # Must terminate and find the gap
+    pending = store.get_pending_gaps_for_source("src_cycle")
+    assert len(pending) == 1
+    assert pending[0].id == "gap_in_cycle"
+
+
+def test_get_reachable_subgraph_handles_cycle(store):
+    """BFS in get_reachable_subgraph must terminate on cyclic graphs.
+
+    Graph: A → B → C → A (cycle).
+    Must return all 3 nodes and 3 edges without infinite loop.
+    """
+    store.create_function(FunctionNode(
+        id="cyc_a", signature="void a()", name="a",
+        file_path="a.cpp", start_line=1, end_line=10, body_hash="h1",
+    ))
+    store.create_function(FunctionNode(
+        id="cyc_b", signature="void b()", name="b",
+        file_path="a.cpp", start_line=20, end_line=30, body_hash="h2",
+    ))
+    store.create_function(FunctionNode(
+        id="cyc_c", signature="void c()", name="c",
+        file_path="a.cpp", start_line=40, end_line=50, body_hash="h3",
+    ))
+    store.create_calls_edge("cyc_a", "cyc_b", CallsEdgeProps(
+        resolved_by="symbol_table", call_type="direct",
+        call_file="a.cpp", call_line=5,
+    ))
+    store.create_calls_edge("cyc_b", "cyc_c", CallsEdgeProps(
+        resolved_by="symbol_table", call_type="direct",
+        call_file="a.cpp", call_line=25,
+    ))
+    store.create_calls_edge("cyc_c", "cyc_a", CallsEdgeProps(
+        resolved_by="llm", call_type="indirect",
+        call_file="a.cpp", call_line=45,
+    ))
+
+    result = store.get_reachable_subgraph("cyc_a")
+    node_ids = {n.id for n in result["nodes"]}
+    assert node_ids == {"cyc_a", "cyc_b", "cyc_c"}
+    assert len(result["edges"]) == 3
+
+
+def test_get_reachable_subgraph_self_loop(store):
+    """A function that calls itself (recursion) must not cause infinite BFS."""
+    store.create_function(FunctionNode(
+        id="recursive", signature="void rec()", name="rec",
+        file_path="a.cpp", start_line=1, end_line=10, body_hash="h1",
+    ))
+    store.create_calls_edge("recursive", "recursive", CallsEdgeProps(
+        resolved_by="symbol_table", call_type="direct",
+        call_file="a.cpp", call_line=5,
+    ))
+
+    result = store.get_reachable_subgraph("recursive")
+    assert len(result["nodes"]) == 1
+    assert result["nodes"][0].id == "recursive"
+    assert len(result["edges"]) == 1
     """architecture.md §4: UC status ∈ {pending, unresolvable}.
 
     With schema validation in place, invalid status values are rejected
