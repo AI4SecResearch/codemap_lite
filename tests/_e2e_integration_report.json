@@ -1,10 +1,10 @@
 {
-  "timestamp": "2026-05-14T12:41:11.287883+00:00",
-  "duration_s": 24.742488145828247,
+  "timestamp": "2026-05-14T12:52:16.687178+00:00",
+  "duration_s": 26.046454668045044,
   "stages": {
     "preflight": {
       "status": "PASS",
-      "duration_s": 1.5896213054656982,
+      "duration_s": 1.5746452808380127,
       "details": {
         "neo4j": "OK",
         "opencode": "OK: /home/panckae/.opencode/bin/opencode",
@@ -21,7 +21,7 @@
     },
     "source_points": {
       "status": "PASS",
-      "duration_s": 0.06417298316955566,
+      "duration_s": 0.06368041038513184,
       "details": {
         "source": "fixture: /mnt/c/Task/codemap_lite/tests/fixtures/source_points.json",
         "count": 7,
@@ -35,21 +35,21 @@
     },
     "static_analysis": {
       "status": "PASS",
-      "duration_s": 0.8809695243835449,
+      "duration_s": 0.8572499752044678,
       "details": {
         "source": "neo4j_existing",
         "functions_found": 5491,
         "calls_edges": 4504,
-        "unresolved_calls": 19771,
+        "unresolved_calls": 19775,
         "neo4j_reused": true
       },
       "errors": []
     },
     "api_baseline": {
       "status": "PASS",
-      "duration_s": 2.66032075881958,
+      "duration_s": 3.0272789001464844,
       "details": {
-        "port": 53125,
+        "port": 32885,
         "backend_started": true,
         "pagination_validated": true,
         "file_filter_ok": true,
@@ -100,7 +100,7 @@
     },
     "review": {
       "status": "PASS",
-      "duration_s": 0.560006856918335,
+      "duration_s": 0.5638742446899414,
       "details": {
         "mark_correct_ok": true,
         "edge_still_exists_after_correct": true,
@@ -111,7 +111,7 @@
         "uc_retry_count": 0,
         "uc_status": "pending",
         "source_point_reset": "no_source_point",
-        "counter_example_count": 16,
+        "counter_example_count": 20,
         "counter_example_found": true,
         "manual_edge_created": true,
         "manual_edge_in_store": true,
@@ -126,7 +126,7 @@
         "review_deleted_404": true,
         "feedback_post_ok": true,
         "feedback_deduplicated": false,
-        "feedback_total_after": 17,
+        "feedback_total_after": 21,
         "edge_invalid_resolved_by_rejected": true,
         "edge_invalid_call_type_rejected": true
       },
@@ -134,7 +134,7 @@
     },
     "incremental": {
       "status": "PASS",
-      "duration_s": 18.949199199676514,
+      "duration_s": 19.92208981513977,
       "details": {
         "test_file": "castengine_wifi_display/tests/demo/rtp/ts_rtp_enc_demo.cpp",
         "state_json_refreshed": true,

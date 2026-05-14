@@ -542,8 +542,9 @@ class InMemoryGraphStore:
         }
         by_resolved: dict[str, int] = {r: 0 for r in _VALID_RESOLVED_BY}
         for e in self._calls_edges:
-            key = e.props.resolved_by or "unknown"
-            by_resolved[key] = by_resolved.get(key, 0) + 1
+            key = e.props.resolved_by
+            if key in _VALID_RESOLVED_BY:
+                by_resolved[key] += 1
         return {
             "total_functions": len(self._functions),
             "total_files": len(self._files),
@@ -1219,8 +1220,9 @@ class Neo4jGraphStore:
                 "RETURN coalesce(r.resolved_by, 'unknown') AS rb, "
                 "count(r) AS n"
             ):
-                key = row["rb"] or "unknown"
-                by_resolved[key] = by_resolved.get(key, 0) + row["n"]
+                key = row["rb"]
+                if key in _VALID_RESOLVED_BY:
+                    by_resolved[key] += row["n"]
         return {
             "total_functions": total_functions,
             "total_files": total_files,

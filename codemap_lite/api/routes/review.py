@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,28 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, R
 from pydantic import BaseModel, field_validator
 
 from codemap_lite.graph.schema import CallsEdgeProps
+
+
+def _read_call_expression(call_file: str, call_line: int, target_dir: str | None) -> tuple[str, str]:
+    """Read call_expression and snippet from source file.
+
+    Returns (call_expression, snippet) — both empty on failure.
+    """
+    if not target_dir:
+        return "", ""
+    path = call_file if os.path.isabs(call_file) else os.path.join(target_dir, call_file)
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+        if 1 <= call_line <= len(lines):
+            expr = lines[call_line - 1].strip()
+            start = max(0, call_line - 3)
+            end = min(len(lines), call_line + 2)
+            snippet = "".join(lines[start:end])
+            return expr, snippet
+    except OSError:
+        pass
+    return "", ""
 
 logger = logging.getLogger(__name__)
 
@@ -199,13 +222,16 @@ def create_review_router() -> APIRouter:
                 call_location=call_location,
             )
             # Step 3: Regenerate UnresolvedCall (retry_count=0)
+            target_dir = getattr(request.app.state, "target_dir", None)
+            td_str = str(target_dir) if target_dir else None
+            call_expr, snippet = _read_call_expression(body.call_file, body.call_line, td_str)
             uc = UnresolvedCallNode(
                 caller_id=body.caller_id,
-                call_expression="",
+                call_expression=call_expr,
                 call_file=body.call_file,
                 call_line=body.call_line,
                 call_type=call_type,
-                source_code_snippet="",
+                source_code_snippet=snippet,
                 var_name=None,
                 var_type=None,
                 retry_count=0,
@@ -343,13 +369,16 @@ def create_review_router() -> APIRouter:
         )
 
         # Step 3: Regenerate UnresolvedCall (architecture.md §5 line 327)
+        target_dir = getattr(request.app.state, "target_dir", None)
+        td_str = str(target_dir) if target_dir else None
+        call_expr, snippet = _read_call_expression(body.call_file, body.call_line, td_str)
         uc = UnresolvedCallNode(
             caller_id=body.caller_id,
-            call_expression="",
+            call_expression=call_expr,
             call_file=body.call_file,
             call_line=body.call_line,
             call_type=call_type,
-            source_code_snippet="",
+            source_code_snippet=snippet,
             var_name=None,
             var_type=None,
             retry_count=0,

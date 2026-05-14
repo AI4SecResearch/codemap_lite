@@ -495,6 +495,31 @@ def stage_4_backend_api(args: argparse.Namespace, neo_store: Neo4jGraphStore, so
         else:
             errors.append(f"/functions?file= failed: {file_filter_resp.get('error')}")
 
+        # §8: Pagination correctness — limit/offset must work
+        page1_resp = _http_get(f"{base_url}/api/v1/functions?limit=2&offset=0")
+        page2_resp = _http_get(f"{base_url}/api/v1/functions?limit=2&offset=2")
+        if page1_resp["ok"] and page2_resp["ok"]:
+            p1 = json.loads(page1_resp["body"])
+            p2 = json.loads(page2_resp["body"])
+            # total must be same across pages
+            if p1["total"] != p2["total"]:
+                errors.append(
+                    f"Pagination total inconsistent: page1={p1['total']}, page2={p2['total']}"
+                )
+            # items must be different (offset works)
+            p1_ids = {f["id"] for f in p1["items"]}
+            p2_ids = {f["id"] for f in p2["items"]}
+            if p1_ids & p2_ids:
+                errors.append(
+                    f"Pagination overlap: offset=0 and offset=2 share items {p1_ids & p2_ids}"
+                )
+            # limit must be respected
+            if len(p1["items"]) > 2:
+                errors.append(f"Pagination limit=2 not respected: got {len(p1['items'])} items")
+            details["pagination_validated"] = True
+        else:
+            errors.append("Pagination test failed: could not fetch pages")
+
     # §8: Additional endpoints (analyze, source-points reachable)
     # GET /api/v1/analyze/status
     status_resp = _http_get(f"{base_url}/api/v1/analyze/status")
@@ -551,7 +576,27 @@ def stage_4_backend_api(args: argparse.Namespace, neo_store: Neo4jGraphStore, so
         missing_rb = expected_rb - set(by_rb.keys())
         if missing_rb:
             errors.append(f"stats.calls_by_resolved_by missing keys: {missing_rb}")
+        extra_rb = set(by_rb.keys()) - expected_rb
+        if extra_rb:
+            errors.append(f"stats.calls_by_resolved_by has unexpected keys: {extra_rb} (§8 contract violation)")
         details["calls_by_resolved_by_keys"] = sorted(by_rb.keys())
+        # §8: unresolved_by_category must have EXACTLY 5 keys (no extras)
+        extra_cats = set(by_cat.keys()) - expected_cats
+        if extra_cats:
+            errors.append(f"stats.unresolved_by_category has unexpected keys: {extra_cats}")
+        # §8: calls_by_resolved_by values must sum to total_calls
+        if sum(by_rb.values()) != stats.get("total_calls", -1):
+            errors.append(
+                f"stats.calls_by_resolved_by sum ({sum(by_rb.values())}) != "
+                f"total_calls ({stats.get('total_calls')})"
+            )
+        # §8: unresolved_by_status values must sum to total_unresolved
+        by_status = stats.get("unresolved_by_status", {})
+        if sum(by_status.values()) != stats.get("total_unresolved", -1):
+            errors.append(
+                f"stats.unresolved_by_status sum ({sum(by_status.values())}) != "
+                f"total_unresolved ({stats.get('total_unresolved')})"
+            )
 
     # §8: GET /api/v1/source-points/{id}/reachable
     if source_points:
