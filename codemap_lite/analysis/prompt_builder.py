@@ -28,7 +28,7 @@ Follow these steps:
 4. When done, the orchestrator will run check-complete to verify.
 
 Remember:
-- Check counter_examples.md before deciding targets
+- Check {icsl_dir}/counter_examples.md before deciding targets — it contains known wrong resolutions
 - Skip edges that already exist
 - Always pass --llm-response and --reasoning-summary on every write-edge call
 - Stop when you reach system/standard library functions (no source available)

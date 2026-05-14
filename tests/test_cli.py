@@ -299,3 +299,88 @@ def test_repair_handles_fetch_failure_gracefully(tmp_path):
 
     assert result.exit_code == 2
     assert "Connection refused" in result.output or "Connection refused" in (result.stderr or "")
+
+
+# --- analyze -----------------------------------------------------------------
+
+
+def test_analyze_full_passes_graph_store_to_orchestrator(tmp_path):
+    """CRITICAL: full analysis must write to Neo4j, not InMemoryGraphStore.
+
+    architecture.md §4: PipelineOrchestrator must persist parsed data to
+    the production graph store. Without this, all data is lost when the
+    command exits.
+    """
+    cfg = _write_config(tmp_path)
+    target = tmp_path / "target"
+    target.mkdir(exist_ok=True)
+
+    fake_graph_store = MagicMock(name="Neo4jGraphStore")
+    fake_result = MagicMock(
+        files_scanned=10, functions_found=50, direct_calls=30, unresolved_calls=20
+    )
+
+    with patch("codemap_lite.cli._build_graph_store", return_value=fake_graph_store) as build_gs:
+        with patch(
+            "codemap_lite.pipeline.orchestrator.PipelineOrchestrator"
+        ) as orch_cls:
+            orch_cls.return_value.run_full_analysis.return_value = fake_result
+            result = runner.invoke(app, ["analyze", "--config", str(cfg)])
+
+    assert result.exit_code == 0, result.output
+    build_gs.assert_called_once()
+    # Verify graph_store was passed as `store` kwarg
+    orch_cls.assert_called_once()
+    call_kwargs = orch_cls.call_args.kwargs
+    assert call_kwargs.get("store") is fake_graph_store
+
+
+def test_analyze_auto_repair_includes_retry_failed_gaps(tmp_path):
+    """architecture.md §10, ADR #35: auto-repair after incremental must
+    include retry_failed_gaps so previously unresolvable GAPs are retried.
+    """
+    cfg = _write_config(tmp_path)
+    # Add retry_failed_gaps to config
+    cfg.write_text(
+        cfg.read_text(encoding="utf-8") + "  retry_failed_gaps: true\n",
+        encoding="utf-8",
+    )
+    target = tmp_path / "target"
+    target.mkdir(exist_ok=True)
+
+    fake_graph_store = MagicMock(name="Neo4jGraphStore")
+    fake_incremental_result = MagicMock(
+        files_changed=1,
+        functions_found=5,
+        affected_source_ids=["src_001"],
+    )
+    fake_repair_result = MagicMock(successes=["src_001"], failures=[])
+
+    fake_orch = MagicMock()
+    fake_orch.run_incremental_analysis.return_value = fake_incremental_result
+
+    fake_repair_orch = MagicMock()
+
+    async def _fake_run(ids):
+        return fake_repair_result
+
+    fake_repair_orch.run_repairs.side_effect = _fake_run
+
+    with patch("codemap_lite.cli._build_graph_store", return_value=fake_graph_store):
+        with patch(
+            "codemap_lite.pipeline.orchestrator.PipelineOrchestrator",
+            return_value=fake_orch,
+        ):
+            with patch(
+                "codemap_lite.analysis.repair_orchestrator.RepairOrchestrator",
+                return_value=fake_repair_orch,
+            ) as repair_ctor:
+                result = runner.invoke(
+                    app, ["analyze", "--config", str(cfg), "--incremental", "--auto-repair"]
+                )
+
+    assert result.exit_code == 0, result.output
+    repair_ctor.assert_called_once()
+    repair_config = repair_ctor.call_args.args[0]
+    assert repair_config.retry_failed_gaps is True
+    assert repair_config.graph_store is fake_graph_store
