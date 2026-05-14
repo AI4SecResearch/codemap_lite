@@ -229,12 +229,9 @@ class TestSourcePointReachableFallback:
         assert len(data["edges"]) == 1
 
     def test_reachable_unknown_id_returns_empty(self, reachable_client):
-        """When source_id doesn't match anything, should return empty subgraph."""
+        """When source_id doesn't match anything, should return 404."""
         resp = reachable_client.get("/api/v1/source-points/nonexistent/reachable")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert len(data["nodes"]) == 0
-        assert len(data["edges"]) == 0
+        assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------

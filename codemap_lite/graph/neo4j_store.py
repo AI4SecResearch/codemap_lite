@@ -609,10 +609,15 @@ class InMemoryGraphStore:
             "symbol_table", "signature", "dataflow", "context", "llm"
         }
         by_resolved: dict[str, int] = {r: 0 for r in _VALID_RESOLVED_BY}
+        _VALID_CALL_TYPES = {"direct", "indirect", "virtual"}
+        by_call_type: dict[str, int] = {ct: 0 for ct in _VALID_CALL_TYPES}
         for e in self._calls_edges:
             key = e.props.resolved_by
             if key in _VALID_RESOLVED_BY:
                 by_resolved[key] += 1
+            ct = e.props.call_type
+            if ct in _VALID_CALL_TYPES:
+                by_call_type[ct] += 1
         # architecture.md §3: SourcePoint status lifecycle tracking
         sp_by_status: dict[str, int] = {
             "pending": 0, "running": 0, "complete": 0, "partial_complete": 0,
@@ -633,6 +638,7 @@ class InMemoryGraphStore:
             "unresolved_by_status": by_status,
             "unresolved_by_category": by_category,
             "calls_by_resolved_by": by_resolved,
+            "calls_by_call_type": by_call_type,
             "source_points_by_status": sp_by_status,
         }
 
@@ -1354,14 +1360,20 @@ class Neo4jGraphStore:
                 "symbol_table", "signature", "dataflow", "context", "llm"
             }
             by_resolved: dict[str, int] = {r: 0 for r in _VALID_RESOLVED_BY}
+            _VALID_CALL_TYPES = {"direct", "indirect", "virtual"}
+            by_call_type: dict[str, int] = {ct: 0 for ct in _VALID_CALL_TYPES}
             for row in session.run(
                 "MATCH ()-[r:CALLS]->() "
                 "RETURN coalesce(r.resolved_by, 'unknown') AS rb, "
+                "coalesce(r.call_type, 'direct') AS ct, "
                 "count(r) AS n"
             ):
                 key = row["rb"]
                 if key in _VALID_RESOLVED_BY:
                     by_resolved[key] += row["n"]
+                ct_key = row["ct"]
+                if ct_key in _VALID_CALL_TYPES:
+                    by_call_type[ct_key] += row["n"]
             # architecture.md §3: SourcePoint status lifecycle tracking
             _VALID_SP_STATUSES = {"pending", "running", "complete", "partial_complete"}
             sp_by_status: dict[str, int] = {s: 0 for s in _VALID_SP_STATUSES}
@@ -1386,6 +1398,7 @@ class Neo4jGraphStore:
             "unresolved_by_status": by_status,
             "unresolved_by_category": by_category,
             "calls_by_resolved_by": by_resolved,
+            "calls_by_call_type": by_call_type,
             "source_points_by_status": sp_by_status,
         }
 

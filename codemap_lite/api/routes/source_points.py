@@ -147,11 +147,16 @@ def create_source_points_router() -> APIRouter:
         raise HTTPException(status_code=404, detail="Source point not found")
 
     @router.get("/source-points/{source_id:path}/reachable")
-    def get_reachable(request: Request, source_id: str) -> dict[str, Any]:
+    def get_reachable(
+        request: Request,
+        source_id: str,
+        depth: int = Query(default=50, ge=1, le=200),
+    ) -> dict[str, Any]:
         store = request.app.state.store
-        # Source-point ids from archdoc don't match FunctionNode ids directly.
-        # Look up the entry in app.state.source_points and use its resolved
-        # function_id for the BFS seed.
+        # Resolve the BFS seed function_id from multiple sources:
+        # 1. codewiki_lite entries (app.state.source_points)
+        # 2. graph store SourcePointNode
+        # 3. fallback: use source_id directly as function_id
         entries = getattr(request.app.state, "source_points", [])
         seed_id = source_id
         for entry in entries:
@@ -160,7 +165,17 @@ def create_source_points_router() -> APIRouter:
                 if resolved:
                     seed_id = resolved
                 break
-        subgraph = store.get_reachable_subgraph(seed_id)
+        else:
+            # Not found in codewiki_lite entries — check graph store
+            sp = store.get_source_point(source_id)
+            if sp is not None and sp.function_id:
+                seed_id = sp.function_id
+            elif store.get_function_by_id(source_id) is None:
+                raise HTTPException(status_code=404, detail="Source point not found")
+        subgraph = store.get_reachable_subgraph(seed_id, max_depth=depth)
+        if not subgraph["nodes"] and not subgraph["edges"]:
+            # Seed function not found in graph
+            raise HTTPException(status_code=404, detail="Source point not found")
         return {
             "nodes": [asdict(n) for n in subgraph["nodes"]],
             "edges": [
