@@ -576,6 +576,60 @@ def test_write_edge_repair_log_timestamps_are_monotonic():
     assert len(set(timestamps)) == 3, "timestamps not distinct"
 
 
+def test_write_edge_repair_log_call_location_matches_edge():
+    """Regression: RepairLog.call_location must exactly match the CALLS edge's
+    (call_file, call_line) so Neo4j queries can join them.
+
+    Known gap (2026-05-13): 35 LLM edges vs 34 RepairLogs in 7-entry run.
+    Root cause: path normalization differences between call_file in CALLS edge
+    and call_location in RepairLog. This test ensures they stay consistent.
+    """
+    from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+    from codemap_lite.graph.schema import FunctionNode, UnresolvedCallNode
+
+    store = InMemoryGraphStore()
+    store.create_function(FunctionNode(
+        id="f1", name="a", signature="void a()",
+        file_path="src/module/foo.cpp", start_line=1, end_line=10, body_hash="h1",
+    ))
+    store.create_function(FunctionNode(
+        id="f2", name="b", signature="void b()",
+        file_path="src/module/bar.cpp", start_line=1, end_line=5, body_hash="h2",
+    ))
+    store.create_unresolved_call(UnresolvedCallNode(
+        caller_id="f1", call_expression="b()",
+        call_file="src/module/foo.cpp", call_line=5,
+        call_type="indirect", source_code_snippet="b();",
+        var_name="b", var_type="void(*)()",
+    ))
+
+    # Write edge with the same call_file format
+    result = write_edge(
+        caller_id="f1", callee_id="f2",
+        call_type="indirect",
+        call_file="src/module/foo.cpp",
+        call_line=5,
+        store=store,
+    )
+    assert result["edge_created"] is True
+
+    # Verify: RepairLog.call_location == "{call_file}:{call_line}" from CALLS edge
+    edges = store.list_calls_edges()
+    llm_edges = [e for e in edges if e.props.resolved_by == "llm"]
+    assert len(llm_edges) == 1
+
+    logs = store.get_repair_logs()
+    assert len(logs) == 1
+
+    edge = llm_edges[0]
+    log = logs[0]
+    expected_location = f"{edge.props.call_file}:{edge.props.call_line}"
+    assert log.call_location == expected_location, (
+        f"RepairLog.call_location ({log.call_location!r}) != "
+        f"CALLS edge location ({expected_location!r})"
+    )
+
+
 def test_write_edge_rejects_invalid_call_type(mock_graph_store):
     """architecture.md §4: call_type ∈ {direct, indirect, virtual}.
 
