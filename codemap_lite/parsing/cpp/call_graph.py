@@ -9,6 +9,7 @@ import tree_sitter_cpp as tscpp
 from codemap_lite.parsing.types import CallEdge, CallType, FunctionDef, UnresolvedCall
 from codemap_lite.parsing.cpp.dispatch_classifier import DispatchInfo, classify_call
 from codemap_lite.parsing.cpp.class_hierarchy import ClassHierarchyIndex
+from codemap_lite.parsing.cpp.library_whitelist import is_library_call
 
 _LANGUAGE = ts.Language(tscpp.language())
 _PARSER = ts.Parser(_LANGUAGE)
@@ -74,6 +75,12 @@ def build_calls(
         direct_calls,
         unresolved_calls,
     )
+
+    # Filter out known library/system calls (architecture.md §1 whitelist)
+    unresolved_calls = [
+        uc for uc in unresolved_calls
+        if not is_library_call(uc.call_expression)
+    ]
 
     return direct_calls, unresolved_calls
 

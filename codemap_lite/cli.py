@@ -363,3 +363,7 @@ def serve(
 
     uvicorn.run(app_instance, host=host, port=port)
 
+
+if __name__ == "__main__":
+    app()
+

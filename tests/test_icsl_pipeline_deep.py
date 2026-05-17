@@ -218,13 +218,15 @@ class TestEdgeUCConsistency:
             if key in edge_sites:
                 conflicts.append(uc)
 
-        # KNOWN BUG: ~1026 conflicts. Should be 0 when fixed.
+        # KNOWN BUG: conflicts should be 0 when fully fixed.
+        # Baseline dropped from ~1026 → ~718 after library whitelist filter
+        # (architecture.md §1: known stdlib/system calls filtered at parse time).
         # This test documents the baseline — should not get WORSE.
-        assert len(conflicts) <= 1100, (
-            f"Edge+UC conflicts increased: {len(conflicts)} (baseline ~1026)"
+        assert len(conflicts) <= 800, (
+            f"Edge+UC conflicts increased: {len(conflicts)} (baseline ~718)"
         )
         # At least some exist (documenting the bug)
-        assert len(conflicts) > 900, (
+        assert len(conflicts) > 500, (
             f"Only {len(conflicts)} conflicts — bug may be partially fixed, update baseline"
         )
 

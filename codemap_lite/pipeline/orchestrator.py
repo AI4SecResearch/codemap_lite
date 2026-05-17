@@ -13,6 +13,12 @@ from codemap_lite.parsing.file_scanner import FileScanner
 from codemap_lite.parsing.plugin_registry import PluginRegistry
 from codemap_lite.parsing.types import CallType
 
+try:
+    from codemap_lite.parsing.cpp.library_whitelist import is_library_call
+except ImportError:
+    def is_library_call(expr: str) -> bool:  # type: ignore[misc]
+        return False
+
 
 # Architecture §4: CALLS.call_type ∈ {"direct", "indirect", "virtual"}.
 # The parser uses finer-grained internal types (CALLBACK, MEMBER_FN_PTR,
@@ -369,6 +375,9 @@ class PipelineOrchestrator:
                         # Ambiguous / indirect — record as UC with the
                         # real candidate list rather than synthesising
                         # a bogus edge.
+                        # Filter known library/system calls (architecture.md §1 whitelist)
+                        if is_library_call(call.callee_name):
+                            continue
                         candidates = _candidate_names(call.callee_name) or [call.callee_name]
                         uc_id = f"gap:{call.call_file}:{call.call_line}:{call.callee_name[:50]}"
                         uc_node = UnresolvedCallNode(
@@ -400,6 +409,11 @@ class PipelineOrchestrator:
 
                 # Store unresolved calls in graph
                 for uc in unresolved:
+                    # Filter known library/system calls (architecture.md §1 whitelist)
+                    if is_library_call(uc.call_expression):
+                        result.unresolved_calls -= 1
+                        continue
+
                     caller_id = _resolve_id(str(uc.call_file), uc.caller_name)
                     if caller_id is None:
                         # Caller itself isn't a known function — skip.

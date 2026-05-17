@@ -169,12 +169,13 @@ class TestEdgeUCConflict:
             if (uc.caller_id, uc.call_file, uc.call_line) in edge_sites
         ]
 
-        # Known baseline ~1026. Should not get worse.
-        assert len(conflicts) <= 1100, (
-            f"Edge+UC conflicts increased: {len(conflicts)} (baseline ~1026)"
+        # Baseline dropped from ~1026 → ~718 after library whitelist filter
+        # (architecture.md §1: known stdlib/system calls filtered at parse time).
+        assert len(conflicts) <= 800, (
+            f"Edge+UC conflicts increased: {len(conflicts)} (baseline ~718)"
         )
         # At least some exist (documenting the bug)
-        assert len(conflicts) > 900, (
+        assert len(conflicts) > 500, (
             f"Only {len(conflicts)} conflicts — bug may be partially fixed"
         )
 

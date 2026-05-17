@@ -246,7 +246,7 @@ codemap-lite serve    [--config PATH] [--port 8000]     # 启 FastAPI
   - §8 REST API：28 个前端 API 方法全部有对应后端端点，响应格式一致。**已对齐**。
   - §3 门禁 subprocess 调用：`_check_gate` 正确 spawn `python .icslpreprocess/icsl_tools.py check-complete --source <id>` 并解析 JSON。**已对齐**。
   - §3 超时处理：`asyncio.wait_for` + `proc.kill()` + stamp `subprocess_timeout: <N>s`。**已对齐**。
-- **库函数/系统调用被误标为 UnresolvedCall（2026-05-17）**：tree-sitter 解析层对 `c_str()`, `CLOGD()`, `CLOGE()`, `promote()`, `Message()`, `HILOGI()` 等标准库函数/日志宏/智能指针方法产生了 UnresolvedCall 节点。CastEngine 实测中 395 个 GAP 里约 118 个（30%）是此类误报。需要在 parsing 层（`codemap_lite/parsing/cpp/`）添加库函数白名单过滤器，在创建 UnresolvedCall 之前排除已知的标准库/系统调用模式。白名单应覆盖：C++ STL 方法（`c_str`, `size`, `begin`, `end`, `push_back` 等）、OHOS 日志宏（`CLOGD`, `CLOGE`, `HILOGI` 等）、智能指针方法（`promote`, `lock`, `get`, `reset`）、基础设施宏（`RETRUEN_IF_WRONG_TASK`, `EXECUTE_SINGLE_STUB_TASK` 等）。此 gap 影响 Call Graph 可读性和 repair agent 效率（agent 浪费时间尝试解析不需要解析的调用）。
+- ~~**库函数/系统调用被误标为 UnresolvedCall（2026-05-17）**：tree-sitter 解析层对 `c_str()`, `CLOGD()`, `CLOGE()`, `promote()`, `Message()`, `HILOGI()` 等标准库函数/日志宏/智能指针方法产生了 UnresolvedCall 节点。CastEngine 实测中 395 个 GAP 里约 118 个（30%）是此类误报。~~ **已完成（2026-05-17）**：新增 `codemap_lite/parsing/cpp/library_whitelist.py`（frozenset 100+ 条目，覆盖 STL 方法/智能指针/OHOS 日志宏/基础设施宏/C stdlib/同步原语/运算符与 cast），`is_library_call()` 支持全名和 `::` 后缀匹配。过滤集成于 `call_graph.py:build_calls()` 返回前 + `orchestrator.py` 两处 UC 创建点。CastEngine 实测 edge+UC 冲突从 ~1026 降至 ~718（~30% 减少）。10 个测试覆盖。对齐 architecture.md §1 Parsing 层白名单。
 - gap-analysis 历史：`docs/adr/0001-gap-analysis-corrections.md` / `0002-gap-analysis-round2.md` / `0003-gap-analysis-round3.md`。
 
 ---
