@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import { Link } from 'react-router-dom';
+import { Target, FileCode, Code2, GitFork, Bot, AlertTriangle, TrendingUp, Activity, Zap, RefreshCw, Play, Wrench } from 'lucide-react';
 import {
   api,
   Stats,
@@ -7,10 +8,11 @@ import {
   SourceProgress,
   FunctionNode,
 } from '../api/client';
+import { Card, ProgressBar, Button, EmptyState } from '../components/ui';
 
 // architecture.md §5 跨页面 drill-down 契约：Dashboard "Top backlog
 // functions" 取 api.listUnresolved 客户端按 caller_id 聚合后降序前 5，
-// 每行 <Link to="/review?caller=<id>">——打开 Dashboard 即见热点函数，
+// 每行 <Link to="/sources?caller=<id>">——打开 Dashboard 即见热点函数，
 // 1 次点击落到预筛选 GAP 列表，免绕 FunctionBrowser（北极星 #1 + #5）。
 const TOP_BACKLOG_LIMIT = 5;
 
@@ -25,62 +27,67 @@ function StatCard({
   hint,
   tone = 'default',
   to,
+  icon,
 }: {
   title: string;
   value: number | string;
   hint?: string;
   tone?: 'default' | 'alert' | 'warn';
   to?: string;
+  icon?: React.ReactNode;
 }) {
   const toneClasses =
     tone === 'alert'
-      ? 'bg-red-50 border-red-200'
+      ? 'bg-gradient-to-br from-red-50 to-red-100/50 border-red-200'
       : tone === 'warn'
-      ? 'bg-amber-50 border-amber-200'
-      : 'bg-white border';
+      ? 'bg-gradient-to-br from-amber-50 to-amber-100/50 border-amber-200'
+      : 'bg-white border-gray-200';
   const valueClasses =
     tone === 'alert'
       ? 'text-red-700'
       : tone === 'warn'
       ? 'text-amber-700'
-      : '';
+      : 'text-gray-900';
   const interactive = to
-    ? 'cursor-pointer hover:shadow transition-shadow hover:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-400'
+    ? 'cursor-pointer hover:shadow-card-hover hover:-translate-y-0.5 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-blue-400'
     : '';
   const body = (
     <>
-      <div className="text-xs uppercase tracking-wide text-gray-500 flex items-center gap-1">
+      <div className="text-xs uppercase tracking-wide text-gray-500 flex items-center gap-1.5">
+        {icon}
         <span>{title}</span>
-        {to ? (
-          <span aria-hidden className="text-gray-400">
-            ›
-          </span>
-        ) : null}
+        {to ? <span aria-hidden className="text-gray-400">›</span> : null}
       </div>
-      <div className={`text-3xl font-bold mt-1 ${valueClasses}`}>{value}</div>
+      <div className={`text-3xl font-bold mt-1 tabular-nums ${valueClasses}`}>{value}</div>
       {hint ? <div className="text-xs text-gray-500 mt-1">{hint}</div> : null}
     </>
   );
   if (to) {
     return (
-      <Link
-        to={to}
-        className={`${toneClasses} ${interactive} rounded shadow-sm p-4 block no-underline text-inherit`}
-      >
+      <Link to={to} className={`${toneClasses} ${interactive} rounded-xl shadow-card border p-4 block no-underline text-inherit`}>
         {body}
       </Link>
     );
   }
-  return <div className={`${toneClasses} rounded shadow-sm p-4`}>{body}</div>;
+  return <div className={`${toneClasses} rounded-xl shadow-card border p-4`}>{body}</div>;
 }
 
 function SourceProgressCard({ row }: { row: SourceProgress }) {
+  const [funcName, setFuncName] = useState<string | null>(null);
   const pct =
     row.gaps_total > 0
       ? Math.min(100, Math.round((row.gaps_fixed / row.gaps_total) * 100))
       : 0;
   const done = row.gaps_total > 0 && row.gaps_fixed >= row.gaps_total;
   const barColor = done ? 'bg-green-500' : 'bg-blue-500';
+
+  useEffect(() => {
+    if (row.source_id) {
+      api.getFunction(row.source_id)
+        .then((fn) => setFuncName(fn.name || fn.signature?.split('(')[0] || null))
+        .catch(() => {});
+    }
+  }, [row.source_id]);
 
   // State indicator dot
   const stateColor =
@@ -108,10 +115,10 @@ function SourceProgressCard({ row }: { row: SourceProgress }) {
         <div className="flex items-center gap-1.5 min-w-0">
           <span className={`w-2 h-2 rounded-full shrink-0 ${stateColor}`} />
           <div
-            className="font-mono text-xs text-gray-700 truncate"
+            className="text-xs text-gray-700"
             title={row.source_id}
           >
-            {row.source_id}
+            {funcName ?? row.source_id}
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -256,7 +263,7 @@ export default function Dashboard() {
   // LLM-repaired CALLS edges are the review-critical population
   // (architecture.md §5 审阅对象：单条 CALLS 边，特别是 resolved_by='llm').
   // Surface the count so reviewers see the backlog without drilling
-  // into ReviewQueue (北极星指标 #2 调用链可信度).
+  // into SourcePointList (北极星指标 #2 调用链可信度).
   const byResolved = stats?.calls_by_resolved_by ?? {};
   const llmCalls = byResolved.llm ?? 0;
   const resolvedHint =
@@ -271,7 +278,7 @@ export default function Dashboard() {
   // Chip tones mirror GapDetail last-attempt 分色 (§3 Retry 审计字段):
   // gate_failed=amber, agent_error=red, subprocess_crash=fuchsia,
   // subprocess_timeout=orange, agent_exited_without_edge=sky, none=gray.
-  // Each chip is a drill-down link to `/review?category=<cat>` so reviewers
+  // Each chip is a drill-down link to `/sources?category=<cat>` so reviewers
   // can go from "25 of 30 unresolvable are subprocess_timeout" to the
   // pre-filtered list in one click (北极星指标 #1 + #5).
   const byCategory = stats?.unresolved_by_category ?? {};
@@ -342,6 +349,22 @@ export default function Dashboard() {
   }, [gapCounts, functions]);
   const totalCallersWithGaps = gapCounts.size;
 
+  // Historical trend: group repair logs by day
+  const [trend, setTrend] = useState<{ label: string; count: number }[]>([]);
+  useEffect(() => {
+    api.getRepairLogs({ limit: 500 }).then((r) => {
+      const byDay = new Map<string, number>();
+      const now = new Date();
+      for (const log of r.items) {
+        const d = new Date(log.timestamp);
+        const daysAgo = Math.floor((now.getTime() - d.getTime()) / 86400000);
+        const label = daysAgo === 0 ? '今天' : daysAgo === 1 ? '昨天' : `${daysAgo}天前`;
+        byDay.set(label, (byDay.get(label) ?? 0) + 1);
+      }
+      setTrend([...byDay.entries()].slice(0, 5).map(([label, count]) => ({ label, count })));
+    }).catch(() => {});
+  }, []);
+
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
@@ -377,45 +400,52 @@ export default function Dashboard() {
           value={stats?.total_source_points ?? '-'}
           hint="archdoc entry points"
           to="/sources"
+          icon={<Target className="w-3.5 h-3.5 text-blue-500" />}
         />
         <StatCard
           title="Files"
           value={stats?.total_files ?? '-'}
           to="/functions"
+          icon={<FileCode className="w-3.5 h-3.5 text-gray-500" />}
         />
         <StatCard
           title="Functions"
           value={stats?.total_functions ?? '-'}
           to="/functions"
+          icon={<Code2 className="w-3.5 h-3.5 text-gray-500" />}
         />
         <StatCard
           title="Resolved Calls"
           value={stats?.total_calls ?? '-'}
           hint={resolvedHint}
+          icon={<GitFork className="w-3.5 h-3.5 text-green-500" />}
         />
         <StatCard
           title="LLM Repaired"
           value={stats?.total_llm_edges ?? llmCalls ?? '-'}
           hint="needs review (resolved_by=llm)"
           tone={llmCalls > 0 ? 'warn' : 'default'}
+          icon={<Bot className="w-3.5 h-3.5 text-amber-500" />}
         />
         <StatCard
           title="Unresolved GAPs"
           value={stats?.total_unresolved ?? '-'}
           hint={unresolvedHint}
-          to="/review?status=pending"
+          to="/sources?status=pending"
+          icon={<AlertTriangle className="w-3.5 h-3.5 text-amber-500" />}
         />
         <StatCard
           title="Unresolvable"
           value={stats ? unresolvableGaps : '-'}
           hint="agent gave up (>=3 retries)"
           tone={unresolvableGaps > 0 ? 'alert' : 'default'}
-          to="/review?status=unresolvable"
+          to="/sources?status=unresolvable"
+          icon={<AlertTriangle className="w-3.5 h-3.5 text-red-500" />}
         />
       </div>
 
       {categoryRowTotal > 0 ? (
-        <div className="bg-white rounded shadow-sm border p-3">
+        <Card className="p-3">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs uppercase tracking-wide text-gray-500">
               Retry reasons
@@ -426,7 +456,7 @@ export default function Dashboard() {
               return (
                 <Link
                   key={row.key}
-                  to={`/review?category=${encodeURIComponent(row.key)}`}
+                  to={`/sources?category=${encodeURIComponent(row.key)}`}
                   title={row.title}
                   className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium no-underline transition-colors ${row.tone}`}
                 >
@@ -439,47 +469,52 @@ export default function Dashboard() {
               click a chip to filter the review queue
             </span>
           </div>
-        </div>
+        </Card>
       ) : null}
 
-      <div className="bg-white rounded shadow-sm border p-4">
-        <h2 className="font-semibold mb-3">Pipeline Actions</h2>
+      <Card className="p-4">
+        <h2 className="font-semibold mb-3 flex items-center gap-2"><Activity className="w-4 h-4 text-blue-600" /> Pipeline Actions</h2>
         <div className="flex flex-wrap gap-2">
-          <button
-            className="px-3 py-2 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50"
-            onClick={() => onAnalyze('full')}
-            disabled={busy || status?.state === 'running'}
-          >
-            Run Full Analysis
-          </button>
-          <button
-            className="px-3 py-2 rounded bg-blue-100 text-blue-800 text-sm hover:bg-blue-200 disabled:opacity-50"
-            onClick={() => onAnalyze('incremental')}
-            disabled={busy || status?.state === 'running'}
-          >
-            Run Incremental
-          </button>
-          <button
-            className="px-3 py-2 rounded bg-amber-600 text-white text-sm hover:bg-amber-700 disabled:opacity-50"
-            onClick={onRepair}
-            disabled={busy || status?.state === 'repairing'}
-          >
-            Trigger Repair Agent
-          </button>
-          <button
-            className="px-3 py-2 rounded border text-sm hover:bg-gray-50"
-            onClick={refresh}
-            disabled={busy}
-          >
-            Refresh
-          </button>
+          <Button icon={<Play className="w-4 h-4" />} onClick={() => onAnalyze('full')} disabled={busy || status?.state === 'running'}>Full Analysis</Button>
+          <Button variant="secondary" icon={<Zap className="w-4 h-4" />} onClick={() => onAnalyze('incremental')} disabled={busy || status?.state === 'running'}>Incremental</Button>
+          <Button variant="secondary" icon={<Wrench className="w-4 h-4" />} onClick={onRepair} disabled={busy || status?.state === 'repairing'}>Repair Agent</Button>
+          <Button variant="ghost" icon={<RefreshCw className="w-4 h-4" />} onClick={refresh} disabled={busy}>Refresh</Button>
         </div>
-        <p className="text-xs text-gray-500 mt-3">
-          Status polls every 2s. Triggering analysis is async on the server.
-        </p>
-      </div>
+        <p className="text-xs text-gray-500 mt-3">Status polls every 2s. Triggering analysis is async on the server.</p>
+      </Card>
 
-      <div className="bg-white rounded shadow-sm border p-4">
+      {/* Repair Effectiveness */}
+      {stats && (stats.total_calls > 0 || stats.total_unresolved > 0) && (
+        <Card className="p-4">
+          <h2 className="font-semibold mb-3 flex items-center gap-2"><TrendingUp className="w-4 h-4 text-green-600" /> Repair Effectiveness</h2>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <Link to="/sources" className="text-center p-3 rounded-lg bg-green-50 border border-green-100 no-underline hover:shadow-card-hover transition-shadow">
+              <div className="text-2xl font-bold text-green-700 tabular-nums">{resolvedPct ?? 0}%</div>
+              <div className="text-xs text-green-600 mt-1">Resolution Rate</div>
+            </Link>
+            <Link to="/graph" className="text-center p-3 rounded-lg bg-blue-50 border border-blue-100 no-underline hover:shadow-card-hover transition-shadow">
+              <div className="text-2xl font-bold text-blue-700 tabular-nums">+{stats.total_llm_edges ?? llmCalls}</div>
+              <div className="text-xs text-blue-600 mt-1">LLM Edges Added</div>
+            </Link>
+            <Link to="/feedback" className="text-center p-3 rounded-lg bg-purple-50 border border-purple-100 no-underline hover:shadow-card-hover transition-shadow">
+              <div className="text-2xl font-bold text-purple-700 tabular-nums">{stats.total_feedback ?? 0}</div>
+              <div className="text-xs text-purple-600 mt-1">Counter-examples</div>
+            </Link>
+          </div>
+          {stats.total_calls + stats.total_unresolved > 0 && (
+            <div className="mt-3">
+              <ProgressBar value={stats.total_calls / (stats.total_calls + stats.total_unresolved)} size="md" />
+            </div>
+          )}
+          {trend.length > 0 && (
+            <div className="text-sm text-gray-600 mt-3">
+              {trend.map((t, i) => <span key={i}>{i > 0 && ' · '}{t.label} +{t.count} edges</span>)}
+            </div>
+          )}
+        </Card>
+      )}
+
+      <Card className="p-4">
         <div className="flex items-center justify-between mb-3">
           <h2 className="font-semibold">Top backlog functions</h2>
           <span className="text-xs text-gray-500">
@@ -498,7 +533,7 @@ export default function Dashboard() {
               return (
                 <li key={row.callerId}>
                   <Link
-                    to={`/review?caller=${encodeURIComponent(row.callerId)}`}
+                    to={`/sources?caller=${encodeURIComponent(row.callerId)}`}
                     className="flex items-center gap-3 px-2 py-2 rounded hover:bg-gray-50 no-underline text-inherit"
                     title={`${row.count} unresolved GAP${row.count === 1 ? '' : 's'} — review ${row.callerId}`}
                   >
@@ -525,14 +560,11 @@ export default function Dashboard() {
             })}
           </ul>
         ) : (
-          <div className="text-sm text-gray-500">
-            No unresolved GAPs tracked. Run the repair agent to surface
-            per-function backlog.
-          </div>
+          <EmptyState title="No unresolved GAPs" description="Run the repair agent to surface per-function backlog." />
         )}
-      </div>
+      </Card>
 
-      <div className="bg-white rounded shadow-sm border p-4">
+      <Card className="p-4">
         <div className="flex items-center justify-between mb-3">
           <h2 className="font-semibold">Repair Progress</h2>
           <span className="text-xs text-gray-500">
@@ -547,12 +579,9 @@ export default function Dashboard() {
             ))}
           </div>
         ) : (
-          <div className="text-sm text-gray-500">
-            No repair runs yet. Trigger the repair agent to populate
-            per-source progress.
-          </div>
+          <EmptyState title="No repair runs yet" description="Trigger the repair agent to populate per-source progress." />
         )}
-      </div>
+      </Card>
     </div>
   );
 }

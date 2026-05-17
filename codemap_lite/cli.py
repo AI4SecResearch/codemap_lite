@@ -94,6 +94,7 @@ def analyze(
                         neo4j_uri=settings.neo4j.uri,
                         neo4j_user=settings.neo4j.user,
                         neo4j_password=settings.neo4j.password,
+                        log_dir=Path("logs/repair"),
                         feedback_store=feedback_store,
                         graph_store=graph_store,
                         retry_failed_gaps=settings.agent.retry_failed_gaps,
@@ -208,7 +209,7 @@ def repair(
     )
 
     # architecture.md §3 Retry 审计字段: without a real graph_store the
-    # orchestrator silently noops retry-audit stamping, so ReviewQueue
+    # orchestrator silently noops retry-audit stamping, so SourcePointList
     # never sees "last attempt failed at <ts> because <reason>". Wire
     # the production Neo4jGraphStore here so audit fields land in prod.
     graph_store = _build_graph_store(settings)
@@ -223,7 +224,7 @@ def repair(
             neo4j_uri=settings.neo4j.uri,
             neo4j_user=settings.neo4j.user,
             neo4j_password=settings.neo4j.password,
-            log_dir=Path(log_dir) if log_dir else None,
+            log_dir=Path(log_dir) if log_dir else Path("logs/repair"),
             feedback_store=feedback_store,
             graph_store=graph_store,
             retry_failed_gaps=settings.agent.retry_failed_gaps,

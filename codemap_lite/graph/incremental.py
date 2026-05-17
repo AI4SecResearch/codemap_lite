@@ -169,6 +169,12 @@ class IncrementalUpdater:
                 callee_id=callee_id,
                 call_location=call_location,
             )
+            # Skip UC regeneration when the caller itself was deleted (same-file
+            # LLM edge). The re-parse will rebuild the function with a new ID and
+            # static analysis will recreate UCs naturally. Regenerating with the
+            # old caller_id would create a dangling reference (architecture.md §7).
+            if caller_id in function_ids:
+                continue
             # Recover call_expression from source file so the repair agent
             # has context for re-repair (architecture.md §7 step 3).
             call_expr, snippet = self._read_source_context(

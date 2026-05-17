@@ -783,16 +783,15 @@ def test_same_file_llm_edge_regenerates_uc_on_invalidation():
     # The LLM edge should be gone (both endpoints deleted)
     assert len(store.list_calls_edges()) == 0
 
-    # Critical: UC must be regenerated for the same-file LLM edge
+    # Critical: UC must NOT be regenerated for same-file LLM edge because
+    # the caller_id is being deleted. Re-parse will rebuild the function with
+    # a new ID and static analysis will recreate UCs naturally. Regenerating
+    # with the old caller_id would create a dangling reference.
     gaps = store.get_unresolved_calls(caller_id="caller_same")
-    assert len(gaps) == 1, (
-        "architecture.md §7: same-file LLM edge must regenerate UC "
-        "so repair agent can re-attempt after re-parse"
+    assert len(gaps) == 0, (
+        "architecture.md §7: same-file LLM edge must NOT regenerate UC "
+        "with deleted caller_id — re-parse handles it"
     )
-    assert gaps[0].call_file == "same_file.cpp"
-    assert gaps[0].call_line == 5
-    assert gaps[0].retry_count == 0
-    assert gaps[0].status == "pending"
 
     # RepairLog must be deleted
     logs = store.get_repair_logs(caller_id="caller_same", callee_id="callee_same")
@@ -802,6 +801,7 @@ def test_same_file_llm_edge_regenerates_uc_on_invalidation():
     sp = store.get_source_point("caller_same")
     assert sp.status == "pending"
 
-    # caller_same should be in affected_source_ids
+    # caller_same should be in affected_source_ids (it's an affected caller)
     assert "caller_same" in result.affected_source_ids
-    assert "caller_same" in result.regenerated_unresolved_calls or len(result.regenerated_unresolved_calls) == 1
+    # No UC regeneration for same-file edges (caller is deleted)
+    assert len(result.regenerated_unresolved_calls) == 0

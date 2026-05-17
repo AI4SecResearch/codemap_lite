@@ -20,8 +20,8 @@ VALID_REASON_CATEGORIES = frozenset({
 _SOURCE_POINT_TRANSITIONS: dict[str, frozenset[str]] = {
     "pending": frozenset({"running"}),
     "running": frozenset({"complete", "partial_complete"}),
-    "complete": frozenset(),
-    "partial_complete": frozenset(),
+    "complete": frozenset({"running"}),  # re-repair after incremental invalidation
+    "partial_complete": frozenset({"running"}),  # re-repair after review/retry
 }
 
 
@@ -135,6 +135,7 @@ class RepairLogNode:
     llm_response: str
     timestamp: str
     reasoning_summary: str
+    source_id: str = ""
     id: str = field(default_factory=lambda: str(uuid4()))
 
 

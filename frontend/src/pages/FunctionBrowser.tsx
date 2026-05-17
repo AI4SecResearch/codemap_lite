@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, FunctionNode } from '../api/client';
+import { Skeleton } from '../components/ui';
 
 function groupByFile(functions: FunctionNode[]): Map<string, FunctionNode[]> {
   const m = new Map<string, FunctionNode[]>();
@@ -13,7 +14,7 @@ function groupByFile(functions: FunctionNode[]): Map<string, FunctionNode[]> {
 }
 
 // architecture.md §5 跨页面 drill-down 契约：每行函数挂一个 GAP count
-// chip，点击跳 /review?caller=<id>。Chip 颜色按 backlog 大小分三档
+// chip，点击跳 /sources?caller=<id>。Chip 颜色按 backlog 大小分三档
 // (gray 0 / amber 1-2 / red 3+) 与其它 backlog surface（nav chip、
 // Dashboard StatCard）保持同一视觉语言（北极星 #1 + #2 + #5）。
 function GapChip({ count, href }: { count: number; href: string }) {
@@ -41,6 +42,9 @@ export default function FunctionBrowser() {
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [fileSearch, setFileSearch] = useState('');
   const [fnSearch, setFnSearch] = useState('');
+  const [previewFn, setPreviewFn] = useState<FunctionNode | null>(null);
+  const [previewCode, setPreviewCode] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -52,8 +56,8 @@ export default function FunctionBrowser() {
         // leaves the chip map empty (non-blocking — GAP chip is a
         // surface affordance, not the page's primary payload).
         const [fns, unresolved] = await Promise.all([
-          api.getFunctions(),
-          api.listUnresolved({ limit: 500 }).catch(() => ({ total: 0, items: [] })),
+          api.getFunctions({ limit: 10000 }),
+          api.listUnresolved({ limit: 10000 }).catch(() => ({ total: 0, items: [] })),
         ]);
         if (cancelled) return;
         setFunctions(fns.items);
@@ -72,6 +76,21 @@ export default function FunctionBrowser() {
       cancelled = true;
     };
   }, []);
+
+  // Fetch source code when a function is selected for preview
+  useEffect(() => {
+    if (!previewFn) { setPreviewCode(null); return; }
+    if (!previewFn.file_path || !previewFn.start_line) { setPreviewCode('(no source location)'); return; }
+    setPreviewLoading(true);
+    const start = Math.max(1, previewFn.start_line - 2);
+    const end = previewFn.end_line && previewFn.end_line > previewFn.start_line
+      ? previewFn.end_line + 2
+      : previewFn.start_line + 30;
+    api.getSourceCode(previewFn.file_path, start, end)
+      .then((r) => setPreviewCode(r.content))
+      .catch(() => setPreviewCode('(failed to load source)'))
+      .finally(() => setPreviewLoading(false));
+  }, [previewFn]);
 
   const grouped = useMemo(() => groupByFile(functions), [functions]);
   const files = useMemo(() => Array.from(grouped.keys()).sort(), [grouped]);
@@ -134,7 +153,12 @@ export default function FunctionBrowser() {
           </div>
           <div className="flex-1 overflow-auto">
             {loading ? (
-              <div className="p-4 text-gray-500 text-sm">Loading…</div>
+              <div className="p-3 space-y-1">
+                <Skeleton className="h-6 w-full rounded" />
+                <Skeleton className="h-6 w-full rounded" />
+                <Skeleton className="h-6 w-full rounded" />
+                <Skeleton className="h-6 w-3/4 rounded" />
+              </div>
             ) : filteredFiles.length === 0 ? (
               <div className="p-4 text-gray-500 text-sm">No files match.</div>
             ) : (
@@ -224,8 +248,13 @@ export default function FunctionBrowser() {
                 <tbody className="divide-y">
                   {filteredFunctions.map((f) => {
                     const gapCount = gapCounts.get(f.id) ?? 0;
+                    const isActive = previewFn?.id === f.id;
                     return (
-                      <tr key={f.id} className="hover:bg-gray-50 align-top">
+                      <tr
+                        key={f.id}
+                        className={`hover:bg-gray-50 align-top cursor-pointer ${isActive ? 'bg-blue-50' : ''}`}
+                        onClick={() => setPreviewFn(isActive ? null : f)}
+                      >
                         <td className="px-3 py-2 font-mono text-xs">{f.name}</td>
                         <td className="px-3 py-2 font-mono text-xs text-gray-600">
                           {f.signature}
@@ -236,7 +265,7 @@ export default function FunctionBrowser() {
                         <td className="px-3 py-2">
                           <GapChip
                             count={gapCount}
-                            href={`/review?caller=${encodeURIComponent(f.id)}`}
+                            href={`/sources?caller=${encodeURIComponent(f.id)}`}
                           />
                           {gapCount === 0 ? (
                             <span className="text-xs text-gray-300">—</span>
@@ -257,6 +286,27 @@ export default function FunctionBrowser() {
               </table>
             )}
           </div>
+          {/* Source code preview */}
+          {previewFn && (
+            <div className="border-t max-h-[40%] overflow-auto">
+              <div className="flex items-center justify-between px-3 py-2 bg-gray-50 border-b sticky top-0">
+                <div className="text-xs font-medium text-gray-700 truncate">
+                  {previewFn.name} — {previewFn.file_path}:{previewFn.start_line}
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <Link to={`/graph?function=${encodeURIComponent(previewFn.id)}`} className="text-xs text-blue-600 hover:underline">
+                    Call Graph →
+                  </Link>
+                  <button onClick={() => setPreviewFn(null)} className="text-xs text-gray-400 hover:text-gray-600">✕</button>
+                </div>
+              </div>
+              {previewLoading ? (
+                <div className="p-3"><Skeleton className="h-32 w-full" /></div>
+              ) : previewCode ? (
+                <pre className="text-xs font-mono bg-gray-900 text-gray-100 p-3 overflow-x-auto whitespace-pre">{previewCode}</pre>
+              ) : null}
+            </div>
+          )}
         </div>
       </div>
     </div>

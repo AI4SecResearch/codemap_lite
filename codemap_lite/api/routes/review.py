@@ -205,6 +205,13 @@ def create_review_router() -> APIRouter:
             "comment": body.comment,
         }
 
+        if body.verdict == "correct":
+            # Persist approval to graph store — marks the edge as reviewed
+            # so the frontend can distinguish reviewed vs unreviewed LLM edges.
+            store.mark_edge_reviewed(
+                body.caller_id, body.callee_id, body.call_file, body.call_line
+            )
+
         if body.verdict == "incorrect":
             # architecture.md §5 标记错误时 4-step flow:
             # Step 1: Delete the CALLS edge

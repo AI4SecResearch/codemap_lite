@@ -56,7 +56,7 @@ class SourcePointClient:
         """
         import httpx
 
-        async with httpx.AsyncClient(timeout=30.0, proxy=None) as client:
+        async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
             # Discover modules
             resp = await client.get(f"{self._base_url}/modules")
             resp.raise_for_status()

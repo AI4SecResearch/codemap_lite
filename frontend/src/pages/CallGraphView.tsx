@@ -6,6 +6,7 @@ import cytoscape, {
   ElementDefinition,
   NodeSingular,
 } from 'cytoscape';
+import { GitFork } from 'lucide-react';
 import {
   api,
   Subgraph,
@@ -14,8 +15,20 @@ import {
   RepairLog,
   UnresolvedCall,
 } from '../api/client';
+import { EmptyState } from '../components/ui';
 
 type StartKind = 'function' | 'source' | null;
+
+/** Resolves a 12-char function hash ID to a human-readable name. */
+function FunctionName({ id, className }: { id: string; className?: string }) {
+  const [name, setName] = useState<string | null>(null);
+  useEffect(() => {
+    api.getFunction(id)
+      .then((fn) => setName(fn.name || fn.signature?.split('(')[0] || null))
+      .catch(() => {});
+  }, [id]);
+  return <span className={className} title={id}>{name ?? id}</span>;
+}
 
 function shortFile(p: string): string {
   return p.split('/').slice(-3).join('/');
@@ -33,7 +46,8 @@ function moduleOf(filePath: string): string {
 
 function buildElements(
   graph: Subgraph,
-  rootId: string | null
+  rootId: string | null,
+  gapFilter?: string | null,
 ): ElementDefinition[] {
   const elements: ElementDefinition[] = [];
   const moduleSet = new Set<string>();
@@ -98,7 +112,11 @@ function buildElements(
     });
   }
   // Unresolved calls: synthetic target node + edge
-  graph.unresolved.forEach((u, i) => {
+  // When gapFilter is set, only show GAPs from that specific caller
+  const filteredUnresolved = gapFilter
+    ? graph.unresolved.filter((u) => u.caller_id === gapFilter)
+    : graph.unresolved;
+  filteredUnresolved.forEach((u, i) => {
     const synthId = `gap::${u.caller_id}::${u.call_line}::${i}`;
     elements.push({
       data: {
@@ -262,7 +280,18 @@ function EdgeLlmInspector({ edge }: { edge: CallEdge }) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [callerName, setCallerName] = useState<string | null>(null);
+  const [calleeName, setCalleeName] = useState<string | null>(null);
   const location = `${edge.props.call_file}:${edge.props.call_line}`;
+
+  useEffect(() => {
+    api.getFunction(edge.caller_id)
+      .then((fn) => setCallerName(fn.name || fn.signature?.split('(')[0] || null))
+      .catch(() => {});
+    api.getFunction(edge.callee_id)
+      .then((fn) => setCalleeName(fn.name || fn.signature?.split('(')[0] || null))
+      .catch(() => {});
+  }, [edge.caller_id, edge.callee_id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -301,11 +330,11 @@ function EdgeLlmInspector({ edge }: { edge: CallEdge }) {
       </div>
       <div>
         <div className="text-gray-500">Caller</div>
-        <div className="font-mono break-all">{edge.caller_id}</div>
+        <div className="font-mono break-all">{callerName ?? edge.caller_id}</div>
       </div>
       <div>
         <div className="text-gray-500">Callee</div>
-        <div className="font-mono break-all">{edge.callee_id}</div>
+        <div className="font-mono break-all">{calleeName ?? edge.callee_id}</div>
       </div>
       <div>
         <div className="text-gray-500">Location</div>
@@ -410,7 +439,7 @@ function NodeInspector({
   if (selected.kind === 'function') {
     const fn = selected.data as FunctionNode;
     // architecture.md §5 跨页面 drill-down 契约：function-node 分支挂
-    // "Review GAPs" 链接跳 /review?caller=<id>。count 由父级按当前
+    // "Review GAPs" 链接跳 /sources?caller=<id>。count 由父级按当前
     // 子图的 unresolved 聚合（只算本图可见的 GAP），0 时不渲染链接
     // 避免空跳转（北极星 #1 GAP 审阅耗时 + #5 状态透明度）。
     const gapCount = gapCountByCaller.get(fn.id) ?? 0;
@@ -438,7 +467,7 @@ function NodeInspector({
         </button>
         {gapCount > 0 ? (
           <Link
-            to={`/review?caller=${encodeURIComponent(fn.id)}`}
+            to={`/sources?caller=${encodeURIComponent(fn.id)}`}
             className={`mt-1 w-full px-2 py-1 rounded text-xs no-underline flex items-center justify-center gap-1.5 ${
               gapCount >= 3
                 ? 'bg-red-100 text-red-800 hover:bg-red-200'
@@ -476,7 +505,7 @@ function NodeInspector({
         </div>
         <div>
           <div className="text-gray-500">Caller</div>
-          <div className="font-mono break-all">{gap.caller_id}</div>
+          <div className="font-mono break-all"><FunctionName id={gap.caller_id} /></div>
         </div>
         <div>
           <div className="text-gray-500">Location</div>
@@ -499,11 +528,11 @@ function NodeInspector({
           </div>
         ) : null}
         {/* architecture.md §5 跨页面 drill-down 契约：unresolved 分支挂
-         * "Review this caller" 跳 /review?caller=<caller_id>，审阅者
-         * 从图里点到可疑 GAP 时一键回到预筛选 GAP 列表，免绕 ReviewQueue
-         * 手动搜 caller_id（北极星 #1 GAP 审阅耗时 + #2 调用链可信度）。 */}
+         * "Review this caller" 跳 /sources?caller=<caller_id>，审阅者
+         * 从图里点到可疑 GAP 时一键回到预筛选 GAP 列表（北极星 #1
+         * GAP 审阅耗时 + #2 调用链可信度）。 */}
         <Link
-          to={`/review?caller=${encodeURIComponent(gap.caller_id)}`}
+          to={`/sources?caller=${encodeURIComponent(gap.caller_id)}`}
           className="mt-1 w-full px-2 py-1 rounded bg-amber-100 text-amber-800 text-xs hover:bg-amber-200 no-underline flex items-center justify-center gap-1.5"
           title={`Open review list filtered to caller ${gap.caller_id}`}
         >
@@ -537,11 +566,11 @@ export default function CallGraphView() {
   const [graph, setGraph] = useState<Subgraph | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [depth, setDepth] = useState(5);
+  const [depth, setDepth] = useState(2);
   const [selected, setSelected] = useState<{ kind: string; data: unknown } | null>(
     null
   );
-  // Interactive legend state. Each key in the set corresponds to a
+  const [showAllGaps, setShowAllGaps] = useState(false);  // Interactive legend state. Each key in the set corresponds to a
   // resolved_by bucket (or the synthetic "unresolved" bucket) that
   // should currently be hidden from the canvas. Driven by Legend
   // clicks; applied via a cytoscape style effect below so reloads
@@ -581,8 +610,12 @@ export default function CallGraphView() {
   }, [load]);
 
   const elements = useMemo(
-    () => (graph ? buildElements(graph, startKind === 'function' ? startId : null) : []),
-    [graph, startId, startKind]
+    () => (graph ? buildElements(
+      graph,
+      startKind === 'function' ? startId : null,
+      showAllGaps ? null : startId,
+    ) : []),
+    [graph, startId, startKind, showAllGaps]
   );
 
   // Per-bucket counts for the legend chips. Kept as a memo so hidden
@@ -603,9 +636,12 @@ export default function CallGraphView() {
       const key = e.props.resolved_by as FilterKey;
       if (key in acc) acc[key] += 1;
     }
-    acc.unresolved = graph.unresolved.length;
+    const filteredUnresolved = showAllGaps
+      ? graph.unresolved
+      : graph.unresolved.filter((u) => u.caller_id === startId);
+    acc.unresolved = filteredUnresolved.length;
     return acc;
-  }, [graph]);
+  }, [graph, showAllGaps, startId]);
 
   // Per-caller GAP count within the current subgraph — used by the
   // inspector's function-node branch to render a "Review GAPs" link
@@ -893,21 +929,24 @@ export default function CallGraphView() {
           >
             Reload
           </button>
+          <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={showAllGaps}
+              onChange={(e) => setShowAllGaps(e.target.checked)}
+              className="rounded border-gray-300"
+            />
+            Show all GAPs
+          </label>
         </div>
       </div>
 
       {!startId ? (
-        <div className="bg-white border rounded p-4 text-sm text-gray-600">
-          Pick a starting point from{' '}
-          <a href="/sources" className="text-blue-600 hover:underline">
-            Source Points
-          </a>{' '}
-          or{' '}
-          <a href="/functions" className="text-blue-600 hover:underline">
-            Function Browser
-          </a>
-          .
-        </div>
+        <EmptyState
+          icon={<GitFork className="w-8 h-8 text-gray-400" />}
+          title="No starting point selected"
+          description="Pick a function from Source Points or Function Browser to visualize its call graph."
+        />
       ) : (
         <div className="bg-white border rounded p-3 text-xs text-gray-600 flex flex-wrap gap-x-4 gap-y-1">
           <span>
@@ -917,6 +956,13 @@ export default function CallGraphView() {
           <span>Functions: {nodeCount}</span>
           <span>Resolved edges: {edgeCount}</span>
           <span className="text-amber-700">GAPs: {gapCount}</span>
+        </div>
+      )}
+
+      {nodeCount > 200 && (
+        <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-3 py-2 text-xs flex items-center gap-2">
+          <span className="font-medium">Large graph ({nodeCount} nodes)</span>
+          <span className="text-amber-600">— panning and zooming may feel sluggish. Try reducing depth or filtering by resolved_by type in the legend.</span>
         </div>
       )}
 

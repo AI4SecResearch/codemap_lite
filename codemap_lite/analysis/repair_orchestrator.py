@@ -324,7 +324,6 @@ class RepairOrchestrator:
         update_unresolved_call_retry_state and the loop terminates.
         """
         target_dir = self._config.target_dir
-        attempts = 0
 
         # architecture.md §4: ensure SourcePoint node exists in the graph
         # before we attempt status updates. Without this, update_source_point_status
@@ -334,18 +333,42 @@ class RepairOrchestrator:
         # architecture.md §3 SourcePoint 状态: pending → running
         self._update_source_status(source_id, "running")
 
+        try:
+            return await self._run_repair_loop(source_id, target_dir)
+        except Exception:
+            # Safety net: ensure progress.json never stays "running" if we crash
+            self._write_progress(source_id, state="failed", last_error="orchestrator_crash")
+            self._update_source_status(source_id, "partial_complete")
+            raise
+
+    async def _run_repair_loop(self, source_id: str, target_dir: Path) -> SourceRepairResult:
+        """Inner repair loop extracted for crash-safety wrapper."""
+        attempts = 0
+        store = self._config.graph_store
+
         while self._has_retryable_gaps(source_id):
             attempts += 1
 
             # Seed gaps_total so the frontend can display progress even if
             # the agent never emits a notification with gaps_total.
             # architecture.md §3 progress.json schema: gaps_total required.
+            # gaps_total = ALL gaps (resolved + pending + unresolvable) for
+            # this source; gaps_fixed = gaps_total - pending.  This gives
+            # the frontend a stable denominator across attempts.
+            pending_count = 0
             gaps_total = 0
             store = self._config.graph_store
             if store is not None:
-                gaps_total = len(store.get_pending_gaps_for_source(source_id))
+                pending_gaps = store.get_pending_gaps_for_source(source_id)
+                pending_count = len(pending_gaps)
+                # Total = all unresolved calls in the reachable subgraph
+                subgraph = store.get_reachable_subgraph(source_id, max_depth=50)
+                gaps_total = len(subgraph.get("unresolved", []))
+            gaps_fixed = max(0, gaps_total - pending_count)
 
-            # Write progress: attempt starting
+            # Write progress: attempt starting — reset gaps_fixed to the
+            # computed value so the hook-accumulated counter doesn't carry
+            # over from previous attempts (fixes "107/5" display bug).
             self._write_progress(
                 source_id,
                 state="running",
@@ -353,6 +376,7 @@ class RepairOrchestrator:
                 max_attempts=self.MAX_RETRIES_PER_GAP,
                 gate_result="pending",
                 gaps_total=gaps_total,
+                gaps_fixed=gaps_fixed,
             )
 
             # Snapshot edge count before this attempt so we can detect
@@ -511,7 +535,7 @@ class RepairOrchestrator:
                     reason = "gate_failed: remaining pending GAPs"
 
                 # Stamp retry audit fields onto every pending UnresolvedCall
-                # for this source so ReviewQueue can surface "last attempt
+                # for this source so SourcePointList can surface "last attempt
                 # failed at <ts> because <reason>"
                 # (architecture.md §3 Retry 审计字段).
                 self._record_retry_attempt(

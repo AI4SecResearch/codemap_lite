@@ -9,6 +9,7 @@ from codemap_lite.agent.icsl_tools import (
     query_reachable,
     write_edge,
     check_complete,
+    query_function,
 )
 
 
@@ -181,6 +182,30 @@ class MockGraphStoreForTools:
 
     def get_pending_gaps_for_source(self, source_id):
         return [g for g in self.pending_gaps if g["status"] == "pending"]
+
+    def list_functions(self, file_path=None):
+        """Return mock function nodes for query-function testing."""
+        from types import SimpleNamespace
+        fns = [
+            SimpleNamespace(
+                id="func_001", name="caller_func",
+                signature="void caller_func()", file_path="test.cpp",
+                start_line=1, end_line=10,
+            ),
+            SimpleNamespace(
+                id="func_002", name="callee_func",
+                signature="void callee_func()", file_path="test.cpp",
+                start_line=12, end_line=20,
+            ),
+            SimpleNamespace(
+                id="func_003", name="Clear",
+                signature="void DataBuffer::Clear()", file_path="data_buffer.h",
+                start_line=30, end_line=35,
+            ),
+        ]
+        if file_path is not None:
+            return [f for f in fns if f.file_path == file_path]
+        return fns
 
 
 @pytest.fixture
@@ -673,3 +698,41 @@ def test_write_edge_truncates_long_reasoning_summary(mock_graph_store):
     stored_summary = log.reasoning_summary if hasattr(log, "reasoning_summary") else log["reasoning_summary"]
     assert len(stored_summary) <= 200
     assert stored_summary.endswith("…") or len(stored_summary) <= 200
+
+
+# --- query-function tests ---
+
+
+def test_query_function_by_name(mock_graph_store):
+    """query_function finds functions by name substring."""
+    result = query_function(name="Clear", store=mock_graph_store)
+    assert result["count"] == 1
+    assert result["matches"][0]["id"] == "func_003"
+    assert result["matches"][0]["name"] == "Clear"
+
+
+def test_query_function_by_file(mock_graph_store):
+    """query_function filters by file path."""
+    result = query_function(file_path="data_buffer.h", store=mock_graph_store)
+    assert result["count"] == 1
+    assert result["matches"][0]["name"] == "Clear"
+
+
+def test_query_function_by_name_and_file(mock_graph_store):
+    """query_function combines name + file filters."""
+    result = query_function(name="caller", file_path="test.cpp", store=mock_graph_store)
+    assert result["count"] == 1
+    assert result["matches"][0]["id"] == "func_001"
+
+
+def test_query_function_no_match(mock_graph_store):
+    """query_function returns empty when no match."""
+    result = query_function(name="nonexistent", store=mock_graph_store)
+    assert result["count"] == 0
+    assert result["matches"] == []
+
+
+def test_query_function_no_params(mock_graph_store):
+    """query_function requires at least one filter."""
+    result = query_function(store=mock_graph_store)
+    assert "error" in result

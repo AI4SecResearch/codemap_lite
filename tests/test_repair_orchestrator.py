@@ -715,7 +715,7 @@ async def test_orchestrator_handles_subprocess_spawn_failure(tmp_path):
     bubbled out of ``_run_single_repair`` on the first attempt — no stamp,
     no retry, the whole source silently died. Now the exception is caught
     per-attempt, stamped with the ``subprocess_crash`` category, and the
-    while loop continues so ReviewQueue.GapDetail surfaces the failure.
+    while loop continues so SourcePointList.GapDetail surfaces the failure.
     """
     from codemap_lite.graph.neo4j_store import InMemoryGraphStore
     from codemap_lite.graph.schema import FunctionNode, UnresolvedCallNode
@@ -783,7 +783,7 @@ async def test_orchestrator_stamps_agent_error_on_nonzero_exit(tmp_path):
     """Agent subprocess exits non-zero → stamp ``agent_error: exit <N>``
     and skip the gate check. Before this fix, a crashed-but-spawned agent
     fell through to ``_check_gate`` and got mis-stamped as ``gate_failed``,
-    hiding the real root cause from ReviewQueue.GapDetail
+    hiding the real root cause from SourcePointList.GapDetail
     (architecture.md §3 Retry 审计字段: non-gate failures must record the
     matching category, not gate_failed).
     """
@@ -862,7 +862,7 @@ async def test_orchestrator_stamps_subprocess_timeout_on_hung_agent(tmp_path):
     whole retry budget with no UI signal — nothing in GapDetail, nothing
     in Dashboard; the only surface was a stuck progress.json. Now the
     orchestrator enforces wall-clock fairness and the failure lands in
-    ReviewQueue as red subprocess_timeout alongside agent_error /
+    SourcePointList as red subprocess_timeout alongside agent_error /
     subprocess_crash / gate_failed (architecture.md §3 Retry 审计字段:
     四档 category 完整落地).
     """

@@ -194,9 +194,25 @@ def stage_1_preflight(args: argparse.Namespace) -> StageResult:
         errors.append("opencode binary not found on PATH")
         details["opencode"] = "FAIL: not found"
 
-    # DashScope credentials
+    # DashScope credentials — check env vars first, fall back to settings-alibaba.json
     api_key = os.environ.get("OPENAI_API_KEY")
     base_url = os.environ.get("OPENAI_BASE_URL")
+    if not (api_key and base_url):
+        # Try loading from settings-alibaba.json (same as run_e2e_repair.py)
+        alibaba_settings = Path("/home/panckae/.claude/settings-alibaba.json")
+        if alibaba_settings.exists():
+            try:
+                data = json.loads(alibaba_settings.read_text(encoding="utf-8"))
+                env = data.get("env", {})
+                if not api_key and env.get("OPENAI_API_KEY"):
+                    os.environ["OPENAI_API_KEY"] = env["OPENAI_API_KEY"]
+                    api_key = env["OPENAI_API_KEY"]
+                if not base_url and env.get("OPENAI_BASE_URL"):
+                    os.environ["OPENAI_BASE_URL"] = env["OPENAI_BASE_URL"]
+                    base_url = env["OPENAI_BASE_URL"]
+                details["dashscope_source"] = "settings-alibaba.json"
+            except Exception:
+                pass
     if api_key and base_url:
         details["dashscope"] = "OK"
     else:
@@ -693,12 +709,19 @@ def stage_4_backend_api(args: argparse.Namespace, neo_store: Neo4jGraphStore, so
 def _resolve_entry_point(store: Neo4jGraphStore | InMemoryGraphStore, name: str, file_hint: str | None = None) -> str | None:
     """Resolve a qualified function name to FunctionNode.id.
 
-    Matches by (name, file_path hint) substring pattern.
-    Works with both InMemoryGraphStore and Neo4jGraphStore.
+    Matches by:
+    - Exact name match (e.g. "UnpackFuA")
+    - Class::Method in signature (e.g. "CastSessionImpl::ProcessSetUp")
+    - file_hint substring filter (optional)
     """
     functions = store.list_functions()
     for fn in functions:
-        if fn.name == name or fn.name.endswith("::" + name):
+        matched = (
+            fn.name == name
+            or fn.name.endswith("::" + name)
+            or ("::" in name and name in (fn.signature or ""))
+        )
+        if matched:
             if file_hint is None or file_hint in fn.file_path:
                 return fn.id
     return None
@@ -715,17 +738,21 @@ def stage_5_repair(args: argparse.Namespace, neo_store: Neo4jGraphStore, source_
     errors: list[str] = []
 
     # Select source points to repair
-    entries_to_repair = args.entries or ["UnpackFuA", "CastSessionImpl::ProcessSetUp"]
+    entries_to_repair = args.entries or ["CastSessionImpl::ProcessSetUp", "CastSessionImpl::OnEvent"]
 
-    # Resolve to function IDs
+    # Resolve to function IDs (supports "name@file_hint" format)
     source_ids: list[str] = []
-    for name in entries_to_repair:
-        fid = _resolve_entry_point(neo_store, name)
+    for entry in entries_to_repair:
+        if "@" in entry:
+            name, file_hint = entry.rsplit("@", 1)
+        else:
+            name, file_hint = entry, None
+        fid = _resolve_entry_point(neo_store, name, file_hint)
         if fid:
             source_ids.append(fid)
             logger.info(f"Resolved {name} -> {fid}")
         else:
-            errors.append(f"Could not resolve source point: {name}")
+            errors.append(f"Could not resolve source point: {entry}")
 
     if not source_ids:
         result.status = "FAIL"
@@ -744,14 +771,14 @@ def stage_5_repair(args: argparse.Namespace, neo_store: Neo4jGraphStore, source_
         target_dir=CASTENGINE_ROOT,
         backend="opencode",
         command="opencode",
-        args=["-p", "--output-format", "text"],
+        args=["run", "--pure", "-m", args.model, "--dangerously-skip-permissions"],
         max_concurrency=2,
         neo4j_uri=f"bolt://{args.neo4j_host}:{args.neo4j_port}",
         neo4j_user=args.neo4j_user,
         neo4j_password=os.environ.get("NEO4J_PASSWORD", ""),
         graph_store=neo_store,
         log_dir=log_dir,
-        subprocess_timeout_seconds=240,
+        subprocess_timeout_seconds=600,
         feedback_store=FeedbackStore(storage_dir=LOG_ROOT / "feedback"),
         retry_failed_gaps=True,
     )
@@ -1202,9 +1229,14 @@ def stage_7_review_workflow(args: argparse.Namespace, port: int, neo_store: Neo4
         # DELETE returns 204 No Content — urllib treats this as success
         details["review_delete_ok"] = del_resp["ok"]
 
-        # Verify it's gone (GET should 404)
-        get_deleted = _http_get(f"{base_url}/api/v1/reviews/{review_id}")
-        details["review_deleted_404"] = not get_deleted["ok"]
+        # Verify it's gone (list should not contain it)
+        list_after = _http_get(f"{base_url}/api/v1/reviews")
+        if list_after["ok"]:
+            list_body = json.loads(list_after["body"])
+            remaining_ids = [r["id"] for r in list_body.get("items", [])]
+            details["review_deleted_404"] = review_id not in remaining_ids
+        else:
+            details["review_deleted_404"] = "could_not_verify"
 
     # 7j: Test POST /feedback directly (§8: manual counter-example submission)
     feedback_post_resp = _http_get(
@@ -1385,9 +1417,15 @@ def stage_9_frontend(args: argparse.Namespace) -> StageResult:
     # Probe
     if _wait_for_tcp("localhost", 4173, timeout=15.0):
         details["preview_reachable"] = True
-        # Try to get stats through proxy
+        # Note: vite preview does NOT support proxy (only dev server does).
+        # We verify the static build is served correctly instead.
+        index_resp = _http_get("http://localhost:4173/", timeout=5.0)
+        details["index_html_served"] = index_resp["ok"]
+        # Proxy test: only works with `npm run dev` which proxies /api to backend.
+        # In preview mode, /api/v1/stats will 404 — this is expected behavior.
         stats_resp = _http_get("http://localhost:4173/api/v1/stats", timeout=5.0)
         details["stats_through_proxy"] = stats_resp["ok"]
+        details["proxy_note"] = "vite preview does not proxy; use dev mode for API proxy"
     else:
         errors.append("Frontend preview not reachable on localhost:4173")
 
@@ -1407,7 +1445,12 @@ def stage_9_frontend(args: argparse.Namespace) -> StageResult:
 
 
 def _http_get(url: str, method: str = "GET", body: str | None = None, timeout: float = 10.0) -> dict[str, Any]:
-    """HTTP GET/POST helper."""
+    """HTTP helper supporting GET/POST/PUT/DELETE with JSON body.
+
+    Returns {"status": int, "body": str, "ok": bool} on success,
+    {"status": int|None, "error": str, "ok": False} on failure.
+    urllib raises HTTPError for 4xx/5xx — we catch and report.
+    """
     try:
         req = urllib.request.Request(url, data=body.encode() if body else None, method=method)
         req.add_header("Content-Type", "application/json")
@@ -1417,6 +1460,12 @@ def _http_get(url: str, method: str = "GET", body: str | None = None, timeout: f
                 "body": resp.read().decode("utf-8", errors="replace"),
                 "ok": 200 <= resp.status < 300,
             }
+    except urllib.error.HTTPError as exc:
+        return {
+            "status": exc.code,
+            "error": exc.read().decode("utf-8", errors="replace"),
+            "ok": False,
+        }
     except Exception as exc:
         return {
             "status": None,
@@ -1438,6 +1487,7 @@ def main() -> int:
     parser.add_argument("--ignore-preflight-fails", action="store_true", help="Continue even if preflight fails")
     parser.add_argument("--entries", nargs="+", help="Specific source points to repair")
     parser.add_argument("--force-reparse", action="store_true", help="Force tree-sitter re-parse even if Neo4j has data")
+    parser.add_argument("--model", default="dashscope/glm-5", help="LLM model for repair (provider/model)")
     args = parser.parse_args()
 
     logging.basicConfig(

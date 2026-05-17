@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom';
+import { LayoutDashboard, Target, Code2, GitFork, MessageSquareWarning, Bot } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
 import SourcePointList from './pages/SourcePointList';
 import FunctionBrowser from './pages/FunctionBrowser';
-import CallGraphView from './pages/CallGraphView';
-import ReviewQueue from './pages/ReviewQueue';
 import FeedbackLog from './pages/FeedbackLog';
+import RepairActivity from './pages/RepairActivity';
 import { api, type Stats } from './api/client';
+
+const CallGraphView = lazy(() => import('./pages/CallGraphView'));
 
 /**
  * Rendered chip spec derived from a `/api/v1/stats` snapshot. Returning
@@ -34,6 +36,7 @@ type BadgeSpec = {
 type NavItem = {
   path: string;
   label: string;
+  icon: React.ReactNode;
   deriveBadge?: (stats: Stats) => BadgeSpec | null;
 };
 
@@ -44,60 +47,50 @@ const TONE_CLASSES: Record<BadgeSpec['tone'], string> = {
 };
 
 const navItems: NavItem[] = [
-  { path: '/', label: 'Dashboard' },
-  { path: '/sources', label: 'Source Points' },
-  { path: '/functions', label: 'Functions' },
-  { path: '/graph', label: 'Call Graph' },
+  { path: '/', label: 'Dashboard', icon: <LayoutDashboard className="w-4 h-4" /> },
   {
-    path: '/review',
-    label: 'Review',
-    // Review backlog chip (architecture.md §3 UnresolvedCall 生命周期:
-    // pending → Agent fix / 3 retries → "unresolvable"). Alert tone
-    // mirrors the Dashboard StatCard when the agent has abandoned a
-    // GAP (any unresolvable > 0), otherwise warn when there's still a
-    // pending queue, otherwise gray. Keeps reviewers on other pages
-    // aware of the backlog without mounting ReviewQueue
-    // (北极星指标 #5 状态透明度 + 候选优化方向 #4 进度与可观测性).
+    path: '/sources',
+    label: 'Sources',
+    icon: <Target className="w-4 h-4" />,
+    // Source points badge: show total source points count with status breakdown
     deriveBadge: (s) => {
-      const byStatus = s.unresolved_by_status ?? {};
-      const unresolvable = byStatus.unresolvable ?? 0;
-      // Fall back to total_unresolved when the bucket field is missing
-      // (older backend stubs without unresolved_by_status) so the chip
-      // still surfaces a non-zero count instead of silently hiding.
-      const pending =
-        byStatus.pending ??
-        Math.max(0, (s.total_unresolved ?? 0) - unresolvable);
-      const total = pending + unresolvable;
-      if (unresolvable > 0) {
+      const spByStatus = s.source_points_by_status ?? {};
+      const total = s.total_source_points ?? 0;
+      const pending = spByStatus.pending ?? 0;
+      const running = spByStatus.running ?? 0;
+      const complete = spByStatus.complete ?? 0;
+      if (total === 0) return { count: 0, tone: 'default', title: 'No source points' };
+      if (running > 0) {
         return {
           count: total,
-          tone: 'alert',
-          // Auto drill-down: when the agent has abandoned a GAP we want
-          // "see red chip → 1 click → land on the abandoned list" to
-          // hold from any page, not just from the Dashboard StatCard
-          // (architecture.md §5 跨页面 drill-down 契约).
-          to: '/review?status=unresolvable',
-          title: `${pending} pending · ${unresolvable} unresolvable — agent gave up on ${unresolvable} GAP${
-            unresolvable === 1 ? '' : 's'
-          }`,
+          tone: 'warn',
+          title: `${complete} complete · ${running} running · ${pending} pending`,
         };
       }
       if (pending > 0) {
         return {
           count: total,
           tone: 'warn',
-          to: '/review?status=pending',
-          title: `${pending} pending GAP${pending === 1 ? '' : 's'} awaiting repair`,
+          title: `${complete} complete · ${pending} pending`,
         };
       }
-      return { count: 0, tone: 'default', title: 'No outstanding GAPs' };
+      return { count: total, tone: 'default', title: `${total} source points — all complete` };
     },
   },
+  { path: '/functions', label: 'Functions', icon: <Code2 className="w-4 h-4" /> },
+  { path: '/repairs', label: 'Repairs', icon: <Bot className="w-4 h-4" />,
+    deriveBadge: (s) => {
+      const llm = s.total_llm_edges ?? 0;
+      const logs = s.total_repair_logs ?? 0;
+      if (logs > 0) return { count: logs, tone: 'warn' as const, title: `${logs} repair log${logs === 1 ? '' : 's'} · ${llm} LLM edge${llm === 1 ? '' : 's'}` };
+      return { count: 0, tone: 'default' as const, title: 'No repairs yet' };
+    },
+  },
+  { path: '/graph', label: 'Call Graph', icon: <GitFork className="w-4 h-4" /> },
   {
     path: '/feedback',
     label: 'Feedback',
-    // architecture.md §3 反馈机制 + §8 — `total_feedback` surfaces
-    // counter-example library growth (北极星指标 #5 + 候选优化方向 #4).
+    icon: <MessageSquareWarning className="w-4 h-4" />,
     deriveBadge: (s) => {
       const count = s.total_feedback ?? 0;
       return {
@@ -135,30 +128,28 @@ export default function App() {
 
   return (
     <BrowserRouter>
-      <div className="min-h-screen bg-gray-100">
-        <nav className="bg-white shadow-sm border-b">
+      <div className="min-h-screen bg-gray-50">
+        <nav className="bg-white shadow-card border-b border-gray-200 sticky top-0 z-40">
           <div className="max-w-7xl mx-auto px-4">
-            <div className="flex items-center h-14 gap-6">
-              <span className="font-bold text-lg">codemap-lite</span>
+            <div className="flex items-center h-14 gap-1">
+              <span className="font-bold text-lg mr-6 bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">codemap-lite</span>
               {navItems.map((item) => {
                 const badge =
                   item.deriveBadge && stats ? item.deriveBadge(stats) : null;
-                // Nav chip may override the NavLink target so warn/alert
-                // chips deep-link into pre-filtered sub-views; default
-                // tone keeps the static path (architecture.md §5).
                 const to = badge?.to ?? item.path;
                 return (
                   <NavLink
                     key={item.path}
                     to={to}
                     className={({ isActive }) =>
-                      `text-sm inline-flex items-center gap-1.5 ${
+                      `text-sm inline-flex items-center gap-1.5 px-3 py-2 rounded-lg transition-all duration-200 ${
                         isActive
-                          ? 'text-blue-600 font-medium'
-                          : 'text-gray-600 hover:text-gray-900'
+                          ? 'text-blue-600 font-medium bg-blue-50'
+                          : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
                       }`
                     }
                   >
+                    {item.icon}
                     <span>{item.label}</span>
                     {badge ? (
                       <span
@@ -179,8 +170,8 @@ export default function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/sources" element={<SourcePointList />} />
             <Route path="/functions" element={<FunctionBrowser />} />
-            <Route path="/graph" element={<CallGraphView />} />
-            <Route path="/review" element={<ReviewQueue />} />
+            <Route path="/repairs" element={<RepairActivity />} />
+            <Route path="/graph" element={<Suspense fallback={<div className="p-6 text-gray-500 text-sm">Loading graph view…</div>}><CallGraphView /></Suspense>} />
             <Route path="/feedback" element={<FeedbackLog />} />
           </Routes>
         </main>

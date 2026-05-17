@@ -1,8 +1,9 @@
 """icsl_tools — Agent-side CLI tool for graph query, edge writing, and gate checking.
 
 This module is copied to the target code directory during repair and invoked by the
-CLI agent subprocess. It provides three operations:
+CLI agent subprocess. It provides four operations:
 - query-reachable: Get the reachable subgraph from a source point
+- query-function: Find function nodes by name/signature/file to obtain IDs
 - write-edge: Write a CALLS edge + RepairLog, delete the UnresolvedCall
 - check-complete: Check if all reachable GAPs are resolved
 
@@ -17,6 +18,7 @@ The module can be invoked in two ways, matching the CLI protocol declared in
 2. Subprocess CLI (used by the repair agent subprocess at the target dir)::
 
        python .icslpreprocess/icsl_tools.py query-reachable --source src_001
+       python .icslpreprocess/icsl_tools.py query-function --name Clear --file data_buffer.h
        python .icslpreprocess/icsl_tools.py write-edge \\
            --caller func_a --callee func_b --call-type indirect \\
            --call-file foo.cpp --call-line 42 \\
@@ -48,6 +50,7 @@ class GraphStoreProtocol(Protocol):
     def create_repair_log(self, log_data: dict[str, Any]) -> None: ...
     def delete_unresolved_call(self, caller_id: str, call_file: str, call_line: int) -> None: ...
     def get_pending_gaps_for_source(self, source_id: str) -> list[Any]: ...
+    def list_functions(self, file_path: str | None = None) -> list[Any]: ...
     # Real stores (InMemoryGraphStore / Neo4jGraphStore) return
     # list[UnresolvedCallNode] dataclasses; the test harness returns
     # list[dict]. ``check_complete`` accepts either via ``_gap_id``.
@@ -56,6 +59,50 @@ class GraphStoreProtocol(Protocol):
 def query_reachable(source_id: str, store: GraphStoreProtocol) -> dict[str, Any]:
     """Query the reachable subgraph from a source point."""
     return store.get_reachable_subgraph(source_id)
+
+
+def query_function(
+    name: str | None = None,
+    file_path: str | None = None,
+    signature: str | None = None,
+    store: GraphStoreProtocol | None = None,
+) -> dict[str, Any]:
+    """Find function nodes by name, file path, or signature.
+
+    Returns matching functions so the agent can obtain the function ID
+    needed for ``write-edge --callee <id>``. Supports partial matching
+    on name (substring) and exact matching on file_path.
+    """
+    if store is None:
+        return {"error": "store is required"}
+    if not name and not file_path and not signature:
+        return {"error": "at least one of --name, --file, or --signature is required"}
+
+    functions = store.list_functions(file_path=file_path)
+    results = []
+    for fn in functions:
+        fn_name = getattr(fn, "name", "") or ""
+        fn_sig = getattr(fn, "signature", "") or ""
+        fn_file = getattr(fn, "file_path", "") or ""
+        fn_id = getattr(fn, "id", "") or ""
+
+        # Filter by name (substring match, case-insensitive)
+        if name and name.lower() not in fn_name.lower():
+            continue
+        # Filter by signature (substring match)
+        if signature and signature.lower() not in fn_sig.lower():
+            continue
+
+        results.append({
+            "id": fn_id,
+            "name": fn_name,
+            "signature": fn_sig,
+            "file_path": fn_file,
+            "start_line": getattr(fn, "start_line", 0),
+            "end_line": getattr(fn, "end_line", 0),
+        })
+
+    return {"matches": results, "count": len(results)}
 
 
 def write_edge(
@@ -67,6 +114,7 @@ def write_edge(
     store: GraphStoreProtocol,
     llm_response: str = "",
     reasoning_summary: str = "",
+    source_id: str = "",
 ) -> dict[str, Any]:
     """Write a CALLS edge, create RepairLog, and delete the UnresolvedCall."""
     # architecture.md §4: call_type ∈ {direct, indirect, virtual}
@@ -123,6 +171,7 @@ def write_edge(
         llm_response=llm_response,
         timestamp=datetime.now(timezone.utc).isoformat(),
         reasoning_summary=reasoning_summary,
+        source_id=source_id,
     )
     store.create_repair_log(repair_log)
 
@@ -273,12 +322,30 @@ def _build_parser() -> argparse.ArgumentParser:
             "EdgeLlmInspector. Leave empty for non-llm paths."
         ),
     )
+    we.add_argument(
+        "--source",
+        default="",
+        help=(
+            "Source point ID that triggered this repair session. "
+            "If omitted, auto-read from .icslpreprocess/source_id.txt."
+        ),
+    )
 
     cc = subparsers.add_parser(
         "check-complete",
         help="Check whether all reachable GAPs for a source are resolved.",
     )
     cc.add_argument("--source", required=True, help="Source point function id.")
+
+    qf = subparsers.add_parser(
+        "query-function",
+        help="Find function nodes by name, file path, or signature.",
+    )
+    qf.add_argument("--name", default=None, help="Function name (substring match).")
+    qf.add_argument("--file", default=None, help="File path (exact match).")
+    qf.add_argument(
+        "--signature", default=None, help="Function signature (substring match)."
+    )
 
     return parser
 
@@ -307,6 +374,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "query-reachable":
             result = query_reachable(args.source, store)
         elif args.command == "write-edge":
+            # Resolve source_id: explicit --source > source_id.txt next to this script
+            source_id = args.source
+            if not source_id:
+                sid_path = Path(__file__).parent / "source_id.txt"
+                if sid_path.exists():
+                    source_id = sid_path.read_text(encoding="utf-8").strip()
             result = write_edge(
                 caller_id=args.caller,
                 callee_id=args.callee,
@@ -316,9 +389,17 @@ def main(argv: list[str] | None = None) -> int:
                 store=store,
                 llm_response=args.llm_response,
                 reasoning_summary=args.reasoning_summary,
+                source_id=source_id,
             )
         elif args.command == "check-complete":
             result = check_complete(args.source, store)
+        elif args.command == "query-function":
+            result = query_function(
+                name=args.name,
+                file_path=args.file,
+                signature=args.signature,
+                store=store,
+            )
         else:  # pragma: no cover — argparse already enforces required=True
             parser.error(f"unknown command: {args.command}")
             return 2

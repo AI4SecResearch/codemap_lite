@@ -15,7 +15,13 @@ Run: pytest tests/test_architecture_contracts.py -v
 """
 from __future__ import annotations
 
+from collections import defaultdict
+from pathlib import Path
+
 import pytest
+
+from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+from codemap_lite.pipeline.orchestrator import PipelineOrchestrator
 
 
 # ===========================================================================
@@ -1198,3 +1204,403 @@ class TestResetUnresolvableGaps:
         self.store.reset_unresolvable_gaps()
         ucs = self.store.get_unresolved_calls(caller_id="reset_a")
         assert len(ucs) == 3  # All still exist
+
+
+# ===========================================================================
+# §4 Schema enum validation — construction-time rejection
+# ===========================================================================
+
+
+class TestSchemaEnumValidation:
+    """architecture.md §4: all enum fields must reject invalid values at construction."""
+
+    def test_invalid_resolved_by_raises(self):
+        """CallsEdgeProps rejects invalid resolved_by."""
+        from codemap_lite.graph.schema import CallsEdgeProps
+        with pytest.raises(ValueError, match="resolved_by"):
+            CallsEdgeProps(
+                resolved_by="magic", call_type="direct",
+                call_file="/test.cpp", call_line=1,
+            )
+
+    def test_invalid_call_type_on_edge_raises(self):
+        """CallsEdgeProps rejects invalid call_type."""
+        from codemap_lite.graph.schema import CallsEdgeProps
+        with pytest.raises(ValueError, match="call_type"):
+            CallsEdgeProps(
+                resolved_by="llm", call_type="unknown",
+                call_file="/test.cpp", call_line=1,
+            )
+
+    def test_invalid_call_type_on_uc_raises(self):
+        """UnresolvedCallNode rejects invalid call_type."""
+        from codemap_lite.graph.schema import UnresolvedCallNode
+        with pytest.raises(ValueError, match="call_type"):
+            UnresolvedCallNode(
+                caller_id="x", call_expression="f()",
+                call_file="/test.cpp", call_line=1, call_type="unknown",
+                source_code_snippet="f();", var_name=None, var_type=None,
+            )
+
+    def test_invalid_uc_status_raises(self):
+        """UnresolvedCallNode rejects invalid status."""
+        from codemap_lite.graph.schema import UnresolvedCallNode
+        with pytest.raises(ValueError, match="status"):
+            UnresolvedCallNode(
+                caller_id="x", call_expression="f()",
+                call_file="/test.cpp", call_line=1, call_type="direct",
+                source_code_snippet="f();", var_name=None, var_type=None,
+                status="invalid",
+            )
+
+    def test_invalid_source_point_status_raises(self):
+        """SourcePointNode rejects invalid status."""
+        from codemap_lite.graph.schema import SourcePointNode
+        with pytest.raises(ValueError, match="status"):
+            SourcePointNode(
+                id="sp_bad", entry_point_kind="api",
+                reason="test", function_id="fn_x",
+                module="test", status="invalid",
+            )
+
+    def test_valid_resolved_by_values(self):
+        """All 5 valid resolved_by values are accepted."""
+        from codemap_lite.graph.schema import CallsEdgeProps, VALID_RESOLVED_BY
+        for rb in VALID_RESOLVED_BY:
+            props = CallsEdgeProps(
+                resolved_by=rb, call_type="direct",
+                call_file="/test.cpp", call_line=1,
+            )
+            assert props.resolved_by == rb
+
+    def test_valid_call_types(self):
+        """All 3 valid call_type values are accepted."""
+        from codemap_lite.graph.schema import CallsEdgeProps, VALID_CALL_TYPES
+        for ct in VALID_CALL_TYPES:
+            props = CallsEdgeProps(
+                resolved_by="llm", call_type=ct,
+                call_file="/test.cpp", call_line=1,
+            )
+            assert props.call_type == ct
+
+    def test_valid_uc_statuses(self):
+        """All 2 valid UC statuses are accepted."""
+        from codemap_lite.graph.schema import UnresolvedCallNode, VALID_UC_STATUSES
+        for st in VALID_UC_STATUSES:
+            uc = UnresolvedCallNode(
+                caller_id="x", call_expression="f()",
+                call_file="/test.cpp", call_line=1, call_type="direct",
+                source_code_snippet="f();", var_name=None, var_type=None,
+                status=st,
+            )
+            assert uc.status == st
+
+    def test_valid_source_point_statuses(self):
+        """All 4 valid SourcePoint statuses are accepted."""
+        from codemap_lite.graph.schema import SourcePointNode, VALID_SOURCE_POINT_STATUSES
+        for st in VALID_SOURCE_POINT_STATUSES:
+            sp = SourcePointNode(
+                id=f"sp_{st}", entry_point_kind="api",
+                reason="test", function_id="fn_x",
+                module="test", status=st,
+            )
+            assert sp.status == st
+
+    def test_reason_categories_match_architecture(self):
+        """VALID_REASON_CATEGORIES matches architecture.md §3 exactly."""
+        from codemap_lite.graph.schema import VALID_REASON_CATEGORIES
+        expected = {
+            "gate_failed", "agent_error", "subprocess_timeout",
+            "subprocess_crash", "agent_exited_without_edge",
+        }
+        assert VALID_REASON_CATEGORIES == expected
+
+
+# ===========================================================================
+# §8 Stats endpoint — extended keys (unresolved_by_status, source_points_by_status)
+# ===========================================================================
+
+
+class TestStatsExtendedKeys:
+    """architecture.md §8: /stats returns extended aggregation buckets."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        from codemap_lite.api.app import create_app
+        from codemap_lite.graph.neo4j_store import InMemoryGraphStore
+        from codemap_lite.graph.schema import (
+            CallsEdgeProps, FunctionNode, RepairLogNode,
+            SourcePointNode, UnresolvedCallNode,
+        )
+        from fastapi.testclient import TestClient
+
+        self.store = InMemoryGraphStore()
+        # Functions
+        self.store.create_function(FunctionNode(
+            id="ext_a", signature="void A()", name="A",
+            file_path="/test/ext.cpp", start_line=1, end_line=10, body_hash="a",
+        ))
+        self.store.create_function(FunctionNode(
+            id="ext_b", signature="void B()", name="B",
+            file_path="/test/ext.cpp", start_line=20, end_line=30, body_hash="b",
+        ))
+        # Edge
+        self.store.create_calls_edge("ext_a", "ext_b", CallsEdgeProps(
+            resolved_by="llm", call_type="indirect",
+            call_file="/test/ext.cpp", call_line=5,
+        ))
+        # UCs: 1 pending, 1 unresolvable
+        self.store.create_unresolved_call(UnresolvedCallNode(
+            caller_id="ext_a", call_expression="c()",
+            call_file="/test/ext.cpp", call_line=8, call_type="indirect",
+            source_code_snippet="c();", var_name="c", var_type="C*",
+            status="pending",
+        ))
+        self.store.create_unresolved_call(UnresolvedCallNode(
+            caller_id="ext_a", call_expression="d()",
+            call_file="/test/ext.cpp", call_line=9, call_type="virtual",
+            source_code_snippet="d();", var_name="d", var_type="D*",
+            status="unresolvable", retry_count=3,
+            last_attempt_reason="gate_failed: no edges",
+        ))
+        # SourcePoints: 1 running, 1 complete
+        self.store.create_source_point(SourcePointNode(
+            id="sp_ext_1", entry_point_kind="public_api",
+            reason="test", function_id="ext_a", module="test",
+            status="running",
+        ))
+        self.store.create_source_point(SourcePointNode(
+            id="sp_ext_2", entry_point_kind="callback",
+            reason="test2", function_id="ext_b", module="test",
+            status="complete",
+        ))
+        # RepairLog
+        self.store.create_repair_log(RepairLogNode(
+            caller_id="ext_a", callee_id="ext_b",
+            call_location="/test/ext.cpp:5",
+            repair_method="llm", llm_response="resp",
+            timestamp="2026-05-15T00:00:00Z", reasoning_summary="r",
+        ))
+        app = create_app(store=self.store)
+        self.client = TestClient(app)
+
+    def test_stats_has_unresolved_by_status(self):
+        """Stats includes unresolved_by_status with pending/unresolvable keys."""
+        data = self.client.get("/api/v1/stats").json()
+        assert "unresolved_by_status" in data
+        ubs = data["unresolved_by_status"]
+        assert "pending" in ubs
+        assert "unresolvable" in ubs
+        assert ubs["pending"] == 1
+        assert ubs["unresolvable"] == 1
+
+    def test_stats_has_unresolved_by_category(self):
+        """Stats includes unresolved_by_category with all 5 category keys."""
+        data = self.client.get("/api/v1/stats").json()
+        assert "unresolved_by_category" in data
+        ubc = data["unresolved_by_category"]
+        expected_keys = {
+            "gate_failed", "agent_error", "subprocess_crash",
+            "subprocess_timeout", "agent_exited_without_edge",
+        }
+        for key in expected_keys:
+            assert key in ubc, f"Missing category key: {key}"
+        # Our unresolvable UC has "gate_failed: no edges"
+        assert ubc["gate_failed"] == 1
+
+    def test_stats_has_source_points_by_status(self):
+        """Stats includes source_points_by_status with all 4 status keys."""
+        data = self.client.get("/api/v1/stats").json()
+        assert "source_points_by_status" in data
+        spbs = data["source_points_by_status"]
+        expected_keys = {"pending", "running", "complete", "partial_complete"}
+        for key in expected_keys:
+            assert key in spbs, f"Missing source_point status key: {key}"
+        assert spbs["running"] == 1
+        assert spbs["complete"] == 1
+
+    def test_stats_has_total_repair_logs(self):
+        """Stats includes total_repair_logs count."""
+        data = self.client.get("/api/v1/stats").json()
+        assert "total_repair_logs" in data
+        assert data["total_repair_logs"] == 1
+
+    def test_stats_has_total_llm_edges(self):
+        """Stats includes total_llm_edges count."""
+        data = self.client.get("/api/v1/stats").json()
+        assert "total_llm_edges" in data
+        assert data["total_llm_edges"] == 1
+
+    def test_stats_bucket_sums_match_totals(self):
+        """Sum of resolved_by buckets == total_calls."""
+        data = self.client.get("/api/v1/stats").json()
+        bucket_sum = sum(data["calls_by_resolved_by"].values())
+        assert bucket_sum == data["total_calls"]
+
+    def test_stats_uc_status_sum_matches_total(self):
+        """Sum of unresolved_by_status == total_unresolved."""
+        data = self.client.get("/api/v1/stats").json()
+        status_sum = sum(data["unresolved_by_status"].values())
+        assert status_sum == data["total_unresolved"]
+
+
+# ===========================================================================
+# §7 Incremental cascade — CastEngine real data
+# ===========================================================================
+
+
+CASTENGINE_DIR = Path("/mnt/c/Task/openHarmony/foundation/CastEngine")
+
+
+class TestIncrementalCascadeCastEngine:
+    """architecture.md §7: incremental update cascade with real CastEngine data.
+
+    Tests that modifying a file triggers:
+    1. File re-parsed
+    2. Old functions from that file deleted + rebuilt
+    3. Edges pointing to/from deleted functions removed
+    4. UCs regenerated for removed edges
+    """
+
+    @pytest.fixture(scope="class")
+    def castengine_store(self):
+        if not CASTENGINE_DIR.exists():
+            pytest.skip("CastEngine directory not available")
+        store = InMemoryGraphStore()
+        orch = PipelineOrchestrator(store=store, target_dir=CASTENGINE_DIR)
+        orch.run_full_analysis()
+        return store
+
+    def test_functions_have_file_path(self, castengine_store):
+        """All functions have a valid file_path (needed for incremental)."""
+        fns = castengine_store.list_functions()
+        for fn in fns[:100]:
+            assert fn.file_path, f"Function {fn.id} has empty file_path"
+            assert fn.file_path.endswith((".cpp", ".h", ".c", ".hpp"))
+
+    def test_functions_grouped_by_file(self, castengine_store):
+        """Functions are properly grouped by file (incremental deletes by file)."""
+        fns = castengine_store.list_functions()
+        by_file: dict[str, int] = defaultdict(int)
+        for fn in fns:
+            by_file[fn.file_path] += 1
+        # CastEngine has 100+ files with functions
+        assert len(by_file) >= 100
+        # Some files have many functions (headers with overloads)
+        max_fns = max(by_file.values())
+        assert max_fns >= 10, f"Max functions per file: {max_fns}"
+
+    def test_edges_reference_valid_functions(self, castengine_store):
+        """All edges reference functions that exist in the store."""
+        fns = {fn.id for fn in castengine_store.list_functions()}
+        edges = castengine_store.list_calls_edges()
+        dangling_callers = 0
+        dangling_callees = 0
+        for e in edges:
+            if e.caller_id not in fns:
+                dangling_callers += 1
+            if e.callee_id not in fns:
+                dangling_callees += 1
+        # No dangling references allowed
+        assert dangling_callers == 0, (
+            f"{dangling_callers} edges have caller_id not in functions"
+        )
+        assert dangling_callees == 0, (
+            f"{dangling_callees} edges have callee_id not in functions"
+        )
+
+    def test_incremental_delete_functions_by_file(self, castengine_store):
+        """Simulating incremental: deleting functions from a file removes them."""
+        fns = castengine_store.list_functions()
+        by_file: dict[str, list] = defaultdict(list)
+        for fn in fns:
+            by_file[fn.file_path].append(fn)
+
+        # Pick a file with multiple functions
+        target_file = None
+        for fp, file_fns in by_file.items():
+            if 3 <= len(file_fns) <= 20:
+                target_file = fp
+                break
+        if target_file is None:
+            pytest.skip("No suitable file found")
+
+        target_fn_ids = {fn.id for fn in by_file[target_file]}
+        original_fn_count = len(fns)
+
+        # Delete functions from this file
+        for fn_id in target_fn_ids:
+            castengine_store.delete_function(fn_id)
+
+        remaining_fns = castengine_store.list_functions()
+        assert len(remaining_fns) == original_fn_count - len(target_fn_ids)
+
+        # Verify no function from target file remains
+        for fn in remaining_fns:
+            assert fn.id not in target_fn_ids
+
+    def test_incremental_cascade_removes_edges(self, castengine_store):
+        """Deleting a function cascades to remove its edges."""
+        # Use a fresh store for this test
+        store = InMemoryGraphStore()
+        orch = PipelineOrchestrator(store=store, target_dir=CASTENGINE_DIR)
+        orch.run_full_analysis()
+
+        fns = store.list_functions()
+        edges = store.list_calls_edges()
+
+        # Find a function that has outgoing edges
+        caller_ids = {e.caller_id for e in edges}
+        target_fn = None
+        for fn in fns:
+            if fn.id in caller_ids:
+                target_fn = fn
+                break
+        if target_fn is None:
+            pytest.skip("No function with outgoing edges")
+
+        # Count edges from this function
+        edges_from_target = [e for e in edges if e.caller_id == target_fn.id]
+        assert len(edges_from_target) > 0
+
+        # Delete the function — InMemoryGraphStore now cascades (mirrors Neo4j DETACH DELETE)
+        store.delete_function(target_fn.id)
+
+        # Edges from this function should be gone
+        remaining_edges = store.list_calls_edges()
+        edges_from_deleted = [e for e in remaining_edges if e.caller_id == target_fn.id]
+        assert len(edges_from_deleted) == 0, (
+            f"{len(edges_from_deleted)} edges still reference deleted function"
+        )
+
+    def test_incremental_cascade_removes_ucs(self, castengine_store):
+        """Deleting a function cascades to remove its UnresolvedCalls."""
+        store = InMemoryGraphStore()
+        orch = PipelineOrchestrator(store=store, target_dir=CASTENGINE_DIR)
+        orch.run_full_analysis()
+
+        ucs = store.get_unresolved_calls()
+        # Find a caller_id that has UCs
+        uc_caller_ids = {uc.caller_id for uc in ucs}
+        fns = {fn.id: fn for fn in store.list_functions()}
+
+        target_caller = None
+        for cid in uc_caller_ids:
+            if cid in fns:
+                target_caller = cid
+                break
+        if target_caller is None:
+            pytest.skip("No function with UCs found")
+
+        ucs_from_target = [uc for uc in ucs if uc.caller_id == target_caller]
+        assert len(ucs_from_target) > 0
+
+        # Delete the function
+        store.delete_function(target_caller)
+
+        # UCs from this function should be gone
+        remaining_ucs = store.get_unresolved_calls()
+        ucs_from_deleted = [uc for uc in remaining_ucs if uc.caller_id == target_caller]
+        assert len(ucs_from_deleted) == 0, (
+            f"{len(ucs_from_deleted)} UCs still reference deleted function"
+        )

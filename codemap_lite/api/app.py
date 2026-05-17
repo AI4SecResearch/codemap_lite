@@ -103,7 +103,7 @@ def create_app(
         #   #2 调用链可信度: calls_by_resolved_by → Dashboard chip for
         #     llm-repaired edge backlog.
         #   #5 状态透明度: unresolved_by_status / _by_category →
-        #     Dashboard chip row linking into /review?category=<cat>.
+        #     Dashboard chip row linking into /sources?category=<cat>.
         store_stats = s.count_stats()
         # Counter-example library size (architecture.md §3 反馈机制 + §8).
         # Surfaced here so the frontend can render a live count chip on

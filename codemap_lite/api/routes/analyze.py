@@ -92,6 +92,7 @@ def _run_analysis_background(app: Any, settings: Any, mode: str) -> None:
     try:
         from codemap_lite.graph.neo4j_store import Neo4jGraphStore
         from codemap_lite.pipeline.orchestrator import PipelineOrchestrator
+        from codemap_lite.analysis.source_point_client import SourcePointClient
 
         target_dir = Path(settings.project.target_dir)
         graph_store = Neo4jGraphStore(
@@ -99,7 +100,14 @@ def _run_analysis_background(app: Any, settings: Any, mode: str) -> None:
             user=settings.neo4j.user,
             password=settings.neo4j.password,
         )
-        orch = PipelineOrchestrator(target_dir=target_dir, store=graph_store)
+        source_client = SourcePointClient(
+            base_url=settings.codewiki_lite.base_url
+        )
+        orch = PipelineOrchestrator(
+            target_dir=target_dir,
+            store=graph_store,
+            source_point_client=source_client,
+        )
 
         if mode == "incremental":
             result = orch.run_incremental_analysis()
@@ -253,16 +261,51 @@ def create_analyze_router() -> APIRouter:
 
                 # Determine which source_ids to repair:
                 # - If user provided explicit source_ids, use them directly
-                #   (no need for codewiki_lite to be reachable).
-                # - Otherwise, derive from fetched source_points.
+                #   (these should be Neo4j 12-char hash IDs from the frontend).
+                # - Otherwise, resolve codewiki_lite long-path IDs to Neo4j
+                #   12-char hashes by looking up Function nodes by name.
+                # - Fallback: if codewiki_lite is empty, use Neo4j SourcePoint nodes.
                 if requested_source_ids:
                     source_ids = list(requested_source_ids)
                 elif source_points:
-                    source_ids = [sp.function_id for sp in source_points]
+                    # codewiki_lite returns long-path IDs (file::ns::class::method).
+                    # Orchestrator needs Neo4j Function.id (12-char sha1 hash).
+                    # Look up each function by name in Neo4j.
+                    source_ids = []
+                    for sp in source_points:
+                        func_name = sp.function_id.split("::")[-1] if "::" in sp.function_id else sp.function_id
+                        # Extract file stem from the long path (before ::)
+                        file_hint = sp.function_id.split("::")[0] if "::" in sp.function_id else ""
+                        cypher = (
+                            "MATCH (f:Function) WHERE f.name = $name RETURN f.id, f.file_path"
+                        )
+                        with graph_store._get_driver().session() as session:
+                            records = list(session.run(cypher, name=func_name))
+                        if records:
+                            # Prefer match by file path similarity
+                            best = records[0]
+                            if file_hint:
+                                for r in records:
+                                    if file_hint.split("/")[-1].replace(".h", "") in (r["f.file_path"] or ""):
+                                        best = r
+                                        break
+                            source_ids.append(best["f.id"])
+                        else:
+                            logger.warning("Cannot resolve source %s to Neo4j Function", sp.function_id)
                 else:
-                    logger.warning("No source points to repair")
-                    request.app.state.analyze_state = {"state": "idle", "progress": 0.0}
-                    return
+                    # Fallback: use Neo4j SourcePoint nodes when codewiki_lite
+                    # is unavailable (architecture.md §8 graceful degradation).
+                    try:
+                        store_sps = graph_store.list_source_points()
+                        source_ids = [
+                            sp.function_id for sp in store_sps if sp.function_id
+                        ]
+                    except Exception:
+                        source_ids = []
+                    if not source_ids:
+                        logger.warning("No source points to repair")
+                        request.app.state.analyze_state = {"state": "idle", "progress": 0.0}
+                        return
 
                 orch = RepairOrchestrator(
                     RepairConfig(
@@ -278,6 +321,7 @@ def create_analyze_router() -> APIRouter:
                         graph_store=graph_store,
                         retry_failed_gaps=settings.agent.retry_failed_gaps,
                         subprocess_timeout_seconds=settings.agent.subprocess_timeout_seconds,
+                        log_dir=target_dir / "logs" / "repair",
                     )
                 )
 
@@ -308,6 +352,39 @@ def create_analyze_router() -> APIRouter:
         base = dict(request.app.state.analyze_state)
         target_dir = getattr(request.app.state, "target_dir", None)
         sources = _read_source_progress(target_dir)
+
+        # Enrich with Neo4j-derived gap counts when graph store is available.
+        # Use reachable subgraph to count ALL repair logs (depth=1 and deeper),
+        # matching the SourceDetail view which uses source_reachable.
+        store = getattr(request.app.state, "store", None)
+        if store is not None and sources:
+            try:
+                all_logs = store.get_repair_logs()
+            except Exception:
+                all_logs = []
+            for src in sources:
+                sid = src.get("source_id", "")
+                if not sid:
+                    continue
+                try:
+                    # Get all function IDs reachable from this source
+                    subgraph = store.get_reachable_subgraph(sid, max_depth=50)
+                    node_ids = {fn.id for fn in subgraph.get("nodes", [])}
+                    node_ids.add(sid)
+                    # Count repair logs where caller is in the subgraph
+                    repair_count = sum(1 for log in all_logs if log.caller_id in node_ids)
+                    # Unresolved calls only for the source function itself (direct GAPs)
+                    unresolved_count = len(
+                        store.get_unresolved_calls(caller_id=sid, status="pending")
+                    )
+                    total = repair_count + unresolved_count
+                    if total == 0:
+                        continue  # No data in graph — keep progress.json values
+                    src["gaps_total"] = total
+                    src["gaps_fixed"] = repair_count
+                except Exception:
+                    pass  # Keep progress.json values as fallback
+
         base["sources"] = sources
         # Derive an overall progress estimate from the hook files
         # when we have any (gaps_fixed / gaps_total across sources).

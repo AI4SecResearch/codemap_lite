@@ -65,35 +65,70 @@ class FeedbackStore:
     def list_all(self) -> list[CounterExample]:
         return list(self._examples)
 
-    def get_for_source(self, source_id: str) -> list[CounterExample]:
-        """Return counter-examples scoped to a specific source point.
+    def get_by_index(self, index: int) -> CounterExample | None:
+        """Get a counter-example by its 0-based index (used as ID)."""
+        if 0 <= index < len(self._examples):
+            return self._examples[index]
+        return None
 
-        architecture.md §3 反馈机制: each repair agent should only see
-        counter-examples relevant to its own source point's repair history.
+    def delete(self, index: int) -> bool:
+        """Delete a counter-example by its 0-based index.
+
+        Returns True if deleted, False if index out of range.
         """
-        return [e for e in self._examples if e.source_id == source_id]
+        if 0 <= index < len(self._examples):
+            self._examples.pop(index)
+            self._save()
+            return True
+        return False
+
+    def update(self, index: int, fields: dict[str, str]) -> bool:
+        """Update fields of a counter-example by its 0-based index.
+
+        Supported fields: call_context, wrong_target, correct_target, pattern.
+        Returns True if updated, False if index out of range.
+        """
+        if not (0 <= index < len(self._examples)):
+            return False
+        existing = self._examples[index]
+        updated = CounterExample(
+            call_context=fields.get("call_context", existing.call_context),
+            wrong_target=fields.get("wrong_target", existing.wrong_target),
+            correct_target=fields.get("correct_target", existing.correct_target),
+            pattern=fields.get("pattern", existing.pattern),
+            source_id=fields.get("source_id", existing.source_id),
+        )
+        self._examples[index] = updated
+        self._save()
+        return True
+
+    def get_for_source(self, source_id: str) -> list[CounterExample]:
+        """Return counter-examples relevant to a specific source point.
+
+        architecture.md §3 反馈机制: "泛化去重后，全量注入 prompt" — all
+        counter-examples are relevant to every source because the same error
+        pattern can occur across different source points. The source_id field
+        tracks provenance (who reported it) but does NOT restrict visibility.
+
+        Returns all examples that either:
+        - Were reported by this source (source_id match), OR
+        - Share a pattern that this source might encounter (all of them,
+          since patterns are generalized and source-agnostic after dedup).
+
+        In practice this returns all examples — the architecture mandates
+        全量注入 (full injection) into every agent's counter_examples.md.
+        """
+        return list(self._examples)
 
     def render_markdown_for_source(self, source_id: str) -> str:
-        """Render counter-examples filtered by source_id as agent-readable markdown.
+        """Render counter-examples as agent-readable markdown.
 
-        Used by RepairOrchestrator to inject only relevant counter-examples
-        into each source's .icslpreprocess directory (architecture.md §3).
-        Falls back to render_markdown() (all examples) when source_id is empty.
+        architecture.md §3 反馈机制: "泛化去重后，全量注入 prompt" — all
+        counter-examples are injected into every agent's prompt regardless
+        of which source originally reported them. The source_id parameter
+        is kept for API compatibility but does not filter the output.
         """
-        if not source_id:
-            return self.render_markdown()
-        examples = self.get_for_source(source_id)
-        if not examples:
-            return ""
-        lines = ["# Counter Examples (反例库)\n"]
-        lines.append("以下是之前修复中出现的错误模式，请避免重复：\n")
-        for i, ex in enumerate(examples, 1):
-            lines.append(f"## 反例 {i}: {ex.pattern}\n")
-            lines.append(f"- **调用上下文**: `{ex.call_context}`")
-            lines.append(f"- **错误目标**: `{ex.wrong_target}`")
-            lines.append(f"- **正确目标**: `{ex.correct_target}`")
-            lines.append("")
-        return "\n".join(lines)
+        return self.render_markdown()
 
     def _save(self) -> None:
         # Save JSON (machine-readable)

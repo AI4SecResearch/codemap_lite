@@ -1527,8 +1527,8 @@ class TestSourcePointStatusTransitions:
         with pytest.raises(ValueError):
             store.update_source_point_status("sp3", "pending")
 
-    def test_complete_to_running_rejected(self, store):
-        """complete→running must raise ValueError."""
+    def test_complete_to_running_allowed_for_rerepair(self, store):
+        """complete→running is allowed for re-repair after incremental invalidation."""
         from codemap_lite.graph.schema import SourcePointNode
 
         sp = SourcePointNode(
@@ -1539,8 +1539,10 @@ class TestSourcePointStatusTransitions:
         store.update_source_point_status("sp4", "running")
         store.update_source_point_status("sp4", "complete")
 
-        with pytest.raises(ValueError):
-            store.update_source_point_status("sp4", "running")
+        # Should NOT raise — re-repair is allowed (architecture.md §7)
+        store.update_source_point_status("sp4", "running")
+        updated = store.get_source_point("sp4")
+        assert updated.status == "running"
 
     def test_invalid_status_value_rejected(self, store):
         """Unknown status value must raise ValueError."""

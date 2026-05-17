@@ -221,6 +221,32 @@ codemap-lite serve    [--config PATH] [--port 8000]     # 启 FastAPI
 - 仓库根目录没有 check-in 的 `config.yaml`，4 个 CLI 子命令默认 `--config config.yaml` 找当前工作目录——首次跑前要么 `cp codemap_lite/config/default_config.yaml config.yaml`，要么显式 `--config codemap_lite/config/default_config.yaml`。
 - **FeedbackStore 反例泛化去重（architecture.md §3 反馈机制 step 4 "相似 → 总结合并"）** 当前实现是**精确 pattern 字串匹配**（`FeedbackStore.add()` 按 `pattern` 精确比对决定是否 dedup），而架构要求**LLM 语义相似度判断**后合并+泛化。当前行为：相同 pattern 的第二次提交会被标记为 `deduplicated=True` 但泛化摘要（如"所有 dispatcher vtable resolution 必须匹配 signature"）不会自动生成——只在 pattern 文本完全一致时才"合并"。缺失的部分：调用 LLM 判断两个反例是否语义相似；相似时生成泛化摘要替换原始 pattern；pattern 中包含具体行号的反例应自动去掉行号泛化为模式级规则。此 gap 影响反例库的实际威力——精确匹配无法捕获"同一 bug 模式在不同位置"的情况。
 - ~~REST API 7 个列表端点返回裸列表而非 `{total, items}` 分页格式。~~ **已完成（2026-05-14）**：`/files`, `/functions`, `/functions/{id}/callers`, `/functions/{id}/callees`, `/source-points`, `/reviews`, `/feedback` 全部改为 `{total, items}` + `limit/offset` 参数，对齐 architecture.md §8 REST API 契约。492 tests 全绿。
+- ~~**前端视觉系统缺失**（ADR-0007）：无共享组件库、无图标系统、无骨架屏、无确认对话框、无键盘快捷键、无搜索过滤。~~ **已完成（2026-05-16）**：引入 lucide-react + `components/ui/` 组件库（Button/Badge/Card/ProgressBar/SearchInput/Skeleton/ConfirmDialog/EmptyState/Timestamp）+ Inter 字体 + 全局视觉规范 + SourcePointList 批量选择/键盘快捷键 + Dashboard 修复效果趋势 + FeedbackLog 美化。对齐 ADR-0007。
+- ~~**前端操作动线 GAP（ADR-0008，2026-05-16）**：从用户操作动线审视，以下功能缺失：~~
+  ~~- **P0 Agent 实时日志不可见**~~
+  ~~- **P0 修复触发无即时反馈**~~
+  ~~- **P0 SourcePointList ↔ RepairActivity 无联动**~~
+  ~~- **P1 Repair All 无确认对话框**~~
+  ~~- **P1 修复结果默认折叠**~~
+  ~~- **P1 失败 GAP 无重试入口**~~
+  ~~- **P1 日志无按 source 过滤**~~
+  ~~- **P2 状态含义不明**~~
+  ~~- **P2 失败分类摘要缺失**~~
+  ~~- **P2 反例库无 CRUD**~~
+  ~~- **P2 模块分组视图缺失**~~
+  ~~- **P2 历史趋势缺失**~~
+  **已完成（2026-05-17）**：全部 12 项前端 GAP 修复落地。后端：`GET /api/v1/repair-logs/live`（tail API）+ `DELETE/PUT /api/v1/feedback/{id}`（CRUD）+ `log_dir` 默认值修复。前端：`AgentTerminal` 组件（2s 轮询 + 终端框 + 完成链接）、`handleRepairSource` 即时反馈（不 reset repairing 直到 finished）、RepairActivity `?source=` 过滤 + 下拉、SourcePointList → RepairActivity 链接、Repair All 确认对话框、修复结果/GAP 默认展开、"重试此 Source" 按钮、状态 Badge tooltip、失败分类摘要、FeedbackLog 搜索+编辑+删除、模块分组视图切换、Dashboard 历史趋势。新增 11 个测试（`TestRepairLogsLiveEndpoint` 5 个 + `TestFeedbackDeleteUpdate` 6 个）。226 tests + `npm run build` 全绿。对齐 ADR-0008。
+- **测试覆盖 GAP（2026-05-17 gap-analysis round 4）**：
+  - ~~Live tail endpoint 无测试~~ **已修复**：`TestRepairLogsLiveEndpoint`（5 tests）覆盖空目录、tail 读取、finished 状态、多 attempt 选最新、必填参数校验。
+  - ~~Feedback DELETE/PUT 无测试~~ **已修复**：`TestFeedbackDeleteUpdate`（6 tests）覆盖删除成功/404、更新成功/404/空 body 422、删除后索引偏移。
+  - **SourcePointList ↔ RepairActivity 端到端集成测试缺失**：前端组件间联动（URL 参数传递、轮询状态同步）需要 E2E 浏览器测试或 Playwright 覆盖，当前仅有 API 层单元测试。
+- **架构对齐验证（2026-05-17 gap-analysis round 4）**：
+  - §3 Repair Agent：5 类失败审计（`subprocess_crash` / `subprocess_timeout` / `agent_error` / `agent_exited_without_edge` / `gate_failed`）全部在 `repair_orchestrator.py` 实现（lines 418/448/472/509/359）。
+  - §4 Neo4j Schema：`HAS_GAP` 关系在 `neo4j_store.py:901` 创建；`IS_SOURCE` 关系在 `neo4j_store.py:1556` 创建。**已对齐**。
+  - §8 REST API：28 个前端 API 方法全部有对应后端端点，响应格式一致。**已对齐**。
+  - §3 门禁 subprocess 调用：`_check_gate` 正确 spawn `python .icslpreprocess/icsl_tools.py check-complete --source <id>` 并解析 JSON。**已对齐**。
+  - §3 超时处理：`asyncio.wait_for` + `proc.kill()` + stamp `subprocess_timeout: <N>s`。**已对齐**。
+- **库函数/系统调用被误标为 UnresolvedCall（2026-05-17）**：tree-sitter 解析层对 `c_str()`, `CLOGD()`, `CLOGE()`, `promote()`, `Message()`, `HILOGI()` 等标准库函数/日志宏/智能指针方法产生了 UnresolvedCall 节点。CastEngine 实测中 395 个 GAP 里约 118 个（30%）是此类误报。需要在 parsing 层（`codemap_lite/parsing/cpp/`）添加库函数白名单过滤器，在创建 UnresolvedCall 之前排除已知的标准库/系统调用模式。白名单应覆盖：C++ STL 方法（`c_str`, `size`, `begin`, `end`, `push_back` 等）、OHOS 日志宏（`CLOGD`, `CLOGE`, `HILOGI` 等）、智能指针方法（`promote`, `lock`, `get`, `reset`）、基础设施宏（`RETRUEN_IF_WRONG_TASK`, `EXECUTE_SINGLE_STUB_TASK` 等）。此 gap 影响 Call Graph 可读性和 repair agent 效率（agent 浪费时间尝试解析不需要解析的调用）。
 - gap-analysis 历史：`docs/adr/0001-gap-analysis-corrections.md` / `0002-gap-analysis-round2.md` / `0003-gap-analysis-round3.md`。
 
 ---

@@ -76,6 +76,7 @@ class GraphStore(Protocol):
         caller_id: str | None = None,
         callee_id: str | None = None,
         call_location: str | None = None,
+        source_id: str | None = None,
     ) -> list[RepairLogNode]: ...
 
     def delete_repair_logs_for_edge(
@@ -89,6 +90,12 @@ class GraphStore(Protocol):
     def delete_calls_edge(
         self, caller_id: str, callee_id: str, call_file: str, call_line: int
     ) -> bool: ...
+
+    def mark_edge_reviewed(
+        self, caller_id: str, callee_id: str, call_file: str, call_line: int
+    ) -> bool:
+        """Mark a CALLS edge as reviewed (verdict=correct). Returns True if edge found."""
+        ...
 
     def list_files(self) -> list[FileNode]: ...
 
@@ -402,6 +409,7 @@ class InMemoryGraphStore:
         caller_id: str | None = None,
         callee_id: str | None = None,
         call_location: str | None = None,
+        source_id: str | None = None,
     ) -> list[RepairLogNode]:
         """Query RepairLog entries with optional exact-match filters.
 
@@ -417,6 +425,8 @@ class InMemoryGraphStore:
             results = [r for r in results if r.callee_id == callee_id]
         if call_location is not None:
             results = [r for r in results if r.call_location == call_location]
+        if source_id is not None:
+            results = [r for r in results if r.source_id == source_id]
         return results
 
     def delete_repair_logs_for_edge(
@@ -438,6 +448,16 @@ class InMemoryGraphStore:
 
     def delete_function(self, id: str) -> None:
         self._functions.pop(id, None)
+        # Cascade: remove UCs owned by this function (mirrors Neo4j DETACH DELETE)
+        self._unresolved_calls = {
+            k: v for k, v in self._unresolved_calls.items()
+            if v.caller_id != id
+        }
+        # Cascade: remove CALLS edges involving this function
+        self._calls_edges = [
+            e for e in self._calls_edges
+            if e.caller_id != id and e.callee_id != id
+        ]
 
     def create_source_point(self, node: SourcePointNode) -> str:
         """Store a SourcePoint node (architecture.md §4 SourcePoint 状态)."""
@@ -549,6 +569,25 @@ class InMemoryGraphStore:
             )
         ]
         return len(self._calls_edges) < before
+
+    def mark_edge_reviewed(
+        self, caller_id: str, callee_id: str, call_file: str, call_line: int
+    ) -> bool:
+        """Mark a CALLS edge as reviewed (verdict=correct).
+
+        Sets `reviewed=True` on the edge props so the frontend can
+        distinguish reviewed edges from unreviewed ones.
+        """
+        for edge in self._calls_edges:
+            if (
+                edge.caller_id == caller_id
+                and edge.callee_id == callee_id
+                and edge.props.call_file == call_file
+                and edge.props.call_line == call_line
+            ):
+                object.__setattr__(edge.props, 'reviewed', True)
+                return True
+        return False
 
     def list_files(self) -> list[FileNode]:
         return list(self._files.values())
@@ -1134,7 +1173,8 @@ class Neo4jGraphStore:
             "SET r.repair_method = $repair_method, "
             "    r.llm_response = $llm_response, "
             "    r.timestamp = $timestamp, "
-            "    r.reasoning_summary = $reasoning_summary"
+            "    r.reasoning_summary = $reasoning_summary, "
+            "    r.source_id = $source_id"
         )
         with self._get_driver().session() as session:
             session.run(
@@ -1147,6 +1187,7 @@ class Neo4jGraphStore:
                 llm_response=node.llm_response,
                 timestamp=node.timestamp,
                 reasoning_summary=node.reasoning_summary,
+                source_id=node.source_id,
             ).consume()
         return node.id
 
@@ -1155,6 +1196,7 @@ class Neo4jGraphStore:
         caller_id: str | None = None,
         callee_id: str | None = None,
         call_location: str | None = None,
+        source_id: str | None = None,
     ) -> list[RepairLogNode]:
         clauses = []
         params: dict = {}
@@ -1167,13 +1209,18 @@ class Neo4jGraphStore:
         if call_location is not None:
             clauses.append("r.call_location = $call_location")
             params["call_location"] = call_location
+        if source_id is not None:
+            clauses.append("r.source_id = $source_id")
+            params["source_id"] = source_id
         where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
         cypher = (
             f"MATCH (r:RepairLog) {where}"
             "RETURN r.id AS id, r.caller_id AS caller_id, "
             "r.callee_id AS callee_id, r.call_location AS call_location, "
             "r.repair_method AS repair_method, r.llm_response AS llm_response, "
-            "r.timestamp AS timestamp, r.reasoning_summary AS reasoning_summary"
+            "r.timestamp AS timestamp, r.reasoning_summary AS reasoning_summary, "
+            "r.source_id AS source_id "
+            "ORDER BY r.timestamp DESC"
         )
         with self._get_driver().session() as session:
             records = list(session.run(cypher, **params))
@@ -1233,6 +1280,27 @@ class Neo4jGraphStore:
             )
             record = result.single()
         return record is not None and record["deleted"] > 0
+
+    def mark_edge_reviewed(
+        self, caller_id: str, callee_id: str, call_file: str, call_line: int
+    ) -> bool:
+        """Mark a CALLS edge as reviewed=true in Neo4j."""
+        cypher = (
+            "MATCH (a:Function {id: $caller_id})-[r:CALLS]->(b:Function {id: $callee_id}) "
+            "WHERE r.call_file = $call_file AND r.call_line = $call_line "
+            "SET r.reviewed = true "
+            "RETURN count(r) AS updated"
+        )
+        with self._get_driver().session() as session:
+            result = session.run(
+                cypher,
+                caller_id=caller_id,
+                callee_id=callee_id,
+                call_file=call_file,
+                call_line=call_line,
+            )
+            record = result.single()
+        return record is not None and record["updated"] > 0
 
     def list_files(self) -> list[FileNode]:
         cypher = (
@@ -1664,14 +1732,19 @@ def _record_to_unresolved(record) -> UnresolvedCallNode:
 
 
 def _record_to_repair_log(record) -> RepairLogNode:
+    ts = record["timestamp"]
+    # Neo4j may return neo4j.time.DateTime instead of a plain string
+    if hasattr(ts, "isoformat"):
+        ts = ts.isoformat()
     return RepairLogNode(
         caller_id=record["caller_id"],
         callee_id=record["callee_id"],
         call_location=record["call_location"],
         repair_method=record["repair_method"],
         llm_response=record["llm_response"],
-        timestamp=record["timestamp"],
+        timestamp=str(ts) if ts else "",
         reasoning_summary=record["reasoning_summary"],
+        source_id=record.get("source_id") or "",
         id=record["id"],
     )
 

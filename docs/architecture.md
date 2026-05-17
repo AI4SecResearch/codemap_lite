@@ -329,23 +329,75 @@ status: "pending" → "running" → "complete"（所有可达 GAP 已修复）
 1. **从 source 出发**：source 点列表 → 选择 → 展开可达调用链 → 审阅修复边
 2. **从函数浏览**：文件树 → 函数列表 → 选择 → 查看 callers/callees → 审阅
 
+### 操作动线
+
+用户操作流程按动线组织：
+
+```
+获取 source 点 → 查看/修复/审阅（SourcePointList 主控台）→ 反例库（FeedbackLog）
+```
+
+动线引导通过**导航栏活体 badge**（tone 分色 + 预筛选 deep-link）+ **Dashboard drill-down 链接**实现，不使用独立的 stepper 组件——因为实际操作是非线性的（审阅者可能从 Dashboard/CallGraph/FunctionBrowser 任意入口进入 SourcePointList）。
+
+**SourcePointList 是操作主控台**，承载完整修复+审阅动线：获取 source 点、触发修复、查看修复结果、审阅 LLM 边正确性、查看未修复 GAPs、查看修复日志/推理过程。不再需要独立的 ReviewQueue 页面。
+
+### SourcePointList 操作主控台
+
+**顶部操作栏**：
+| 按钮 | API | 说明 |
+|------|-----|------|
+| Fetch Sources | `POST /analyze` mode=incremental | 从 codewiki_lite 获取 source 点 |
+| Repair All | `POST /analyze/repair` | 修复所有 pending source |
+| 每行 Repair | `POST /analyze/repair` sourceIds=[id] | 修复单个 source |
+
+**统计栏**：Total / Pending / Running / Complete / Partial + LLM Edges / Unresolved / Feedback
+
+**Source 列表**：每行显示 source 名称 + status badge + 进度（N/M fixed）+ Repair 按钮，点击展开详情。
+
+**展开行信息层次**：
+
+1. **LLM 修复结果**（RepairLogs）— 每条一张卡片：
+   - 标题：caller_name → callee_name（file:line）
+   - 调用点代码：`call_location` ±3 行，高亮当前行（通过 `GET /api/v1/source-code` 获取）
+   - callee 函数体：完整函数体，默认折叠，点击展开（通过 Function 节点的 file_path/start_line/end_line + source-code API 获取）
+   - reasoning_summary：LLM 推理摘要
+   - 操作按钮：[✓ Correct] [✗ Wrong]
+
+2. **未修复 GAPs**：
+   - call_expression + retry_count + status badge（分色见下文 GapDetail 分色）
+   - last_attempt_reason + 代码片段
+   - retry_count=3 时自动标记 unresolvable（无需手动操作）
+
+3. **操作按钮**：[Repair this source]
+
+**数据获取策略**：
+- 页面加载：`getSourcePoints()` + `getAnalyzeStatus()` + `getStats()`
+- 展开行：lazy fetch `getRepairLogs({ caller })` + `listUnresolved({ caller })`
+- 轮询：5s poll `GET /api/v1/analyze/status` 更新进度
+
 ### 审阅交互
-- 审阅对象：单条 CALLS 边（特别是 resolved_by="llm" 的）
+
+审阅操作在 SourcePointList 展开行内完成（不再有独立审阅页面）。
+
+- 审阅对象：单条 CALLS 边（resolved_by="llm"），以 RepairLog 卡片形式呈现
 - 操作：标记正确 / 标记错误 / 手动添加边 / 手动删除边
+- **审阅者判断依据**：调用点代码上下文 + callee 完整函数体 + LLM reasoning_summary
 - **标记错误时**：
   1. 可填写正确目标 → 触发反例生成（异步泛化）
   2. 立即删除该 CALLS 边 + 对应 RepairLog
   3. 重新生成 UnresolvedCall 节点（retry_count=0）
   4. 触发 Agent 重新修复该 source 点（异步）
+- "反例已保存" 横幅把 pattern 链到 `/feedback?pattern=<encoded>`；`FeedbackLog` 挂载时读 `?pattern=` 并高亮 + `scrollIntoView`
 
 ### GapDetail last-attempt 分色
-架构 §3 Retry 审计字段锁了 5 档 `<category>`，§3 超时护栏又要求 `subprocess_timeout` / `agent_error` / `subprocess_crash` 在 UI 上彻底分流——`ReviewQueue` 的 `GapDetail` last-attempt 面板必须按 `<category>` 分到 5 种互不混淆的 tone，让审阅者一眼读出"这是什么类型的失败":
-- `gate_failed` → **amber**（`bg-amber-50 border-amber-200 text-amber-800`）：软失败，agent 跑完了但门禁说还有残留 GAP，下一轮 retry 很可能继续推进
-- `agent_error` → **red**（`bg-red-50 border-red-200 text-red-800`）：agent 起来了但非零退出（配额耗尽 / LLM 超时 / hook 脚本 `SyntaxError` 等），通常是 agent 侧业务失败
-- `subprocess_crash` → **fuchsia**（`bg-fuchsia-50 border-fuchsia-200 text-fuchsia-800`）：`asyncio.create_subprocess_exec` 抛异常，spawn 本身失败（CLI 二进制缺失 / 路径漂移 / 权限），是 ops 配置问题
-- `subprocess_timeout` → **orange**（`bg-orange-50 border-orange-200 text-orange-800`）：`asyncio.wait_for` 到点把 agent 杀了（LLM 后端挂 / 网络 stall / agent 死循环），是 ops 信号
-- `agent_exited_without_edge` → **sky**（`bg-sky-50 border-sky-200 text-sky-800`）：agent 正常退出（exit 0）但未写入任何新边——通常是 agent 放弃（找不到实现 / 系统库 / 死胡同）
-- 未识别 category（legacy 旧事件键等）→ **gray** fallback
+
+SourcePointList 展开行的 GAP 面板按 `<category>` 分到 5 种互不混淆的 tone：
+- `gate_failed` → **amber**（`bg-amber-50 border-amber-200 text-amber-800`）：软失败，agent 跑完了但门禁说还有残留 GAP
+- `agent_error` → **red**（`bg-red-50 border-red-200 text-red-800`）：agent 非零退出（配额耗尽 / LLM 超时 / hook 脚本错误）
+- `subprocess_crash` → **fuchsia**（`bg-fuchsia-50 border-fuchsia-200 text-fuchsia-800`）：spawn 失败（CLI 缺失 / 路径漂移 / 权限）
+- `subprocess_timeout` → **orange**（`bg-orange-50 border-orange-200 text-orange-800`）：agent 被超时杀掉
+- `agent_exited_without_edge` → **sky**（`bg-sky-50 border-sky-200 text-sky-800`）：agent 正常退出但未写入新边（放弃）
+- 未识别 category → **gray** fallback
 
 ### 进度感知
 - Agent 每次写入 Neo4j 时打点记录进度
@@ -361,29 +413,25 @@ status: "pending" → "running" → "complete"（所有可达 GAP 已修复）
 ### 页面结构
 ```
 frontend/src/pages/
-├── Dashboard.tsx          # 概览：source 点数量、已修复/未修复 GAP 数、待审阅边数
-├── SourcePointList.tsx    # Source 点列表，按 kind 分组
+├── Dashboard.tsx          # 概览：source 点数量、已修复/未修复 GAP 数
+├── SourcePointList.tsx    # 操作主控台：获取/修复/审阅全动线
 ├── FunctionBrowser.tsx    # 文件树 + 函数列表
 ├── CallGraphView.tsx      # 调用图可视化（Cytoscape.js）
-├── ReviewQueue.tsx        # 待审阅边列表（resolved_by=llm 且未审阅的）
 └── FeedbackLog.tsx        # 反例库浏览
 ```
 
 ### 跨页面 drill-down 契约
 - Dashboard 的 StatCard 支持可选 `to` 链接，点击跳转到对应子视图的**预筛选**状态。
-- `Unresolved GAPs` → `/review?status=pending`；`Unresolvable` → `/review?status=unresolvable`。
-- 非 backlog 类 StatCard 也承载导航意图：`Source Points` → `/sources`、`Files` → `/functions`（FunctionBrowser 左栏即文件树）、`Functions` → `/functions`。目标子视图无需预筛选时，`to` 直接指向列表根路径；`to` 约定是轻量 affordance（右侧 `›` 暗示可点），不强制所有 StatCard 都带。
-- `ReviewQueue` 挂载时读 `?status=` query param，若值 ∈ `{all, pending, unresolvable}` 就作为初始 `statusFilter`；之后用户手动切换筛选也双向同步到 URL，保证链接可分享/可书签。
-- `ReviewQueue` 同样消费 `?category=` query param（§3 Retry 审计字段 4 档 + `all`：`{all, gate_failed, agent_error, subprocess_crash, subprocess_timeout}`）作为初始 `categoryFilter`，匹配 `last_attempt_reason` 的 `<category>:` 前缀；chip 切换双向同步 URL。与 `?status=` 约定一致（宽松解析，未知值回落 `all`），**chip tone 与 GapDetail last-attempt 分色保持同色系**（gate_failed=amber / agent_error=red / subprocess_crash=fuchsia / subprocess_timeout=orange），让"扫 GapDetail 面板发现 ops stall 集中 → 一键过滤 subprocess_timeout"从"人工逐行眼扫 4 色 chip"压成一次点击。
-- ReviewQueue 的 "反例已保存" 横幅把 pattern 链到 `/feedback?pattern=<encoded>`；`FeedbackLog` 挂载时读 `?pattern=` 并高亮（ring + 蓝底）+ `scrollIntoView` 到匹配的 CounterExample 卡片，让审阅者当场确认"下一轮会被注入到 repair CLAUDE.md 的 pattern 就是这条"（北极星 #5）。
-- 左侧导航的活体 chip 在 alert/warn tone 下自动把 NavLink 指向对应的预筛选子视图——Review chip `alert` 时 `to="/review?status=unresolvable"`、`warn` 时 `to="/review?status=pending"`、`default` 时回到 `/review`——与 StatCard drill-down 共用 query 约定，让"看到红色 chip 就 1 次点击落到 agent 放弃的 GAP 列表"成为从任意页面都成立的快捷路径。
-- ReviewQueue 的 caller 单元格是 `<Link to="/graph?function=<encoded caller_id>">`；`CallGraphView` 挂载时读 `?function=` 作为起始点，`api.getCallChain(id, depth)` 拉子图并高亮 root——把 "审阅这条 GAP → 看它在调用链里是哪条边" 从"复制 id → 切页 → 粘贴"压成一次点击（北极星 #1 GAP 审阅耗时 + #2 调用链可信度——审阅时 llm 修复的 edge 在图里是哪条）。复用已有 `?function=` 约定，不新增 surface。
-- `FunctionBrowser` 右栏每一行函数后挂一个 GAP count chip（前端调 `api.listUnresolved` 客户端按 `caller_id` 聚合），chip 是 `<Link to="/review?caller=<encoded function_id>">`；`ReviewQueue` 挂载时读 `?caller=` 作为初始 `callerFilter`，用户清除时回写 URL——把"看函数浏览器 → 发现某个函数背包多 → 跳预筛选 GAP 列表"从"去 ReviewQueue → 手动搜 caller_id"压成一次点击（北极星 #1 GAP 审阅耗时 + #2 调用链可信度——哪个函数 backlog 最重一眼可见 + #5 状态透明度——backlog 在函数维度的分布可见）。复用 `?<filterName>=<value>` 约定，不新增 surface。
-- `Dashboard` "Top backlog functions" widget 按 `caller_id` 聚合 `api.listUnresolved` 后降序取前 5，每行渲染为 `<Link to="/review?caller=<encoded caller_id>">`，显示函数名（或截断 id）+ GAP count chip（tri-tone amber/red 与 FunctionBrowser chip 共享视觉语言）——把"打开 Dashboard → 发现最重的 backlog 在哪个函数 → 跳预筛选 GAP 列表"压成一次点击，无需绕路 FunctionBrowser（北极星 #1 GAP 审阅耗时 + #5 状态透明度——Dashboard 作为全站 hub 直接暴露热点函数）。复用 `?caller=` 约定，不新增 surface。
-- `CallGraphView` 的 `NodeInspector` 在 function-node 分支显示 `<Link to="/review?caller=<encoded function_id>">Review GAPs ({count})</Link>`（count 由客户端 `api.listUnresolved` 按 `caller_id` 聚合后得出，0 时不渲染链接避免空跳转）；在 unresolved-node 分支显示 `<Link to="/review?caller=<encoded caller_id>">Review this caller</Link>`——审阅者在调用链视图里看到可疑节点/GAP 时，从"记住 caller_id → 切页 → 手敲筛选"压成一次点击回到预筛选 GAP 列表（北极星 #1 GAP 审阅耗时 + #2 调用链可信度——图视图与审阅队列的审阅上下文互通 + #5 状态透明度——调用链里的每个节点都能看到自身 backlog）。复用 `?caller=` 约定，不新增 surface。
-- `Dashboard` 在 GAP StatCard 下方渲染一行 "Retry reasons" category 分布 chip（消费 `/api/v1/stats` 的 `unresolved_by_category` 分桶），4 档 category chip 的 tone 与 §3/§5 "GapDetail last-attempt 分色" 严格同色系（gate_failed=amber / agent_error=red / subprocess_crash=fuchsia / subprocess_timeout=orange；`none` 桶=gray fallback），每个 chip 是 `<Link to="/review?category=<cat>">`——让"打开 Dashboard → 发现 30 个 unresolvable 里 25 个是 subprocess_timeout → 1 次点击落到预筛选列表"从"进 ReviewQueue 再逐行眼扫 4 色"压成一次点击（北极星 #1 GAP 审阅耗时 + #5 状态透明度——Dashboard 作为全站 hub 直接暴露 agent 放弃原因的分布 + 候选优化方向 #4 进度与可观测性）。复用 §3 Retry 审计字段 4 档枚举 + `?category=` 约定，不新增 surface。
-- `CallGraphView` 在 resolved_by='llm' 的 CALLS 边被选中时，通过 `api.getRepairLogs({caller, callee, location})` 拉对应 `RepairLogNode[]`（§8 `GET /api/v1/repair-logs` 契约），inspector 面板渲染 timestamp（ISO-8601 或 epoch-seconds 都接受，前端转本地时间显示）+ reasoning_summary（≤200 字 agent 推理摘要，§3 "JSONL 日志文件（每个 GAP 一个），摘要写入 RepairLog"）+ 截断后的 llm_response（完整 agent 响应，`<pre>` 代码块 + "展开" 折叠按钮避免淹没面板）——让审阅者在图视图里选到 ★ 虚线边就能当场读到"为什么 LLM 挑了这个 callee"，而不必翻 `logs/repair/<source_id>/*.jsonl`（北极星 #2 调用链可信度——llm 修复的边从"可辨认（视觉语言）"升级为"可解释（审计链路）"+ #5 状态透明度——每条 llm 边都有可点查的修复过程）。复用 §4 RepairLog 属性引用契约（caller_id + callee_id + call_location 三元组定位），不新增 surface。
-- 未来新增 drill-down 链接时沿用相同约定：`?<filterName>=<value>`，命中则透传，否则忽略（宽松解析，架构契约优先）。
+- `Unresolved GAPs` → `/sources?status=pending`；`Unresolvable` → `/sources?status=unresolvable`。
+- 非 backlog 类 StatCard：`Source Points` → `/sources`、`Files` → `/functions`、`Functions` → `/functions`。
+- `SourcePointList` 挂载时读 `?status=` query param 作为初始 `statusFilter`；读 `?caller=` 作为初始 `callerFilter`；读 `?category=` 作为初始 `categoryFilter`。用户手动切换筛选双向同步 URL。
+- 左侧导航的活体 chip 在 alert/warn tone 下自动把 NavLink 指向预筛选子视图——Sources chip `alert` 时 `to="/sources?status=unresolvable"`、`warn` 时 `to="/sources?status=pending"`、`default` 时回到 `/sources`。
+- `FunctionBrowser` 右栏每一行函数后挂 GAP count chip，chip 是 `<Link to="/sources?caller=<encoded function_id>">`。
+- `Dashboard` "Top backlog functions" widget 每行渲染为 `<Link to="/sources?caller=<encoded caller_id>">`。
+- `Dashboard` GAP StatCard 下方 "Retry reasons" category 分布 chip，每个 chip 是 `<Link to="/sources?category=<cat>">`，tone 与 GapDetail 分色同色系。
+- `CallGraphView` 的 `NodeInspector` 在 function-node 分支显示 `<Link to="/sources?caller=<encoded function_id>">Review GAPs ({count})</Link>`。
+- `CallGraphView` 在 resolved_by='llm' 的 CALLS 边被选中时，通过 `api.getRepairLogs({caller, callee, location})` 拉 RepairLog，inspector 面板渲染 timestamp + reasoning_summary + 截断 llm_response。
+- 未来新增 drill-down 链接时沿用相同约定：`?<filterName>=<value>`，命中则透传，否则忽略（宽松解析）。
 
 ---
 
@@ -472,10 +520,14 @@ GET  /api/v1/functions/{id}
 GET  /api/v1/functions/{id}/callers
 GET  /api/v1/functions/{id}/callees
 GET  /api/v1/functions/{id}/call-chain?depth=5
+GET  /api/v1/source-code?file={path}&start={line}&end={line}  # 读取目标代码片段（限 target_dir 内）
 
 # Source 点
 GET  /api/v1/source-points
+GET  /api/v1/source-points/{id}
+GET  /api/v1/source-points/summary   # 聚合摘要
 GET  /api/v1/source-points/{id}/reachable
+GET  /api/v1/unresolved-calls        # 查询 UnresolvedCall；支持 ?caller= / ?status= / ?category= 过滤 + limit/offset 分页
 
 # 分析
 POST /api/v1/analyze              # 触发全量/增量
@@ -487,6 +539,11 @@ GET    /api/v1/reviews
 POST   /api/v1/reviews            # 标记边正确/错误
 PUT    /api/v1/reviews/{id}
 DELETE /api/v1/reviews/{id}
+
+# 边操作
+POST   /api/v1/edges              # 手动添加 CALLS 边
+DELETE /api/v1/edges              # 删除指定 CALLS 边（caller_id + callee_id + call_file + call_line）
+DELETE /api/v1/edges/{function_id} # 批量删除某函数的所有边（增量失效用）
 
 # 反例库
 GET  /api/v1/feedback             # 浏览反例

@@ -24,11 +24,14 @@ def generate_claude_md(
 
     return f"""# Repair Agent — Source Point {source_id}
 
+## 语言要求
+
+**所有输出必须使用中文**。包括：分析过程、推理说明、`--reasoning-summary` 和 `--llm-response` 参数值。
+
 ## Role
 
-You are a code analysis agent. Your task is to resolve indirect function calls (GAPs)
-reachable from source point `{source_id}`. You will read source code, analyze call contexts,
-and write resolved edges to the call graph.
+你是一个代码分析 agent。你的任务是解析从 source point `{source_id}` 可达的间接函数调用（GAP）。
+你需要阅读源代码、分析调用上下文，并将解析出的边写入调用图。
 
 ## Tools
 
@@ -36,6 +39,11 @@ Use `{icsl_tools}` for all graph operations:
 
 - `python {icsl_tools} query-reachable --source {source_id}`
   → Returns the reachable subgraph (nodes, edges, unresolved calls)
+
+- `python {icsl_tools} query-function --name <name> [--file <path>] [--signature <sig>]`
+  → Finds function nodes by name/file/signature. Use this to get the callee ID for `write-edge`.
+  → `--name` and `--signature` do substring matching; `--file` does exact match.
+  → Returns `{{"matches": [...], "count": N}}` with each match having `id`, `name`, `signature`, `file_path`.
 
 - `python {icsl_tools} write-edge --caller <id> --callee <id> --call-type <type> --call-file <file> --call-line <line> --llm-response <raw> --reasoning-summary <one-sentence justification>`
   → Writes a CALLS edge + RepairLog, deletes the UnresolvedCall.
@@ -69,7 +77,8 @@ and burns retry budget.
    b. **Check `{counter_examples_path}`** — if the call context matches any counter-example pattern, skip this UC (do NOT write that edge)
    c. Analyze the call context (variable type, assignment history, candidates)
    d. Determine the correct call target(s)
-   e. Run `write-edge` for each resolved target (you MUST include `--llm-response` + `--reasoning-summary`)
+   e. Use `query-function --name <target_name> --file <file>` to find the callee's function ID
+   f. Run `write-edge` with the found ID (you MUST include `--llm-response` + `--reasoning-summary`)
 3. Run `query-reachable` again — new UnresolvedCalls may appear (newly reachable)
    - If new ones exist → repeat from step 2
    - If none → you are done

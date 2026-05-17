@@ -107,7 +107,7 @@ def test_repair_wires_graph_store_into_repair_config(tmp_path):
     """architecture.md §3 Retry 审计字段: CLI must thread a real
     graph_store into RepairConfig so last_attempt_{timestamp,reason}
     land on pending GAPs after each gate failure. Without wiring,
-    ``_record_retry_attempt`` silently noops and ReviewQueue never
+    ``_record_retry_attempt`` silently noops and SourcePointList never
     surfaces the failure context.
     """
     cfg = _write_config(tmp_path)

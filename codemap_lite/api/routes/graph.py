@@ -1,6 +1,7 @@
 """Graph browsing endpoints."""
 from __future__ import annotations
 
+import os
 from dataclasses import asdict
 from typing import Any
 
@@ -31,7 +32,7 @@ def create_graph_router() -> APIRouter:
     def list_functions(
         request: Request,
         file: str | None = Query(default=None),
-        limit: int = Query(default=100, ge=1, le=1000),
+        limit: int = Query(default=100, ge=1, le=10000),
         offset: int = Query(default=0, ge=0),
     ) -> dict[str, Any]:
         store = request.app.state.store
@@ -97,7 +98,7 @@ def create_graph_router() -> APIRouter:
     @router.get("/unresolved-calls")
     def list_unresolved_calls(
         request: Request,
-        limit: int = Query(default=100, ge=1, le=1000),
+        limit: int = Query(default=100, ge=1, le=50000),
         offset: int = Query(default=0, ge=0),
         caller: str | None = Query(default=None),
         status: str | None = Query(default=None),
@@ -114,6 +115,46 @@ def create_graph_router() -> APIRouter:
         return {
             "total": total,
             "items": [asdict(u) for u in items],
+        }
+
+    @router.get("/source-code")
+    def get_source_code(
+        request: Request,
+        file: str = Query(..., description="File path (relative to target_dir or absolute)"),
+        start: int = Query(..., ge=1, description="Start line (1-based, inclusive)"),
+        end: int = Query(..., ge=1, description="End line (1-based, inclusive)"),
+    ) -> dict[str, Any]:
+        """Read source code snippet from target directory (architecture.md §8)."""
+        target_dir: str | None = None
+        td = getattr(request.app.state, "target_dir", None)
+        if td is not None:
+            target_dir = str(td)
+
+        # Resolve path: absolute paths used as-is (graph store stores absolute
+        # file_path), relative paths resolved against target_dir.
+        if os.path.isabs(file):
+            resolved = os.path.realpath(file)
+        elif target_dir:
+            resolved = os.path.realpath(os.path.join(target_dir, file))
+        else:
+            raise HTTPException(status_code=500, detail="target_dir not configured and path is relative")
+
+        try:
+            with open(resolved, encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+        except OSError:
+            raise HTTPException(status_code=404, detail="File not found")
+
+        # Clamp to file bounds
+        start_idx = max(0, start - 1)
+        end_idx = min(len(lines), end)
+        content = "".join(lines[start_idx:end_idx])
+
+        return {
+            "file": file,
+            "start_line": start_idx + 1,
+            "end_line": end_idx,
+            "content": content,
         }
 
     return router

@@ -60,7 +60,7 @@ export interface UnresolvedCall {
    * Human-readable reason (≤200 chars, `<category>: <summary>` or standalone
    * category) for the last failed attempt. `<category>` ∈ `{gate_failed,
    * agent_error, subprocess_timeout, subprocess_crash,
-   * agent_exited_without_edge}`. Surfaced in ReviewQueue GapDetail so
+   * agent_exited_without_edge}`. Surfaced in SourcePointList GapDetail so
    * reviewers don't need to read JSONL logs.
    */
   last_attempt_reason?: string | null;
@@ -75,6 +75,7 @@ export interface SourcePoint {
   signature: string;
   file: string;
   line: number;
+  function_id?: string;
   status?: string;
 }
 
@@ -91,6 +92,7 @@ export interface Stats {
    */
   total_llm_edges?: number;
   total_source_points: number;
+  source_points_by_status?: Record<string, number>;
   /**
    * Breakdown of `total_unresolved` by `UnresolvedCall.status`
    * (architecture.md §3 GAP 生命周期). Keys are the status string
@@ -160,6 +162,7 @@ export interface AnalyzeStatus {
   sources?: SourceProgress[];
   started_at?: string | null;
   completed_at?: string | null;
+  error?: string | null;
 }
 
 export interface Subgraph {
@@ -214,6 +217,8 @@ export interface RepairLog {
   timestamp: string;
   /** Human-readable summary of the agent's reasoning chain. */
   reasoning_summary: string;
+  /** Source point ID that triggered this repair session. */
+  source_id?: string;
 }
 
 /**
@@ -234,7 +239,12 @@ export interface CounterExampleCreateResult extends CounterExample {
 }
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, init);
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL}${path}`, init);
+  } catch {
+    throw new Error(`Cannot reach backend (${BASE_URL}${path}) — is the server running?`);
+  }
   if (!res.ok) {
     const body = await res.text().catch(() => '');
     throw new Error(`API ${res.status} ${res.statusText}: ${body.slice(0, 200)}`);
@@ -285,6 +295,10 @@ export const api = {
   },
   getCallChain: (id: string, depth = 5) =>
     fetchJson<Subgraph>(`/api/v1/functions/${id}/call-chain?depth=${depth}`),
+  getSourceCode: (file: string, start: number, end: number) =>
+    fetchJson<{ file: string; start_line: number; end_line: number; content: string }>(
+      `/api/v1/source-code?file=${encodeURIComponent(file)}&start=${start}&end=${end}`
+    ),
   listUnresolved: (params?: {
     limit?: number;
     offset?: number;
@@ -416,11 +430,29 @@ export const api = {
       body: JSON.stringify(example),
     }),
 
+  // Live agent log tail (ADR-0008)
+  getLiveLog: (sourceId: string, tail?: number) =>
+    fetchJson<{ lines: string[]; attempt: number; finished: boolean; source_id: string }>(
+      `/api/v1/repair-logs/live?source_id=${encodeURIComponent(sourceId)}&tail=${tail ?? 30}`
+    ),
+
+  // Feedback CRUD (ADR-0008)
+  deleteFeedback: (id: number) =>
+    fetchJson<{ deleted: boolean; total: number }>(`/api/v1/feedback/${id}`, { method: 'DELETE' }),
+  updateFeedback: (id: number, data: Partial<CounterExample>) =>
+    fetchJson<CounterExample>(`/api/v1/feedback/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }),
+
   // Repair logs (architecture.md §4 + §8 + ADR #51)
   getRepairLogs: (params?: {
     caller?: string;
     callee?: string;
     location?: string;
+    source?: string;
+    source_reachable?: string;
     limit?: number;
     offset?: number;
   }) => {
@@ -428,6 +460,8 @@ export const api = {
     if (params?.caller) qs.set('caller', params.caller);
     if (params?.callee) qs.set('callee', params.callee);
     if (params?.location) qs.set('location', params.location);
+    if (params?.source) qs.set('source', params.source);
+    if (params?.source_reachable) qs.set('source_reachable', params.source_reachable);
     if (params?.limit != null) qs.set('limit', String(params.limit));
     if (params?.offset != null) qs.set('offset', String(params.offset));
     const q = qs.toString();

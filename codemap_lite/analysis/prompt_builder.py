@@ -8,30 +8,32 @@ def build_repair_prompt(source_id: str) -> str:
 
     safe_id = _safe_dirname(source_id)
     icsl_dir = f".icslpreprocess_{safe_id}"
-    return f"""You are repairing indirect calls for source point {source_id}.
+    return f"""你是一个修复间接调用的 agent，当前正在处理 source point {source_id}。
+请全程使用中文输出你的分析和推理过程。
 
-Follow these steps:
+操作步骤：
 
-1. Run: python {icsl_dir}/icsl_tools.py query-reachable --source {source_id}
-   This returns the reachable subgraph with all UnresolvedCalls.
+1. 执行: python {icsl_dir}/icsl_tools.py query-reachable --source {source_id}
+   获取可达子图及所有 UnresolvedCall。
 
-2. For each UnresolvedCall:
-   - Read the source file at the call location
-   - Analyze variable types, assignments, and context
-   - Identify the correct call target(s)
-   - Run: python {icsl_dir}/icsl_tools.py write-edge --caller <caller_id> --callee <callee_id> --call-type <indirect|virtual> --call-file <file> --call-line <line> --llm-response "<your analysis excerpt>" --reasoning-summary "<one-sentence justification>"
+2. 对每个 UnresolvedCall：
+   - 阅读调用位置的源文件
+   - 分析变量类型、赋值和上下文
+   - 确定正确的调用目标
+   - 执行: python {icsl_dir}/icsl_tools.py write-edge --caller <caller_id> --callee <callee_id> --call-type <indirect|virtual> --call-file <file> --call-line <line> --llm-response "<你的分析摘要>" --reasoning-summary "<一句话理由>"
 
-3. After processing all current UnresolvedCalls, run query-reachable again.
-   New UnresolvedCalls may appear as newly reachable nodes are discovered.
-   Repeat until no new UnresolvedCalls remain.
+3. 处理完当前所有 UnresolvedCall 后，再次执行 query-reachable。
+   新发现的可达节点可能带来新的 UnresolvedCall。
+   重复直到没有新的 UnresolvedCall。
 
-4. When done, the orchestrator will run check-complete to verify.
+4. 完成后，编排器会执行 check-complete 验证。
 
-Remember:
-- Check {icsl_dir}/counter_examples.md before deciding targets — it contains known wrong resolutions
-- Skip edges that already exist
-- Always pass --llm-response and --reasoning-summary on every write-edge call
-- Stop when you reach system/standard library functions (no source available)
-- Stop when you cannot find the implementation in the codebase
-- Detect and break cycles in the call chain
+注意事项：
+- 在决定目标前先查看 {icsl_dir}/counter_examples.md — 其中包含已知的错误解析
+- 跳过已存在的边
+- 每次 write-edge 都必须传 --llm-response 和 --reasoning-summary
+- 遇到系统/标准库函数时停止（无源码可查）
+- 在代码库中找不到实现时停止
+- 检测并打断调用链中的环
+- 所有输出（包括 reasoning-summary 和 llm-response）请使用中文
 """

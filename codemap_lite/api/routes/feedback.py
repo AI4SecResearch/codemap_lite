@@ -42,6 +42,16 @@ class CounterExampleCreate(BaseModel):
         return self
 
 
+class CounterExampleUpdate(BaseModel):
+    """Request body for ``PUT /api/v1/feedback/{id}`` (ADR-0008)."""
+
+    call_context: str | None = None
+    wrong_target: str | None = None
+    correct_target: str | None = None
+    pattern: str | None = None
+    source_id: str | None = None
+
+
 def create_feedback_router() -> APIRouter:
     """Create the feedback router."""
     router = APIRouter(tags=["feedback"])
@@ -114,5 +124,29 @@ def create_feedback_router() -> APIRouter:
             "deduplicated": not added,
             "total": len(feedback_store.list_all()),
         }
+
+    @router.delete("/feedback/{feedback_id}")
+    def delete_feedback(request: Request, feedback_id: int) -> dict[str, Any]:
+        """Delete a counter-example by its index (ADR-0008)."""
+        feedback_store = getattr(request.app.state, "feedback_store", None)
+        if feedback_store is None:
+            raise HTTPException(status_code=503, detail="FeedbackStore not configured.")
+        if not feedback_store.delete(feedback_id):
+            raise HTTPException(status_code=404, detail="Counter-example not found.")
+        return {"deleted": True, "total": len(feedback_store.list_all())}
+
+    @router.put("/feedback/{feedback_id}")
+    def update_feedback(request: Request, feedback_id: int, body: CounterExampleUpdate) -> dict[str, Any]:
+        """Update a counter-example's fields by its index (ADR-0008)."""
+        feedback_store = getattr(request.app.state, "feedback_store", None)
+        if feedback_store is None:
+            raise HTTPException(status_code=503, detail="FeedbackStore not configured.")
+        fields = body.model_dump(exclude_unset=True)
+        if not fields:
+            raise HTTPException(status_code=422, detail="No fields to update.")
+        if not feedback_store.update(feedback_id, fields):
+            raise HTTPException(status_code=404, detail="Counter-example not found.")
+        updated = feedback_store.get_by_index(feedback_id)
+        return asdict(updated) if updated else {}
 
     return router

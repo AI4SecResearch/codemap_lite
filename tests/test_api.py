@@ -1363,7 +1363,7 @@ class TestFeedbackEndpoint:
         # architecture.md §8 convenience: llm-repaired edge backlog count
         assert "total_llm_edges" in data
         # New breakdown surfaces GAP lifecycle on the Dashboard without
-        # drilling into ReviewQueue (architecture.md §3 UnresolvedCall 生命周期).
+        # drilling into SourcePointList (architecture.md §3 UnresolvedCall 生命周期).
         assert "unresolved_by_status" in data
         assert data["unresolved_by_status"] == {"pending": 0, "unresolvable": 0}
         # Breakdown by CallsEdgeProps.resolved_by (architecture.md §4 +
@@ -1472,7 +1472,7 @@ class TestFeedbackEndpoint:
     def test_get_stats_calls_by_resolved_by(self) -> None:
         """/stats buckets CALLS edges by `resolved_by` so the Dashboard
         can surface the llm-repaired edge backlog without drilling into
-        ReviewQueue (architecture.md §4 CALLS 边属性 + §5 审阅对象：
+        SourcePointList (architecture.md §4 CALLS 边属性 + §5 审阅对象：
         单条 CALLS 边，特别是 resolved_by='llm' 的)."""
         client, store = get_test_client()
         for fid in ("a", "b", "c", "d"):
@@ -1691,7 +1691,7 @@ class TestNoPrivateAttrLeak:
 
 
 class TestUnresolvedCallsFiltering:
-    """architecture.md §5 line 371-372: ReviewQueue needs ?caller=, ?status=,
+    """architecture.md §5 line 371-372: SourcePointList needs ?caller=, ?status=,
     ?category= filters on GET /api/v1/unresolved-calls."""
 
     def test_filter_by_caller(self) -> None:
@@ -2844,3 +2844,165 @@ class TestAnalyzeStateNaming:
         assert resp.status_code == 202
         status_resp = client.get("/api/v1/analyze/status")
         assert status_resp.json()["state"] == "running"
+
+
+class TestRepairLogsLiveEndpoint:
+    """ADR-0008: GET /api/v1/repair-logs/live — tail agent log for source card
+    embedded terminal (architecture.md §5 live terminal output)."""
+
+    def test_live_log_no_log_dir(self) -> None:
+        """Returns empty when no log directory exists for source."""
+        client, _ = get_test_client()
+        resp = client.get("/api/v1/repair-logs/live", params={"source_id": "nonexistent"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["lines"] == []
+        assert body["attempt"] == 0
+        assert body["finished"] is False
+        assert body["source_id"] == "nonexistent"
+
+    def test_live_log_reads_tail(self, tmp_path, monkeypatch) -> None:
+        """Returns last N lines from latest attempt log."""
+        source_id = "abc123"
+        log_dir = tmp_path / "logs" / "repair" / source_id
+        log_dir.mkdir(parents=True)
+        log_file = log_dir / "attempt_1.log"
+        log_file.write_text("\n".join(f"line {i}" for i in range(50)))
+
+        # Monkeypatch the working directory so Path("logs/repair") resolves
+        monkeypatch.chdir(tmp_path)
+
+        client, _ = get_test_client()
+        resp = client.get("/api/v1/repair-logs/live", params={"source_id": source_id, "tail": 5})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body["lines"]) == 5
+        assert body["lines"][-1] == "line 49"
+        assert body["attempt"] == 1
+        assert body["finished"] is False
+
+    def test_live_log_finished_state(self, tmp_path, monkeypatch) -> None:
+        """Returns finished=True when progress.json state is 'succeeded'."""
+        source_id = "done_src"
+        log_dir = tmp_path / "logs" / "repair" / source_id
+        log_dir.mkdir(parents=True)
+        (log_dir / "attempt_2.log").write_text("final output\n")
+        (log_dir / "progress.json").write_text(json.dumps({"state": "succeeded"}))
+
+        monkeypatch.chdir(tmp_path)
+
+        client, _ = get_test_client()
+        resp = client.get("/api/v1/repair-logs/live", params={"source_id": source_id})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["finished"] is True
+        assert body["attempt"] == 2
+        assert "final output" in body["lines"][0]
+
+    def test_live_log_picks_latest_attempt(self, tmp_path, monkeypatch) -> None:
+        """When multiple attempt files exist, reads the latest one."""
+        source_id = "multi"
+        log_dir = tmp_path / "logs" / "repair" / source_id
+        log_dir.mkdir(parents=True)
+        (log_dir / "attempt_1.log").write_text("old attempt\n")
+        (log_dir / "attempt_3.log").write_text("latest attempt\n")
+
+        monkeypatch.chdir(tmp_path)
+
+        client, _ = get_test_client()
+        resp = client.get("/api/v1/repair-logs/live", params={"source_id": source_id})
+        body = resp.json()
+        assert body["attempt"] == 3
+        assert "latest attempt" in body["lines"][0]
+
+    def test_live_log_requires_source_id(self) -> None:
+        """source_id is a required query parameter."""
+        client, _ = get_test_client()
+        resp = client.get("/api/v1/repair-logs/live")
+        assert resp.status_code == 422
+
+
+class TestFeedbackDeleteUpdate:
+    """ADR-0008: DELETE /api/v1/feedback/{id} + PUT /api/v1/feedback/{id}
+    — feedback CRUD for counter-example management."""
+
+    def _make_client_with_feedback(self, tmp_path):
+        store_dir = tmp_path / ".codemap_lite" / "feedback"
+        feedback_store = FeedbackStore(storage_dir=store_dir)
+        feedback_store.add(
+            CounterExample(
+                call_context="dispatch(handler)",
+                wrong_target="logger.warn",
+                correct_target="on_event",
+                pattern="dispatch callbacks must match EventHandler",
+            )
+        )
+        feedback_store.add(
+            CounterExample(
+                call_context="table[idx](ctx)",
+                wrong_target="fallback_noop",
+                correct_target="action_commit",
+                pattern="vtable index must honour ctx.role",
+            )
+        )
+        graph_store = InMemoryGraphStore()
+        app = create_app(store=graph_store, feedback_store=feedback_store)
+        return TestClient(app), feedback_store
+
+    def test_delete_feedback_success(self, tmp_path) -> None:
+        """DELETE /feedback/0 removes the first entry."""
+        client, _ = self._make_client_with_feedback(tmp_path)
+        resp = client.delete("/api/v1/feedback/0")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["deleted"] is True
+        assert body["total"] == 1
+
+        # Verify it's gone
+        resp2 = client.get("/api/v1/feedback")
+        assert resp2.json()["total"] == 1
+        assert resp2.json()["items"][0]["pattern"] == "vtable index must honour ctx.role"
+
+    def test_delete_feedback_not_found(self, tmp_path) -> None:
+        """DELETE /feedback/99 returns 404."""
+        client, _ = self._make_client_with_feedback(tmp_path)
+        resp = client.delete("/api/v1/feedback/99")
+        assert resp.status_code == 404
+
+    def test_update_feedback_success(self, tmp_path) -> None:
+        """PUT /feedback/0 updates fields."""
+        client, _ = self._make_client_with_feedback(tmp_path)
+        resp = client.put("/api/v1/feedback/0", json={
+            "correct_target": "on_event_v2",
+            "pattern": "updated pattern",
+        })
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["correct_target"] == "on_event_v2"
+        assert body["pattern"] == "updated pattern"
+        # Unchanged fields preserved
+        assert body["call_context"] == "dispatch(handler)"
+        assert body["wrong_target"] == "logger.warn"
+
+    def test_update_feedback_not_found(self, tmp_path) -> None:
+        """PUT /feedback/99 returns 404."""
+        client, _ = self._make_client_with_feedback(tmp_path)
+        resp = client.put("/api/v1/feedback/99", json={"pattern": "x"})
+        assert resp.status_code == 404
+
+    def test_update_feedback_empty_body(self, tmp_path) -> None:
+        """PUT /feedback/0 with empty body returns 422."""
+        client, _ = self._make_client_with_feedback(tmp_path)
+        resp = client.put("/api/v1/feedback/0", json={})
+        assert resp.status_code == 422
+
+    def test_delete_then_update_shifts_indices(self, tmp_path) -> None:
+        """After deleting index 0, the old index 1 becomes index 0."""
+        client, _ = self._make_client_with_feedback(tmp_path)
+        # Delete first
+        client.delete("/api/v1/feedback/0")
+        # Now index 0 is the old "vtable" entry
+        resp = client.put("/api/v1/feedback/0", json={"pattern": "modified vtable"})
+        assert resp.status_code == 200
+        assert resp.json()["pattern"] == "modified vtable"
+        assert resp.json()["call_context"] == "table[idx](ctx)"

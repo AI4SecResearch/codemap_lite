@@ -56,28 +56,29 @@ class TestFeedbackStoreSourceScoped:
             source_id="source_A",
         ))
 
-    def test_get_for_source_filters_correctly(self):
-        """get_for_source returns only examples for the given source_id."""
+    def test_get_for_source_returns_all_examples(self):
+        """get_for_source returns ALL examples (architecture.md §3: 全量注入)."""
         examples_a = self.store.get_for_source("source_A")
-        assert len(examples_a) == 2
-        for ex in examples_a:
-            assert ex.source_id == "source_A"
+        # 全量注入: all 3 examples visible to any source
+        assert len(examples_a) == 3
 
-    def test_get_for_source_empty_for_unknown(self):
-        """get_for_source returns empty list for unknown source."""
-        assert self.store.get_for_source("nonexistent") == []
+    def test_get_for_source_returns_all_for_any_source(self):
+        """get_for_source returns all examples regardless of source_id."""
+        # Even a source that never reported anything sees all examples
+        assert len(self.store.get_for_source("nonexistent")) == 3
 
-    def test_render_markdown_for_source_filters(self):
-        """render_markdown_for_source only includes source-scoped examples."""
+    def test_render_markdown_for_source_includes_all(self):
+        """render_markdown_for_source includes ALL examples (全量注入)."""
         md = self.store.render_markdown_for_source("source_A")
         assert "vtable dispatch to wrong impl" in md
         assert "interface cast error" in md
-        assert "callback pointer mismatch" not in md
+        assert "callback pointer mismatch" in md  # 全量注入: all visible
 
-    def test_render_markdown_for_source_empty_returns_empty(self):
-        """render_markdown_for_source returns '' for source with no examples."""
+    def test_render_markdown_for_source_any_source_sees_all(self):
+        """render_markdown_for_source returns all examples for any source."""
         md = self.store.render_markdown_for_source("nonexistent")
-        assert md == ""
+        assert "vtable dispatch" in md
+        assert "callback pointer" in md
 
     def test_render_markdown_for_source_empty_id_falls_back_to_all(self):
         """render_markdown_for_source('') returns all examples."""
@@ -108,7 +109,8 @@ class TestFeedbackStoreSourceScoped:
 
         store2 = FeedbackStore(storage_dir=self._tmpdir)
         assert len(store2.list_all()) == 3
-        assert len(store2.get_for_source("source_A")) == 2
+        # 全量注入: get_for_source returns all examples
+        assert len(store2.get_for_source("source_A")) == 3
 
     def test_md_file_written_on_add(self):
         """Adding an example writes counter_examples.md to disk."""
