@@ -157,3 +157,70 @@ def test_corrupted_json_does_not_crash():
         )
         assert store.add(ex) is True
         assert len(store.list_all()) == 1
+
+
+def test_fuzzy_dedup_same_pattern_different_line_numbers():
+    """architecture.md §3 反馈机制 step 4: patterns differing only in line
+    numbers should be deduplicated (same bug at different locations)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = FeedbackStore(storage_dir=Path(tmpdir))
+        ex1 = CounterExample(
+            call_context="ptr->method() at line 42",
+            wrong_target="WrongImpl::method",
+            correct_target="CorrectImpl::method",
+            pattern="vtable dispatch at src/foo.cpp:42 resolves to wrong override",
+        )
+        ex2 = CounterExample(
+            call_context="ptr->method() at line 108",
+            wrong_target="WrongImpl::method",
+            correct_target="CorrectImpl::method",
+            pattern="vtable dispatch at src/foo.cpp:108 resolves to wrong override",
+        )
+        assert store.add(ex1) is True
+        assert store.add(ex2) is False  # fuzzy dedup: same pattern, different line
+        assert len(store.list_all()) == 1
+
+
+def test_fuzzy_dedup_different_patterns_kept():
+    """Genuinely different patterns must NOT be merged."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = FeedbackStore(storage_dir=Path(tmpdir))
+        ex1 = CounterExample(
+            call_context="callback()",
+            wrong_target="A::handle",
+            correct_target="B::handle",
+            pattern="callback dispatch resolves to wrong handler",
+        )
+        ex2 = CounterExample(
+            call_context="factory->create()",
+            wrong_target="OldFactory::create",
+            correct_target="NewFactory::create",
+            pattern="factory method returns wrong concrete type",
+        )
+        assert store.add(ex1) is True
+        assert store.add(ex2) is True  # different pattern → kept
+        assert len(store.list_all()) == 2
+
+
+def test_normalize_pattern_strips_line_numbers():
+    """_normalize_pattern removes line numbers for comparison."""
+    from codemap_lite.analysis.feedback_store import _normalize_pattern
+
+    assert "42" not in _normalize_pattern("error at line 42")
+    assert "108" not in _normalize_pattern("src/foo.cpp:108 wrong target")
+    assert "55" not in _normalize_pattern("dispatch @line55 fails")
+
+
+def test_pattern_similarity_identical():
+    """Identical normalized patterns have similarity 1.0."""
+    from codemap_lite.analysis.feedback_store import _pattern_similarity
+
+    assert _pattern_similarity("vtable dispatch wrong override", "vtable dispatch wrong override") == 1.0
+
+
+def test_pattern_similarity_disjoint():
+    """Completely different patterns have similarity 0.0."""
+    from codemap_lite.analysis.feedback_store import _pattern_similarity
+
+    assert _pattern_similarity("callback handler wrong", "factory method type") == 0.0
+

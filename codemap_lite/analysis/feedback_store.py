@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
@@ -15,6 +16,50 @@ class CounterExample:
     correct_target: str
     pattern: str
     source_id: str = ""
+
+
+def _normalize_pattern(pattern: str) -> str:
+    """Normalize a pattern for fuzzy dedup comparison.
+
+    architecture.md §3 反馈机制 step 4: "pattern 中包含具体行号的反例应
+    自动去掉行号泛化为模式级规则". This function:
+    1. Strips line number references (e.g., ":123", "line 45", "at L42")
+    2. Strips file path references (path/to/file.cpp)
+    3. Normalizes whitespace
+    4. Lowercases for case-insensitive comparison
+
+    Does NOT strip standalone numbers that might be meaningful identifiers.
+    """
+    s = pattern
+    # Remove "line N" / "Line N" / "@lineN" / "at line N" references
+    s = re.sub(r"(?:at\s+)?(?:line\s*|L)\d+", "", s, flags=re.IGNORECASE)
+    # Remove ":N" line number suffixes (e.g., "foo.cpp:42")
+    s = re.sub(r":\d+", "", s)
+    # Remove file paths (e.g., "src/module/foo.cpp", "path\to\bar.h")
+    s = re.sub(r"[a-zA-Z0-9_/\\.-]+\.[ch]pp\b", "", s)
+    s = re.sub(r"[a-zA-Z0-9_/\\.-]+\.[ch]\b", "", s)
+    # Normalize whitespace
+    s = re.sub(r"\s+", " ", s).strip()
+    return s.lower()
+
+
+def _pattern_similarity(a: str, b: str) -> float:
+    """Compute similarity between two normalized patterns.
+
+    Uses token overlap (Jaccard similarity) as a lightweight proxy for
+    semantic similarity. Returns 0.0-1.0.
+    """
+    tokens_a = set(a.split())
+    tokens_b = set(b.split())
+    if not tokens_a or not tokens_b:
+        return 0.0
+    intersection = tokens_a & tokens_b
+    union = tokens_a | tokens_b
+    return len(intersection) / len(union)
+
+
+# Threshold for fuzzy dedup: patterns with similarity >= this are merged
+_SIMILARITY_THRESHOLD = 0.7
 
 
 class FeedbackStore:
@@ -43,19 +88,29 @@ class FeedbackStore:
                 self._examples = []
 
     def add(self, example: CounterExample) -> bool:
-        """Add a counter example. Merges if same pattern already exists.
+        """Add a counter example. Merges if same or similar pattern exists.
 
         Returns ``True`` when the example was appended as a new entry and
         ``False`` when it was deduplicated against an existing pattern
         (architecture.md §3 反馈机制 steps 3-5 "相似 → 总结合并").
-        The return value lets the HTTP layer tell the reviewer whether
-        their submission landed as a fresh pattern or merged into an
-        existing one, closing the observability loop (北极星指标 #5).
+
+        Dedup strategy (two-tier):
+        1. Exact match: same pattern string → always merge
+        2. Fuzzy match: normalized patterns with Jaccard similarity >= 0.7
+           → merge (catches "same bug at different line numbers")
+
+        Full LLM-based semantic similarity is a future enhancement; this
+        provides the 80% case (line-number-stripped token overlap).
         """
+        norm_new = _normalize_pattern(example.pattern)
+
         for existing in self._examples:
+            # Tier 1: exact match
             if existing.pattern == example.pattern:
-                # Same pattern — merge by keeping the existing one
-                # (in production, LLM would summarize; here we deduplicate)
+                return False
+            # Tier 2: fuzzy match on normalized patterns
+            norm_existing = _normalize_pattern(existing.pattern)
+            if _pattern_similarity(norm_new, norm_existing) >= _SIMILARITY_THRESHOLD:
                 return False
 
         self._examples.append(example)
